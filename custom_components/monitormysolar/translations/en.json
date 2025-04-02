@@ -16,7 +16,20 @@
                     "mqtt_port": "MQTT Port",
                     "mqtt_username": "MQTT Username",
                     "mqtt_password": "MQTT Password",
-                    "dongle_id": "Dongle ID 'dongle-35:S4:48:S7:41'"
+                    "dongle_id": "Dongle ID 'dongle-35:S4:48:S7:41'",
+                    "parallel_inverters": "Setup Multiple Inverters in Parallel",
+                    "dongle_id_2": "Additional Dongle ID #2 (optional)",
+                    "dongle_id_3": "Additional Dongle ID #3 (optional)",
+                    "dongle_id_4": "Additional Dongle ID #4 (optional)"
+                }
+            },
+            "parallel": {
+                "title": "Multiple Inverter Configuration",
+                "description": "Enter the additional dongle IDs for your parallel inverters.",
+                "data": {
+                    "dongle_id_2": "Dongle ID #2",
+                    "dongle_id_3": "Dongle ID #3",
+                    "dongle_id_4": "Dongle ID #4"
                 }
             }
         }

@@ -145,6 +145,24 @@ FIRMWARE_CODES = {
             "B": "Parallel Model",
             "C": "Others"
         }
+    },
+    "H_EU_GEN_7-10k": {
+        "Device_Type": "A Standard Model",
+        "Derived_Device_Type": {
+            "A": "Standard Model",
+            "B": "Others",
+            "C": "Others"
+        },
+        "ODM_Code": {
+            "A": "Luxpower",
+            "B": "Others",
+            "C": "Others"
+        },
+        "Feature_Code": {
+            "A": "Standard Model",
+            "B": "Parallel Model",
+            "C": "Others"
+        }
     }
 }
 
@@ -158,6 +176,8 @@ VALID_FIRMWARE_CODES = {
     "FAAA": "12k Hybrid Standard",
     "EAAA": "8-10k Hybrid Standard",
     "EAAB": "8-10k Hybrid Parallel",
+    "HAAA": "7-10k EU Standard",
+    "HAAB": "7-10k EU Parallel",
 }
 
 BATTERY_STATUS_MAP = {
@@ -201,7 +221,7 @@ ENTITIES = {
 
                 ],
                 "timestamp": [
-                    {"name": "Last Bank Update", "type": "sensor", "unique_id": "last_bank_update", "state_class": "measurement","device_class": SensorDeviceClass.TIMESTAMP,"attributes": ["inputbank1_last_update","inputbank2_last_update","inputbank3_last_update","inputbank4_last_update","inputbank5_last_update","inputbank6_last_update","holdbank1_last_update","holdbank2_last_update","holdbank3_last_update","holdbank4_last_update","holdbank5_last_update","holdbank6_last_update", "holdbank3_last_update","holdbank4_last_update", "holdbank5_last_update", "holdbank6_last_update"]},
+                    {"name": "Last Bank Update", "type": "sensor", "unique_id": "last_bank_update", "state_class": "measurement", "device_class": SensorDeviceClass.TIMESTAMP, "entity_registry_enabled_default": False, "attributes": ["inputbank1_last_update","inputbank2_last_update","inputbank3_last_update","inputbank4_last_update","inputbank5_last_update","inputbank6_last_update","holdbank1_last_update","holdbank2_last_update","holdbank3_last_update","holdbank4_last_update","holdbank5_last_update","holdbank6_last_update", "holdbank3_last_update","holdbank4_last_update", "holdbank5_last_update", "holdbank6_last_update"]},
                 ],
                 "powerflow": [
                     {"name": "Grid Flow Live", "type": "sensor", "unique_id": "gridflow_live", "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.POWER, "unit_of_measurement": UnitOfPower.WATT, "attribute1": "ptouser", "attribute2": "ptogrid"},
@@ -217,17 +237,19 @@ ENTITIES = {
                 "inputbank1": [
                     {"name": "House Consumption (Live)", "type": "sensor", "unique_id": "pload", "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.POWER, "unit_of_measurement": UnitOfPower.WATT },
                     {"name": "State", "type": "sensor", "unique_id": "state"},
+                    {"name": "Hourly Consumption", "type": "sensor", "unique_id": "HourlyConsumption", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa", "HAAA"]},
+                    {"name": "Daily Consumption", "type": "sensor", "unique_id": "DailyConsumption", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa", "HAAA"]},
                     {"name": "Working Mode", "type": "sensor", "unique_id": "statedescription"},
-                    {"name": "Voltage PV1", "type": "sensor", "unique_id": "vpv1", "unit_of_measurement": UnitOfElectricPotential.VOLT, "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.VOLTAGE, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa"]},
-                    {"name": "Voltage PV2", "type": "sensor", "unique_id": "vpv2", "unit_of_measurement": UnitOfElectricPotential.VOLT, "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.VOLTAGE, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa"]},
+                    {"name": "Voltage PV1", "type": "sensor", "unique_id": "vpv1", "unit_of_measurement": UnitOfElectricPotential.VOLT, "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.VOLTAGE, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa", "HAAA"]},
+                    {"name": "Voltage PV2", "type": "sensor", "unique_id": "vpv2", "unit_of_measurement": UnitOfElectricPotential.VOLT, "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.VOLTAGE, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa", "HAAA"]},
                     {"name": "Voltage PV3", "type": "sensor", "unique_id": "vpv3", "unit_of_measurement": UnitOfElectricPotential.VOLT, "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.VOLTAGE, "allowed_firmware_codes": ["FAAB","FAAA", "FAAB", "EAAA", "EAAB"]},
                     {"name": "Voltage Battery", "type": "sensor", "unique_id": "vbat", "unit_of_measurement": UnitOfElectricPotential.VOLT, "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.VOLTAGE},
                     {"name": "State of Charge", "type": "sensor", "unique_id": "soc", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": PERCENTAGE, "device_class": SensorDeviceClass.BATTERY},
                     {"name": "State of Health", "type": "sensor", "unique_id": "soh", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": PERCENTAGE, "device_class": SensorDeviceClass.BATTERY},
                     {"name": "Internal Fault", "type": "sensor", "unique_id": "internalfault", "state_class": SensorStateClass.MEASUREMENT},
-                    {"name": "Power PV1", "type": "sensor", "unique_id": "ppv1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa"]},
-                    {"name": "Power PV2", "type": "sensor", "unique_id": "ppv2", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa"]},
-                    {"name": "Power PV3", "type": "sensor", "unique_id": "ppv3", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "allowed_firmware_codes": ["FAAB","FAAA", "FAAB", "EAAA", "EAAB"]},
+                    {"name": "Power PV1", "type": "sensor", "unique_id": "ppv1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa", "HAAA"]},
+                    {"name": "Power PV2", "type": "sensor", "unique_id": "ppv2", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa", "HAAA"]},
+                    {"name": "Power PV3", "type": "sensor", "unique_id": "ppv3", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "allowed_firmware_codes": ["FAAB","FAAA", "FAAB", "EAAA", "EAAB", "HAAA"]},
                     {"name": "Pv Power", "type": "sensor", "unique_id": "ppv1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "allowed_firmware_codes": ["BAAA", "BAAB"]},
                     {"name": "Power PV All", "type": "sensor", "unique_id": "Pall", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER},
                     {"name": "Power Charge", "type": "sensor", "unique_id": "pcharge", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER},
@@ -248,10 +270,10 @@ ENTITIES = {
                     {"name": "Apparent Power EPS", "type": "sensor", "unique_id": "seps", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfApparentPower.VOLT_AMPERE , "device_class": SensorDeviceClass.APPARENT_POWER},
                     {"name": "Power to Grid (live)", "type": "sensor", "unique_id": "ptogrid", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER},
                     {"name": "Power to User(live)", "type": "sensor", "unique_id": "ptouser", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER},
-                    {"name": "Energy PV1 Day", "type": "sensor", "unique_id": "epv1_day", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa"]},
+                    {"name": "Energy PV1 Day", "type": "sensor", "unique_id": "epv1_day", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa", "HAAA"]},
                     {"name": "PV Energy Day", "type": "sensor", "unique_id": "epv1_day", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_firmware_codes": ["BAAA", "BAAB"]},
-                    {"name": "Energy PV2 Day", "type": "sensor", "unique_id": "epv2_day", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa"]},
-                    {"name": "Energy PV3 Day", "type": "sensor", "unique_id": "epv3_day", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_firmware_codes": ["FAAB", "FAAA", "EAAA", "EAAB"]},
+                    {"name": "Energy PV2 Day", "type": "sensor", "unique_id": "epv2_day", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_firmware_codes": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa", "HAAA"]},
+                    {"name": "Energy PV3 Day", "type": "sensor", "unique_id": "epv3_day", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_firmware_codes": ["FAAB", "FAAA", "EAAA", "EAAB", "HAAA"]},
                     {"name": "Total PV Day", "type": "sensor", "unique_id": "epv_all", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY},
                     {"name": "Energy Inverter Day", "type": "sensor", "unique_id": "einv_day", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY},
                     {"name": "Energy Rectifier Day", "type": "sensor", "unique_id": "erec_day", "state_class": SensorStateClass.TOTAL_INCREASING,"unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY},
@@ -262,10 +284,10 @@ ENTITIES = {
                     {"name": "Energy to User Day", "type": "sensor", "unique_id": "etouser_day", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY},
                     {"name": "Voltage Bus 1", "type": "sensor", "unique_id": "vbus1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE},
                     {"name": "Voltage Bus 2", "type": "sensor", "unique_id": "vbus2", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE},
-                    {"name": "Energy PV1 All", "type": "sensor", "unique_id": "epv1_all", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_device_types": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa"]},
+                    {"name": "Energy PV1 All", "type": "sensor", "unique_id": "epv1_all", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_device_types": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa", "HAAA"]},
                     {"name": "PV Energy All", "type": "sensor", "unique_id": "epv1_all", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_device_types": ["BAAA", "BAAB"]},
-                    {"name": "Energy PV2 All", "type": "sensor", "unique_id": "epv2_all", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_device_types": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa"]},
-                    {"name": "Energy PV3 All", "type": "sensor", "unique_id": "epv3_all", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_device_types": ["FAAB", "FAAA", "EAAA", "EAAB"]},
+                    {"name": "Energy PV2 All", "type": "sensor", "unique_id": "epv2_all", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_device_types": ["AAAA", "AAAB", "FAAA", "FAAB", "EAAA", "EAAB", "ccaa", "HAAA"]},
+                    {"name": "Energy PV3 All", "type": "sensor", "unique_id": "epv3_all", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_device_types": ["FAAB", "FAAA", "EAAA", "EAAB", "HAAA"]},
                     {"name": "Energy Inverter All", "type": "sensor", "unique_id": "einv_all", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY},
                     {"name": "Energy Rectifier All", "type": "sensor", "unique_id": "erec_all", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY},
                     {"name": "Energy Charge All", "type": "sensor", "unique_id": "echg_all", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY},
@@ -275,6 +297,10 @@ ENTITIES = {
                     {"name": "Energy to User All", "type": "sensor", "unique_id": "etouser_all", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY},
                     {"name": "Fault Code", "type": "sensor", "unique_id": "FaultCode", "state_class": "text"},
                     {"name": "Warning Code", "type": "sensor", "unique_id": "WarningCode", "state_class": "text"},
+                    {"name": "Internal Temperature", "type": "sensor", "unique_id": "tinner", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE},
+                    {"name": "Radiator Temperature 1", "type": "sensor", "unique_id": "tradiator1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE},
+                    {"name": "Radiator Temperature 2", "type": "sensor", "unique_id": "tradiator2", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE, "allowed_device_types": ["FAAB", "FAAA", "EAAA", "EAAB", "HAAA"]},
+                    {"name": "Battery Temperature", "type": "sensor", "unique_id": "tbat", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE},
                     {"name": "Running Time", "type": "sensor", "unique_id": "RunningTime", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfTime.SECONDS, "device_class": SensorDeviceClass.DURATION},
                     {"name": "Auto Test Limit", "type": "sensor", "unique_id": "wAutoTestLimit", "state_class": SensorStateClass.MEASUREMENT},
                     {"name": "Auto Test Default Time", "type": "sensor", "unique_id": "uwAutoTestDefaultTime", "state_class": SensorStateClass.MEASUREMENT},
@@ -295,11 +321,17 @@ ENTITIES = {
                     {"name": "Battery Warning Code", "type": "sensor", "unique_id": "WarningCode_BMS", "state_class": "text"},
                     {"name": "Max Cell Voltage", "type": "sensor", "unique_id": "MaxCellVolt_BMS", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE},
                     {"name": "Min Cell Voltage", "type": "sensor", "unique_id": "MinCellVolt_BMS", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE},
+                    {"name": "Max Cell Temperature", "type": "sensor", "unique_id": "MaxCellTemp_BMS", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE},
+                    {"name": "Min Cell Temperature", "type": "sensor", "unique_id": "MinCellTemp_BMS", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE},
                     {"name": "Battery Cycle Count", "type": "sensor", "unique_id": "CycleCnt_BMS", "state_class": SensorStateClass.TOTAL},
                     {"name": "Inverter Battery Voltage Sample", "type": "sensor", "unique_id": "BatVoltSample_INV", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE},
-                    {"name": "On Grid Load Power", "type": "sensor", "unique_id": "OnGridLoadPower", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "allowed_device_types": ["FAAA", "FAAB"]},
-                    {"name": "Energy Of Generator Today", "type": "sensor", "unique_id": "Egen_day", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_device_types": ["FAAA", "FAAB"]},
-                    {"name": "Energy Of Generator All", "type": "sensor", "unique_id": "Egen_All", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_device_types": ["FAAA", "FAAB"]},
+                    {"name": "Radiator T1", "type": "sensor", "unique_id": "T1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE, "allowed_device_types": ["FAAB", "FAAA", "HAAA"]},
+                    {"name": "Radiator T2", "type": "sensor", "unique_id": "T2", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE, "allowed_device_types": ["FAAB", "FAAA", "HAAA"]},
+                    {"name": "Radiator T3", "type": "sensor", "unique_id": "T3", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE, "allowed_device_types": ["FAAB", "FAAA", "HAAA"]},
+                    {"name": "Radiator T4", "type": "sensor", "unique_id": "T4", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE, "allowed_device_types": ["FAAB", "FAAA", "HAAA"]},
+                    {"name": "On Grid Load Power", "type": "sensor", "unique_id": "OnGridLoadPower", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "allowed_device_types": ["FAAA", "FAAB", "HAAA"]},
+                    {"name": "Energy Of Generator Today", "type": "sensor", "unique_id": "Egen_day", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_device_types": ["FAAA", "FAAB", "HAAA"]},
+                    {"name": "Energy Of Generator All", "type": "sensor", "unique_id": "Egen_All", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "allowed_device_types": ["FAAA", "FAAB", "HAAA"]},
 
                     {"name": "Master or Slave Device", "type": "sensor", "unique_id": "MasterOrSlave", "state_class": "text"},
                 ],
@@ -358,6 +390,15 @@ ENTITIES = {
                     {"name": "Radiator T3", "type": "sensor", "unique_id": "T3", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE, "allowed_firmware_codes": ["FAAB", "FAAA"]},
                     {"name": "Radiator T4", "type": "sensor", "unique_id": "T4", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE, "allowed_firmware_codes": ["FAAB", "FAAA"]},
                 ]
+                ,
+                "combined": [
+                    {"name": "Combined PV Power Total", "type": "sensor", "unique_id": "combined_pv_power", "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.POWER, "unit_of_measurement": UnitOfPower.WATT, "calculation": {"operation": "addition", "source_entity": "pall"}},
+                    {"name": "Combined Discharge", "type": "sensor", "unique_id": "combined_discharge", "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.POWER, "unit_of_measurement": UnitOfPower.WATT, "calculation": {"operation": "addition", "source_entity": "pdischarge"}},
+                    {"name": "Combined Charge", "type": "sensor", "unique_id": "combined_charge", "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.POWER, "unit_of_measurement": UnitOfPower.WATT, "calculation": {"operation": "addition", "source_entity": "pcharge"}},
+                    {"name": "Combined SOC", "type": "sensor", "unique_id": "combined_soc", "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.BATTERY, "unit_of_measurement": PERCENTAGE, "calculation": {"operation": "average", "source_entity": "soc"}},
+                    {"name": "Combined SOH", "type": "sensor", "unique_id": "combined_soh", "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.BATTERY, "unit_of_measurement": PERCENTAGE, "calculation": {"operation": "average", "source_entity": "soh"}},
+                    {"name": "Combined Power EPS", "type": "sensor", "unique_id": "combined_eps", "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.POWER, "unit_of_measurement": UnitOfPower.WATT, "calculation": {"operation": "addition", "source_entity": "peps"}}
+                ]
             },
             "switch": {
                 "holdbank1": [
@@ -382,7 +423,13 @@ ENTITIES = {
                 "holdbank4": [
                     {"name": "Half hour charge Switch", "type": "switch", "unique_id": "HalfHourACChrStartEn"},
                 ],
-
+                "combined": [
+                    {"name": "Combined AC Charge", "type": "switch", "unique_id": "combined_accharge", "source_entity": "ACCharge"},
+                    {"name": "Combined EPS", "type": "switch", "unique_id": "combined_eps", "source_entity": "EPS"},
+                    {"name": "Combined Force Discharge", "type": "switch", "unique_id": "combined_forceddischg", "source_entity": "ForcedDischg"},
+                    {"name": "Combined Charge Priority", "type": "switch", "unique_id": "combined_forcedchg", "source_entity": "ForcedChg"},
+                    {"name": "Combined Export Allowed", "type": "switch", "unique_id": "combined_feedingrid", "source_entity": "FeedInGrid"}
+                ]
             },
             "binary_sensor": {  # This should be the only place defining these sensors
                 "battery": [  # Only one bank for battery sensors
@@ -422,7 +469,11 @@ ENTITIES = {
                 "holdbank4": [
                     {"name": "Off-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "SOCLowLimitForESPSDischg", "unit": "PERCENT", "min": 0, "max": 90, "mode": "slider"},
                 ],
-
+                "combined": [
+                    {"name": "Combined AC Charge Rate", "type": "number", "unique_id": "combined_acchgpowercmd", "source_entity": "ACChgPowerCMD", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider"},
+                    {"name": "Combined AC Charge SOC Limit", "type": "number", "unique_id": "combined_acchgsoclimit", "source_entity": "ACChgSOCLimit", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider", "class": "BATTERY"},
+                    {"name": "Combined Discharge Power Rate", "type": "number", "unique_id": "combined_dischgpowerpercentcmd", "source_entity": "DischgPowerPercentCMD", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider"}
+                ]
             },
             "select": {
                 "holdbank3": [
@@ -525,20 +576,18 @@ ENTITIES = {
             "update": {
                  "system": [
                      {
-                         "name": "Dongle Firmware",
-                         "type": "update",
+                         "name": "Firmware Update",
+                         "type": "update", 
                          "unique_id": "firmware_update",
                          "version_key": "SW_VERSION",
-                         "latest_version_key": "latestFwVersion",
-                         "update_command": "update_firmware"
+                         "update_command": "updatedongle"
                      },
                      {
-                         "name": "Dongle UI",
+                         "name": "UI Update",
                          "type": "update",
                          "unique_id": "ui_update",
                          "version_key": "UI_VERSION",
-                         "latest_version_key": "latestUiVersion",
-                         "update_command": "update_ui"
+                         "update_command": "updateui"
                      }
                  ]
              }

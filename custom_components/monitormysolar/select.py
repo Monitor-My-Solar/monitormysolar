@@ -13,35 +13,41 @@ from .entity import MonitorMySolarEntity
 async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities):
     coordinator = entry.runtime_data
     inverter_brand = coordinator.inverter_brand
+    dongle_ids = coordinator._dongle_ids
+    
     brand_entities = ENTITIES.get(inverter_brand, {})
     select_config = brand_entities.get("select", {})
 
     entities = []
-    for bank_name, selects in select_config.items():
-        for select in selects:
-            try:
-                if bank_name == "holdbank6":
-                    entities.append(QuickChargeDurationSelect(select, hass, entry, bank_name))
-                else:
-                    entities.append(InverterSelect(select, hass, entry))
-            except Exception as e:
-                LOGGER.error(f"Error setting up select {select}: {e}")
+    
+    # Loop through each dongle ID
+    for dongle_id in dongle_ids:
+        # Process selects for this dongle
+        for bank_name, selects in select_config.items():
+            for select in selects:
+                try:
+                    if bank_name == "holdbank6":
+                        entities.append(QuickChargeDurationSelect(select, hass, entry, bank_name, dongle_id))
+                    else:
+                        entities.append(InverterSelect(select, hass, entry, dongle_id))
+                except Exception as e:
+                    LOGGER.error(f"Error setting up select {select} for dongle {dongle_id}: {e}")
 
     async_add_entities(entities, True)
 
 class InverterSelect(MonitorMySolarEntity, SelectEntity):
-    def __init__(self, entity_info, hass, entry: MonitorMySolarEntry):
+    def __init__(self, entity_info, hass, entry: MonitorMySolarEntry, dongle_id):
         """Initialize the select entity."""
-        LOGGER.debug(f"Initializing select with info: {entity_info}")
+        LOGGER.debug(f"Initializing select with info: {entity_info} for dongle {dongle_id}")
         self.coordinator = entry.runtime_data
         self.entity_info = entity_info
         self._name = entity_info["name"]
-        self._unique_id = f"{entry.entry_id}_{entity_info['unique_id']}".lower()
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{entity_info['unique_id']}".lower()
         self._state = None
-        self._dongle_id = self.coordinator.dongle_id
-        self._device_id = self.coordinator.dongle_id
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
-        self.entity_id = f"select.{self._device_id}_{self._entity_type.lower()}"
+        self.entity_id = f"select.{self._formatted_dongle_id}_{self._entity_type.lower()}"
         self.hass = hass
         self._options = entity_info["options"]
         self._manufacturer = entry.data.get("inverter_brand")
@@ -50,7 +56,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
 
     @property
     def name(self):
-        return self._name
+        return f"{self._name} ({self._dongle_id})"
 
     @property
     def unique_id(self):
@@ -66,11 +72,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     async def async_select_option(self, option):
         """Update the select option."""
@@ -83,7 +85,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         bit_value = self._options.index(option)
         LOGGER.info(f"Setting Select value for {self.entity_id} to {option}")
         await self.coordinator.mqtt_handler.send_update(
-            self._dongle_id.replace("_", "-"),
+            self._dongle_id,
             self.entity_info["unique_id"],
             bit_value,
             self,
@@ -113,22 +115,31 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
 
 
 class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
-    def __init__(self, entity_info, hass, entry, bank_name):
+    def __init__(self, entity_info, hass, entry, bank_name, dongle_id):
         """Initialize the select entity."""
         self.coordinator = entry.runtime_data
         self.entity_info = entity_info
         self._attr_name = entity_info["name"]
-        self._attr_unique_id = f"{entry.entry_id}_{entity_info['unique_id']}".lower()
+        self._attr_unique_id = f"{entry.entry_id}_{dongle_id}_{entity_info['unique_id']}".lower()
         self._attr_options = entity_info["options"]
         self._attr_current_option = self._attr_options[0]  # Default to first option
-        self._dongle_id = self.coordinator.dongle_id
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
-        self.entity_id = f"select.{self._dongle_id}_{self._entity_type.lower()}"
+        self.entity_id = f"select.{self._formatted_dongle_id}_{self._entity_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._additional_payload = entity_info.get("additional_payload")
 
         super().__init__(self.coordinator)
+        
+    @property
+    def name(self):
+        return f"{self._attr_name} ({self._dongle_id})"
+
+    @property
+    def device_info(self):
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
@@ -148,7 +159,7 @@ class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
 
             # Send the multiple updates via MQTT
             await mqtt_handler.send_multiple_updates(
-                self._dongle_id.replace("_", "-"),
+                self._dongle_id,
                 payload_dict,
                 self,
             )

@@ -15,31 +15,35 @@ from .entity import MonitorMySolarEntity
 async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities):
     coordinator = entry.runtime_data
     inverter_brand = coordinator.inverter_brand
+    dongle_ids = coordinator._dongle_ids
+    
     brand_entities = ENTITIES.get(inverter_brand, {})
 
     entities = []
 
-    # Setup Time entities
-    time_config = brand_entities.get("time", {})
-    for bank_name, time_entities in time_config.items():
-        for time_entity in time_entities:
-            entities.append(InverterTime(time_entity, hass, entry))
+    # Loop through each dongle ID
+    for dongle_id in dongle_ids:
+        # Setup Time entities
+        time_config = brand_entities.get("time", {})
+        for bank_name, time_entities in time_config.items():
+            for time_entity in time_entities:
+                entities.append(InverterTime(time_entity, hass, entry, dongle_id))
 
     async_add_entities(entities, True)
 
 class InverterTime(MonitorMySolarEntity, TimeEntity):
-    def __init__(self, entity_info, hass, entry: MonitorMySolarEntry):
+    def __init__(self, entity_info, hass, entry: MonitorMySolarEntry, dongle_id):
         """Initialize the Time entity."""
-        LOGGER.debug(f"Initializing Time entity with info: {entity_info}")
+        LOGGER.debug(f"Initializing Time entity with info: {entity_info} for dongle {dongle_id}")
         self.coordinator = entry.runtime_data
         self.entity_info = entity_info
         self._name = entity_info["name"]
-        self._unique_id = f"{entry.entry_id}_{entity_info['unique_id']}".lower()
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{entity_info['unique_id']}".lower()
         self._state = None
-        self._dongle_id = self.coordinator.dongle_id
-        self._device_id = self.coordinator.dongle_id
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
-        self.entity_id = f"time.{self._device_id}_{self._entity_type.lower()}"
+        self.entity_id = f"time.{self._formatted_dongle_id}_{self._entity_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._last_mqtt_update = None
@@ -49,7 +53,7 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
 
     @property
     def name(self):
-        return self._name
+        return f"{self._name} ({self._dongle_id})"
 
     @property
     def unique_id(self):
@@ -61,11 +65,7 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     async def async_set_value(self, value):
         """Handle user input and send to MQTT."""
@@ -89,7 +89,7 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
             LOGGER.info(f"Setting time value for {self.entity_id} to {value}")
             self.update_state(value)
             await self.coordinator.mqtt_handler.send_update(
-                self._dongle_id.replace("_", "-"),
+                self._dongle_id,
                 self.entity_info["unique_id"],
                 value.isoformat(),
                 self,
