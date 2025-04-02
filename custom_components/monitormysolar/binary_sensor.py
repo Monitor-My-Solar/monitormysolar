@@ -76,11 +76,7 @@ class BatteryStatusBinarySensor(MonitorMySolarEntity, BinarySensorEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     @callback
     def _handle_coordinator_update(self) -> None:

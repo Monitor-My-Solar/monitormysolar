@@ -16,6 +16,8 @@ class MQTTHandler:
         self._lock = asyncio.Lock()  # A lock to ensure only one command is processed at a time
         self.current_entity = None  # Store the current entity
         self._unsubscribe_response = None
+        self._pending_dongles = set()  # Track which dongles we're waiting for responses from
+        self._dongle_responses = {}  # Store responses from each dongle
 
     async def send_update(self, dongle_id, unique_id, value, entity):
         now = datetime.now()
@@ -90,7 +92,153 @@ class MQTTHandler:
                 self._unsubscribe_response()
                 self._unsubscribe_response = None
 
-
+    async def send_update_to_multiple_dongles(self, dongle_ids, unique_id, value, entity):
+        """Send the same update to multiple dongles and wait for all responses."""
+        now = datetime.now()
+        LOGGER.info(f"Sending update to multiple dongles for {entity.entity_id} with value {value}")
+        
+        # Rate limiting logic
+        if self.last_time_update and (now - self.last_time_update).total_seconds() < 1:
+            LOGGER.info(f"Rate limit hit for {entity.entity_id}. Dropping update.")
+            return False
+            
+        async with self._lock:
+            if self._processing:
+                LOGGER.info(f"Already processing an update for {entity.entity_id}.")
+                return False
+                
+            self._processing = True
+            self.last_time_update = now
+            self.current_entity = entity
+            
+            try:
+                self._pending_dongles = set(dongle_ids)
+                self._dongle_responses = {}
+                success = True
+                
+                # Set up subscriptions for all dongles first
+                unsubscribe_functions = []
+                for dongle_id in dongle_ids:
+                    modified_dongle_id = dongle_id.replace("_", "-").split("-")
+                    modified_dongle_id[1] = modified_dongle_id[1].upper()
+                    modified_dongle_id = "-".join(modified_dongle_id)
+                    
+                    response_topic = f"{modified_dongle_id}/response"
+                    unsubscribe = await mqtt.async_subscribe(
+                        self.hass,
+                        response_topic,
+                        self.response_received_multi_dongle
+                    )
+                    unsubscribe_functions.append(unsubscribe)
+                
+                # Now send updates to all dongles
+                for dongle_id in dongle_ids:
+                    modified_dongle_id = dongle_id.replace("_", "-").split("-")
+                    modified_dongle_id[1] = modified_dongle_id[1].upper()
+                    modified_dongle_id = "-".join(modified_dongle_id)
+                    
+                    topic = f"{modified_dongle_id}/update"
+                    payload = json.dumps({
+                        "setting": unique_id,
+                        "value": value,
+                        "from": "homeassistant"
+                    })
+                    
+                    LOGGER.info(f"Sending MQTT update to dongle {dongle_id}: {topic} - {payload}")
+                    await mqtt.async_publish(self.hass, topic, payload)
+                
+                # Wait for all responses or timeout
+                try:
+                    # We'll wait for all dongles to respond or for a timeout
+                    await asyncio.wait_for(self._wait_for_all_responses(), timeout=15)
+                    LOGGER.info(f"Received responses from all dongles for {entity.entity_id}")
+                    
+                    # Check if any dongle reported failure
+                    for dongle_id, status in self._dongle_responses.items():
+                        if status != 'success':
+                            LOGGER.error(f"Dongle {dongle_id} reported failure for {entity.entity_id}")
+                            success = False
+                    
+                except asyncio.TimeoutError:
+                    LOGGER.error(f"Timeout waiting for responses from dongles: {self._pending_dongles}")
+                    success = False
+                
+                # If any dongle failed, revert state
+                if not success:
+                    self.hass.loop.call_soon_threadsafe(entity.revert_state)
+                
+                return success
+            finally:
+                # Clean up
+                for unsubscribe in unsubscribe_functions:
+                    unsubscribe()
+                self._processing = False
+                self._pending_dongles = set()
+                self._dongle_responses = {}
+                self.current_entity = None
+    
+    async def _wait_for_all_responses(self):
+        """Wait until all pending dongles have responded."""
+        while self._pending_dongles:
+            # Create event that will be set when a dongle response is received
+            event = asyncio.Event()
+            
+            # Store the event to be triggered when a response arrives
+            self._response_event = event
+            
+            # Wait for a response
+            await event.wait()
+            
+            # Reset the event for the next iteration
+            self._response_event = None
+    
+    async def response_received_multi_dongle(self, msg):
+        """Handle response from a dongle in a multi-dongle update scenario."""
+        entity = self.current_entity
+        if not entity:
+            return
+            
+        LOGGER.info(f"Received multi-dongle response for topic {msg.topic}: {msg.payload}")
+        
+        # Extract dongle ID from the topic
+        # Topic format is "{modified_dongle_id}/response"
+        topic_parts = msg.topic.split('/')
+        if len(topic_parts) < 2:
+            return
+        
+        modified_dongle_id = topic_parts[0]
+        
+        # Convert modified_dongle_id back to original format
+        parts = modified_dongle_id.split('-')
+        if len(parts) >= 2:
+            parts[1] = parts[1].lower()
+        dongle_id = "_".join(parts)
+        
+        try:
+            response = json.loads(msg.payload)
+            status = response.get('status')
+            
+            # Store the response status for this dongle
+            self._dongle_responses[dongle_id] = status
+            
+            # Remove dongle from pending set
+            if dongle_id in self._pending_dongles:
+                self._pending_dongles.remove(dongle_id)
+                
+            # If this was the last pending dongle, signal success
+            if not self._pending_dongles and self._response_event:
+                self._response_event.set()
+                
+        except json.JSONDecodeError:
+            LOGGER.error(f"Failed to decode JSON response for dongle {dongle_id}: {msg.payload}")
+            # Count this as a response, but with failure
+            self._dongle_responses[dongle_id] = 'error'
+            
+            if dongle_id in self._pending_dongles:
+                self._pending_dongles.remove(dongle_id)
+                
+            if not self._pending_dongles and self._response_event:
+                self._response_event.set()
 
     async def response_received(self, msg):
         """Handle the response received message."""
@@ -118,9 +266,6 @@ class MQTTHandler:
                 self._unsubscribe_response()
                 self._unsubscribe_response = None
             self.response_received_event.set()
-
-
-
 
     async def send_multiple_updates(self, dongle_id, payload_dict, entity):
         """Handle multiple settings updates."""

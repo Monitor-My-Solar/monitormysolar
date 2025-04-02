@@ -1,0 +1,52 @@
+name: Home Assistant Feature Request
+description: Suggest a new feature or enhancement for the Home Assistant integration.
+title: "[HA Feature] Brief description of the feature"
+labels: ["enhancement", "home-assistant"]
+
+body:
+  - type: input
+    id: feature_name
+    attributes:
+      label: "Feature Name"
+      description: "Give a brief name for the feature you’re requesting."
+      placeholder: "Enter feature name here"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: entity_feature
+    attributes:
+      label: "Is this an Entity?"
+      options:
+        - "Yes"
+        - "No"
+      default: 1  # Sets "No" as the default selection
+    validations:
+      required: true
+
+  - type: textarea
+    id: feature_description
+    attributes:
+      label: "Feature Description"
+      description: "Provide a detailed description of the feature and how it would improve the Home Assistant integration."
+      placeholder: "Describe the feature in detail"
+    validations:
+      required: true
+
+  - type: textarea
+    id: ha_version
+    attributes:
+      label: "Home Assistant Version"
+      description: "Specify the current version of Home Assistant where this feature would be applied."
+      placeholder: "Enter Home Assistant version"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: "Additional Context"
+      description: "Add any extra information or screenshots relevant to the feature request."
+      placeholder: "Add any other details here"
+    validations:
+      required: false

@@ -9,10 +9,23 @@
                     "mqtt_port": "MQTT Port",
                     "mqtt_username": "MQTT Username",
                     "mqtt_password": "MQTT Password",
-                    "dongle_id": "Dongle ID"
+                    "dongle_id": "Dongle ID",
+                    "parallel_inverters": "Setup Multiple Inverters in Parallel",
+                    "dongle_id_2": "Additional Dongle ID #2 (optional)",
+                    "dongle_id_3": "Additional Dongle ID #3 (optional)",
+                    "dongle_id_4": "Additional Dongle ID #4 (optional)"
                 },
                 "description": "Please enter the following information to set up your inverter.",
                 "title": "Inverter MQTT Configuration"
+            },
+            "parallel": {
+                "data": {
+                    "dongle_id_2": "Dongle ID #2",
+                    "dongle_id_3": "Dongle ID #3",
+                    "dongle_id_4": "Dongle ID #4"
+                },
+                "description": "Enter the additional dongle IDs for your parallel inverters.",
+                "title": "Multiple Inverter Configuration"
             }
         },
         "error": {
@@ -29,10 +42,23 @@
                     "mqtt_port": "Puerto MQTT",
                     "mqtt_username": "Nombre de usuario MQTT",
                     "mqtt_password": "Contraseña MQTT",
-                    "dongle_id": "ID del Dongle"
+                    "dongle_id": "ID del Dongle",
+                    "parallel_inverters": "Configurar Múltiples Inversores en Paralelo",
+                    "dongle_id_2": "ID de Dongle Adicional #2 (opcional)",
+                    "dongle_id_3": "ID de Dongle Adicional #3 (opcional)",
+                    "dongle_id_4": "ID de Dongle Adicional #4 (opcional)"
                 },
                 "description": "Por favor, ingrese la siguiente información para configurar su inversor.",
                 "title": "Configuración de Inverter MQTT"
+            },
+            "parallel": {
+                "data": {
+                    "dongle_id_2": "ID de Dongle #2",
+                    "dongle_id_3": "ID de Dongle #3",
+                    "dongle_id_4": "ID de Dongle #4"
+                },
+                "description": "Ingrese los IDs de dongle adicionales para sus inversores en paralelo.",
+                "title": "Configuración de Múltiples Inversores"
             }
         },
         "error": {

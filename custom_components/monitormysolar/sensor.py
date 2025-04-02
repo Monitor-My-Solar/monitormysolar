@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 import json
-from typing import cast
+from typing import cast, List
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -37,72 +37,93 @@ from .entity import MonitorMySolarEntity
 async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities):
     coordinator = entry.runtime_data
     inverter_brand = coordinator.inverter_brand
-    firmware_code = coordinator.firmware_code
-
+    dongle_ids = coordinator._dongle_ids
+    
     brand_entities = ENTITIES.get(inverter_brand, {})
     sensors_config = brand_entities.get("sensor", {})
 
     entities = []
 
-    # Loop through the sensors in the configuration
-    for bank_name, sensors in sensors_config.items():
-        for sensor in sensors:
-            allowed_firmware_codes = sensor.get("allowed_firmware_codes", [])
-            if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                try:
-                    # Check if the sensor is of type 'status' to create the StatusSensor class
-                    if bank_name == "status":
-                        entities.append(
-                            StatusSensor(sensor, hass, entry, bank_name),
-                        )
-                    elif bank_name == "powerflow":
-                        entities.append(
-                            PowerFlowSensor(sensor, hass, entry, bank_name)
-                        )
-                    elif bank_name == "timestamp":
-                        entities.append(
-                            BankUpdateSensor(sensor, hass, entry, bank_name)
-                        )
-                    elif bank_name == "warning":
-                        entities.append(
-                            FaultWarningSensor(sensor, hass, entry, bank_name)
-                        )
-                    elif bank_name == "fault":
-                        entities.append(
-                            FaultWarningSensor(sensor, hass, entry, bank_name)
-                        )
-                    elif bank_name == "calculated":
-                        entities.append(
-                            CalculatedSensor(sensor, hass, entry, bank_name)
-                        )
-                    elif bank_name == "temperature":
-                        entities.append(
-                            TemperatureSensor(sensor, hass, entry, bank_name)
-                        )
-                    else:
-                        entities.append(
-                            InverterSensor(sensor, hass, entry, bank_name)
-                        )
-                except Exception as e:
-                    LOGGER.error(f"Error setting up sensor {sensor}: {e}")
+    # Loop through each dongle ID
+    for dongle_id in dongle_ids:
+        firmware_code = coordinator.get_firmware_code(dongle_id)
+        formatted_dongle_id = coordinator.get_formatted_dongle_id(dongle_id)
+        
+        # Loop through the sensors in the configuration for this dongle
+        for bank_name, sensors in sensors_config.items():
+            # Skip combined sensors for individual dongles
+            if bank_name == "combined":
+                continue
+                
+            for sensor in sensors:
+                allowed_firmware_codes = sensor.get("allowed_firmware_codes", [])
+                if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                    try:
+                        # Check if the sensor is of type 'status' to create the StatusSensor class
+                        if bank_name == "status":
+                            entities.append(
+                                StatusSensor(sensor, hass, entry, bank_name, dongle_id),
+                            )
+                        elif bank_name == "powerflow":
+                            entities.append(
+                                PowerFlowSensor(sensor, hass, entry, bank_name, dongle_id)
+                            )
+                        elif bank_name == "timestamp":
+                            entities.append(
+                                BankUpdateSensor(sensor, hass, entry, bank_name, dongle_id)
+                            )
+                        elif bank_name == "warning":
+                            entities.append(
+                                FaultWarningSensor(sensor, hass, entry, bank_name, dongle_id)
+                            )
+                        elif bank_name == "fault":
+                            entities.append(
+                                FaultWarningSensor(sensor, hass, entry, bank_name, dongle_id)
+                            )
+                        elif bank_name == "calculated":
+                            entities.append(
+                                CalculatedSensor(sensor, hass, entry, bank_name, dongle_id)
+                            )
+                        elif bank_name == "temperature":
+                            entities.append(
+                                TemperatureSensor(sensor, hass, entry, bank_name, dongle_id)
+                            )
+                        else:
+                            entities.append(
+                                InverterSensor(sensor, hass, entry, bank_name, dongle_id)
+                            )
+                    except Exception as e:
+                        LOGGER.error(f"Error setting up sensor {sensor} for dongle {dongle_id}: {e}")
+
+    # Create combined parallel sensors if we have multiple dongles
+    if len(dongle_ids) > 1 and "combined" in sensors_config:
+        LOGGER.info(f"Creating combined sensors for {len(dongle_ids)} dongles")
+        combined_sensors = sensors_config.get("combined", [])
+        for sensor in combined_sensors:
+            try:
+                entities.append(
+                    CombinedParallelSensor(sensor, hass, entry, dongle_ids)
+                )
+            except Exception as e:
+                LOGGER.error(f"Error setting up combined sensor {sensor}: {e}")
 
     async_add_entities(entities)
 
 
 class InverterSensor(MonitorMySolarEntity, SensorEntity):
-    def __init__(self, sensor_info, hass, entry, bank_name):
+    def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
         """Initialize the sensor."""
-        LOGGER.debug(f"Initializing sensor with info: {sensor_info}")
+        LOGGER.debug(f"Initializing sensor with info: {sensor_info} for dongle {dongle_id}")
         self.coordinator = entry.runtime_data
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
-        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
         self._state = None
-        self._dongle_id = self.coordinator.dongle_id
-        self._device_id = self.coordinator.dongle_id
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id: str = f"sensor.{self._device_id}_{self._sensor_type.lower()}"
+        self.entity_id: str = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         LOGGER.debug(f"Initialized sensor {self.entity_id}")
@@ -111,7 +132,7 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def name(self):
-        return self._name
+        return f"{self._name} ({self._dongle_id})"
 
     @property
     def unique_id(self):
@@ -142,11 +163,7 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -162,6 +179,11 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
                     hours, remainder = divmod(seconds, 3600)
                     minutes, seconds = divmod(remainder, 60)
                     self._state = f"{hours:02}:{minutes:02}:{seconds:02}"
+                # Convert Wh to kWh for energy consumption sensors
+                elif self._sensor_type in ["HourlyConsumption", "DailyConsumption"] and isinstance(value, (float, int)):
+                    # Convert from Wh to kWh by dividing by 1000
+                    self._state = round(value / 1000, 3)
+                    LOGGER.debug(f"Converted {self._sensor_type} from {value}Wh to {self._state}kWh")
                 else:
                     self._state = (
                         round(value, 2) if isinstance(value, (float, int)) else value
@@ -169,23 +191,23 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
                 self.async_write_ha_state()
         else:
             LOGGER.warning(f"entity {self.entity_id} key not found")
-        
+
 
 
 class StatusSensor(MonitorMySolarEntity, SensorEntity):
-    def __init__(self, sensor_info, hass, entry, bank_name):
+    def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
         """Initialize the sensor."""
-        LOGGER.debug(f"Initializing sensor with info: {sensor_info}")
+        LOGGER.debug(f"Initializing sensor with info: {sensor_info} for dongle {dongle_id}")
         self.coordinator = entry.runtime_data
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
-        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
         self._state = None
-        self._dongle_id = self.coordinator.dongle_id
-        self._device_id = self.coordinator.dongle_id
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"sensor.{self._device_id}_{self._sensor_type.lower()}"
+        self.entity_id = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._expected_attributes = sensor_info.get("attributes", [])
@@ -197,7 +219,7 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def name(self):
-        return self._name
+        return f"{self._name} ({self._dongle_id})"
 
     @property
     def unique_id(self):
@@ -224,11 +246,7 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -238,28 +256,28 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
             if isinstance(value, dict):
                 # Extract the 'uptime' for the sensor's state
                 self._state = value.get("uptime")
-                LOGGER.debug(f'State updated to: {self._state}')
+                #LOGGER.debug(f'State updated to: {self._state}')
 
                 # Update the sensor's attributes based on the expected attributes list
                 for attr in self._expected_attributes:
                     self._attributes[attr] = value.get(attr, "unknown")
 
-                LOGGER.debug(f'Attributes updated to: {self._attributes}')
+                #LOGGER.debug(f'Attributes updated to: {self._attributes}')
 
                 self.async_write_ha_state()
 
 class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
-    def __init__(self, sensor_info, hass, entry, bank_name):
+    def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
         """Initialize the Power Flow sensor."""
         self.coordinator = entry.runtime_data
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
-        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
         self._state = None
-        self._dongle_id = self.coordinator.dongle_id
-        self._device_id = self.coordinator.dongle_id
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
-        self.entity_id = f"sensor.{self._device_id}_{self._sensor_type.lower()}"
+        self.entity_id = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._attribute1 = sensor_info.get("attribute1")
@@ -271,7 +289,7 @@ class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def name(self):
-        return self._name
+        return f"{self._name} ({self._dongle_id})"
 
     @property
     def unique_id(self):
@@ -303,17 +321,13 @@ class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        attr1_entity_id = f"sensor.{self.coordinator.dongle_id}_{self._attribute1.lower()}"
-        attr2_entity_id = f"sensor.{self.coordinator.dongle_id}_{self._attribute2.lower()}"
+        attr1_entity_id = f"sensor.{self._formatted_dongle_id}_{self._attribute1.lower()}"
+        attr2_entity_id = f"sensor.{self._formatted_dongle_id}_{self._attribute2.lower()}"
         if attr1_entity_id in self.coordinator.entities:
             attr1_value = self.coordinator.entities[attr1_entity_id]
             if attr1_value is not None:
@@ -380,11 +394,7 @@ class CombinedSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -403,19 +413,22 @@ class CombinedSensor(MonitorMySolarEntity, SensorEntity):
                     self.async_write_ha_state()
 
 class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
-    def __init__(self, sensor_info, hass, entry, bank_name):
+    def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
         """Initialize the Bank Update sensor."""
         self.coordinator = entry.runtime_data
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
-        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
         self._state = None
-        self._dongle_id = self.coordinator.dongle_id
-        self._device_id = self.coordinator.dongle_id
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
-        self.entity_id = f"sensor.{self._device_id}_{self._sensor_type.lower()}"
+        self.entity_id = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
+        
+        # Set optional entity registry enabled default attribute
+        self._attr_entity_registry_enabled_default = sensor_info.get("entity_registry_enabled_default", True)
 
         # Initialize attributes with None values
         self._attributes = {attr: None for attr in sensor_info.get("attributes", [])}
@@ -424,7 +437,7 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def name(self):
-        return self._name
+        return f"{self._name} ({self._dongle_id})"
 
     @property
     def unique_id(self):
@@ -445,17 +458,23 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     @callback
     def _handle_bank_update(self, event):
         """Handle bank update events."""
+        # Skip processing if entity is disabled
+        if not self.enabled:
+            return
+            
         bank_name = event.data.get("bank_name")
-        LOGGER.debug(f"Update Event Called for: {bank_name}")
+        event_dongle_id = event.data.get("dongle_id")
+        
+        # Only process events for our specific dongle
+        if event_dongle_id != self._dongle_id:
+            return
+            
+        LOGGER.debug(f"Update Event Called for: {bank_name} on dongle {event_dongle_id}")
         if bank_name:
             current_time = datetime.now().isoformat()
             attr_name = f"{bank_name}_last_update"
@@ -474,15 +493,15 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
         )
 
 class FaultWarningSensor(MonitorMySolarEntity, SensorEntity):
-    def __init__(self, sensor_info, hass, entry, bank_name):
+    def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
         """Initialize the fault/warning sensor."""
         self.coordinator = entry.runtime_data
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
         self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
         self._state = None
-        self._dongle_id = self.coordinator.dongle_id
-        self._device_id = self.coordinator.dongle_id
+        self._dongle_id = dongle_id
+        self._device_id = dongle_id
         self._sensor_type = sensor_info["unique_id"]
         self.entity_id = f"sensor.{self._device_id}_{self._sensor_type.lower()}"
         self.hass = hass
@@ -520,23 +539,19 @@ class FaultWarningSensor(MonitorMySolarEntity, SensorEntity):
         return attrs
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
-   
+        return self.get_device_info(self._dongle_id, self._manufacturer)
+
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
         if self.entity_id in self.coordinator.entities:
             value_data = self.coordinator.entities[self.entity_id]
-            LOGGER.debug(f"Value data: {value_data}")
+            #LOGGER.debug(f"Value data: {value_data}")
             if isinstance(value_data, dict):
                 self._value = value_data.get("value", 0)
                 description = value_data.get("description")
-                LOGGER.debug(f"Description: {description}")
+                #LOGGER.debug(f"Description: {description}")
 
                 if description:  # New fault/warning
                     self._state = description
@@ -566,7 +581,7 @@ class FaultWarningSensor(MonitorMySolarEntity, SensorEntity):
             self.async_write_ha_state()
 
 class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
-    def __init__(self, sensor_info, hass, entry, bank_name):
+    def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
         """Initialize the calculated sensor."""
         self.coordinator = entry.runtime_data
         self.sensor_info = sensor_info
@@ -576,8 +591,8 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
         self._state = None
 
         # Store the formatted IDs
-        self._dongle_id = self.coordinator.dongle_id  # For device_info
-        self._formatted_id = self.coordinator.dongle_id.replace(":", "_")   # For sensor entity matching
+        self._dongle_id = dongle_id  # For device_info
+        self._formatted_id = dongle_id.replace(":", "_")   # For sensor entity matching
 
         self._sensor_type = sensor_info["unique_id"]
         self.entity_id = f"sensor.{self._formatted_id}_{self._sensor_type.lower()}"
@@ -619,11 +634,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     def _calculate_state(self):
         """Calculate the state based on the operation and sensor values."""
@@ -686,6 +697,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
             f"sensor.{self._formatted_id}_{sensor.lower()}": sensor
             for sensor in self._source_sensors
         }
+
         for entity_id in source_entity_ids.keys():
             # Check if this event matches one of our source sensors
              if entity_id in self.coordinator.entities:
@@ -694,7 +706,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
                     sensor_name = source_entity_ids[entity_id]
                     self._sensor_values[sensor_name] = float(value)
 
-                    # LOGGER.warning(
+                    # LOGGER.debug(
                     #     f"Updated {sensor_name} value to {value} for calculated sensor {self.entity_id}"
                     # )
 
@@ -702,7 +714,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
                     self.async_write_ha_state()
 
 class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
-    def __init__(self, sensor_info, hass, entry, bank_name):
+    def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
         """Initialize the temperature sensor."""
         LOGGER.debug(f"Initializing sensor with info: {sensor_info}")
         self.coordinator = entry.runtime_data
@@ -710,13 +722,15 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
         self._name = sensor_info["name"]
         self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
         self._state = None
-        self._dongle_id = self.coordinator.dongle_id
-        self._device_id = self.coordinator.dongle_id
+        self._dongle_id = dongle_id
+        self._device_id = dongle_id
         self._sensor_type = sensor_info["unique_id"]
         self._bank_name = bank_name
         self.entity_id = f"sensor.{self._device_id}_{self._sensor_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
+
+       
 
         super().__init__(self.coordinator)
 
@@ -756,11 +770,7 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -787,3 +797,142 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
                         )
                 LOGGER.debug(f"Sensor {self.entity_id} state updated to {self._state}")
                 self.async_write_ha_state()
+
+class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
+    """Sensor that combines values from multiple dongles."""
+    
+    def __init__(self, sensor_info, hass, entry, dongle_ids):
+        """Initialize the combined parallel sensor."""
+        self.coordinator = entry.runtime_data
+        self.sensor_info = sensor_info
+        self._name = sensor_info["name"]
+        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        self._state = None
+        self._dongle_ids = dongle_ids
+        self._virtual_id = "combined_parallel"
+        self._formatted_dongle_id = "combined"
+        self._sensor_type = sensor_info["unique_id"]
+        self.entity_id = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
+        self.hass = hass
+        self._manufacturer = entry.data.get("inverter_brand")
+        
+        # Get calculation info
+        self._calculation = sensor_info.get("calculation", {})
+        self._operation = self._calculation.get("operation")
+        self._source_entity = self._calculation.get("source_entity")
+        self._source_values = {}
+        
+        # Track source entities that we need to monitor
+        self._tracked_entities = []
+        for dongle_id in dongle_ids:
+            formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+            source_entity_id = f"sensor.{formatted_id}_{self._source_entity}"
+            self._tracked_entities.append(source_entity_id)
+            self._source_values[source_entity_id] = None
+        
+        # Set up state tracking
+        for entity_id in self._tracked_entities:
+            self._async_add_entity_listener(entity_id)
+        
+        super().__init__(self.coordinator)
+    
+    def _async_add_entity_listener(self, entity_id):
+        """Set up a listener for a source entity."""
+        @callback
+        async def async_state_changed_listener(event: Event[EventStateChangedData]) -> None:
+            """Handle entity state changes."""
+            if (new_state := event.data["new_state"]) is None:
+                return
+                
+            try:
+                value = float(new_state.state)
+                self._source_values[entity_id] = value
+                await self._update_combined_state()
+            except (ValueError, TypeError):
+                LOGGER.warning(f"Invalid state value for {entity_id}: {new_state.state}")
+                
+        self.async_on_remove(
+            async_track_state_change_event(
+                self.hass, entity_id, async_state_changed_listener
+            )
+        )
+    
+    async def _update_combined_state(self):
+        """Calculate the combined state based on source entities."""
+        # Filter out None values
+        values = [v for v in self._source_values.values() if v is not None]
+        
+        if not values:
+            LOGGER.debug(f"No values available for combined sensor {self._name}")
+            self._state = None
+            self.async_write_ha_state()
+            return
+            
+        if self._operation == "addition":
+            self._state = sum(values)
+        elif self._operation == "average":
+            self._state = sum(values) / len(values)
+        else:
+            LOGGER.warning(f"Unknown operation {self._operation} for combined sensor {self._name}")
+            return
+            
+        # Round to 2 decimal places
+        if isinstance(self._state, float):
+            self._state = round(self._state, 2)
+            
+        self.async_write_ha_state()
+        
+    @property
+    def name(self):
+        return self._name
+        
+    @property
+    def unique_id(self):
+        return self._unique_id
+        
+    @property
+    def state(self):
+        return self._state
+        
+    @property
+    def state_class(self):
+        return self.sensor_info.get("state_class")
+        
+    @property
+    def unit_of_measurement(self):
+        return self.sensor_info.get("unit_of_measurement")
+        
+    @property
+    def device_class(self):
+        return self.sensor_info.get("device_class")
+        
+    @property
+    def available(self):
+        # At least one source value should be available
+        return any(v is not None for v in self._source_values.values())
+        
+    @property
+    def extra_state_attributes(self):
+        """Return extra attributes about the sensor."""
+        return {
+            "operation": self._operation,
+            "source_entities": self._tracked_entities,
+            "source_values": self._source_values
+        }
+        
+    @property
+    def device_info(self):
+        # Create a custom device info for the virtual combined device
+        device_info = {
+            "identifiers": {(DOMAIN, self._virtual_id)},
+            "name": "Combined Parallel Inverters",
+            "manufacturer": f"{self._manufacturer}",
+            "model": f"Virtual Combined Device ({len(self._dongle_ids)} inverters)"
+        }
+        return device_info
+        
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        # We track state changes directly via entity listeners, so this is a no-op
+        return
