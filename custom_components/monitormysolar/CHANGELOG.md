@@ -23,12 +23,9 @@ AttributeError: 'MonitorMySolar' object has no attribute 'current_ui_versions'
 You need to:
 
 1. **Restart Home Assistant** - This ensures all code changes are loaded
-2. If errors persist after restart:
-   - Go to Settings → Devices & Services
-   - Find Monitor My Solar integration
-   - Click the 3 dots menu → Reload
-3. If still having issues:
+2. If still having issues:
    - Remove the integration (your settings will be preserved)
+   - Re download from hacs 
    - Restart Home Assistant
    - Re-add the integration with the same dongle IDs
 
