@@ -22,16 +22,20 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
     
     # Loop through each dongle ID
     for dongle_id in dongle_ids:
+        firmware_code = coordinator.get_firmware_code(dongle_id)
+        
         # Process selects for this dongle
         for bank_name, selects in select_config.items():
             for select in selects:
-                try:
-                    if bank_name == "holdbank6":
-                        entities.append(QuickChargeDurationSelect(select, hass, entry, bank_name, dongle_id))
-                    else:
-                        entities.append(InverterSelect(select, hass, entry, dongle_id))
-                except Exception as e:
-                    LOGGER.error(f"Error setting up select {select} for dongle {dongle_id}: {e}")
+                allowed_firmware_codes = select.get("allowed_firmware_codes", [])
+                if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                    try:
+                        if bank_name == "holdbank6":
+                            entities.append(QuickChargeDurationSelect(select, hass, entry, bank_name, dongle_id))
+                        else:
+                            entities.append(InverterSelect(select, hass, entry, dongle_id))
+                    except Exception as e:
+                        LOGGER.error(f"Error setting up select {select} for dongle {dongle_id}: {e}")
 
     async_add_entities(entities, True)
 
@@ -78,7 +82,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         """Update the select option."""
         LOGGER.info(f"Setting select option for {self.entity_id} to {option}")
         self._state = option
-        self.async_write_ha_state
+        self.throttled_async_write_ha_state()
 
 
 
@@ -95,7 +99,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         """Revert to the previous state."""
         LOGGER.info(f"Reverting state for {self.entity_id} to {self._state}")
         # Schedule state revert on the main thread
-        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+        self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -111,7 +115,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
                     else value
                 )
                 # Schedule state update on the main thread
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+                self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
 
 class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
@@ -165,7 +169,7 @@ class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
             )
             
             self._attr_current_option = option
-            self.async_write_ha_state()
+            self.throttled_async_write_ha_state()
         else:
             LOGGER.error("MQTT Handler is not initialized")
 
@@ -179,4 +183,4 @@ class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
             if value is not None:
                 if value in self._attr_options:
                     self._attr_current_option = value
-                    self.async_write_ha_state()
+                    self.throttled_async_write_ha_state()

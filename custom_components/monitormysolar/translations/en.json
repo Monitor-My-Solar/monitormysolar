@@ -17,10 +17,13 @@
                     "mqtt_username": "MQTT Username",
                     "mqtt_password": "MQTT Password",
                     "dongle_id": "Dongle ID 'dongle-35:S4:48:S7:41'",
+                    "dongle_ip": "Dongle IP Address (optional, for firmware updates)",
                     "parallel_inverters": "Setup Multiple Inverters in Parallel",
+                    "update_interval": "Update Interval (how often to save to database)",
                     "dongle_id_2": "Additional Dongle ID #2 (optional)",
                     "dongle_id_3": "Additional Dongle ID #3 (optional)",
-                    "dongle_id_4": "Additional Dongle ID #4 (optional)"
+                    "dongle_id_4": "Additional Dongle ID #4 (optional)",
+                    "has_gridboss": "GridBoss Connected (for GridBoss distribution units)"
                 }
             },
             "parallel": {
@@ -28,9 +31,75 @@
                 "description": "Enter the additional dongle IDs for your parallel inverters.",
                 "data": {
                     "dongle_id_2": "Dongle ID #2",
+                    "dongle_ip_2": "Dongle IP #2 (optional)",
                     "dongle_id_3": "Dongle ID #3",
-                    "dongle_id_4": "Dongle ID #4"
+                    "dongle_ip_3": "Dongle IP #3 (optional)",
+                    "dongle_id_4": "Dongle ID #4",
+                    "dongle_ip_4": "Dongle IP #4 (optional)"
                 }
+            }
+        }
+    },
+    "options": {
+        "error": {
+            "dongle_already_exists": "This dongle ID already exists",
+            "dongle_not_responding": "Dongle is not responding. Please check the ID and ensure it's online."
+        },
+        "abort": {
+            "cannot_remove_last_dongle": "Cannot remove the last dongle"
+        },
+        "step": {
+            "init": {
+                "title": "Monitor My Solar Options",
+                "menu_options": {
+                    "manage_dongles": "Manage Dongles",
+                    "update_settings": "Update Settings",
+                    "check_status": "Check Status"
+                }
+            },
+            "manage_dongles": {
+                "title": "Manage Dongles",
+                "description": "Current dongles: {current_dongles}",
+                "data": {
+                    "action": "What would you like to do?"
+                }
+            },
+            "add_dongle": {
+                "title": "Add New Dongle",
+                "description": "Enter the ID of the dongle you want to add",
+                "data": {
+                    "dongle_id": "Dongle ID (e.g., dongle-12:34:56:78:90:12)",
+                    "dongle_ip": "Dongle IP Address (optional)"
+                }
+            },
+            "remove_dongle": {
+                "title": "Remove Dongle",
+                "description": "Select the dongle you want to remove",
+                "data": {
+                    "dongle_id": "Dongle to remove"
+                }
+            },
+            "update_dongles": {
+                "title": "Update Dongle IP Addresses",
+                "description": "Update the IP addresses for your dongles: {dongle_ids}",
+                "data": {
+                    "dongle_ip": "Dongle IP Address",
+                    "dongle_ip_2": "Dongle IP #2",
+                    "dongle_ip_3": "Dongle IP #3",
+                    "dongle_ip_4": "Dongle IP #4"
+                }
+            },
+            "update_settings": {
+                "title": "Update Settings",
+                "description": "Update general integration settings",
+                "data": {
+                    "update_interval": "Update Interval (how often to save to database)",
+                    "has_gridboss": "GridBoss Connected (for GridBoss distribution units)"
+                }
+            },
+            "check_status": {
+                "title": "Integration Status",
+                "description": "Dongle Status:\n{dongle_statuses}\n\nTotal Entities: {total_entities}\n\nSetup Errors:\n{setup_errors}"
             }
         }
     }

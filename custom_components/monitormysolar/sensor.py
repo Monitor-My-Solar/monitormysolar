@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import json
+import asyncio
 from typing import cast, List
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -106,6 +107,10 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                 )
             except Exception as e:
                 LOGGER.error(f"Error setting up combined sensor {sensor}: {e}")
+        
+        # Add sync status sensor
+        LOGGER.info(f"Creating sync status sensor for {len(dongle_ids)} dongles")
+        entities.append(SyncStatusSensor(hass, entry, dongle_ids))
 
     async_add_entities(entities)
 
@@ -183,12 +188,12 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
                 elif self._sensor_type in ["HourlyConsumption", "DailyConsumption"] and isinstance(value, (float, int)):
                     # Convert from Wh to kWh by dividing by 1000
                     self._state = round(value / 1000, 3)
-                    LOGGER.debug(f"Converted {self._sensor_type} from {value}Wh to {self._state}kWh")
+                    #LOGGER.debug(f"Converted {self._sensor_type} from {value}Wh to {self._state}kWh")
                 else:
                     self._state = (
                         round(value, 2) if isinstance(value, (float, int)) else value
                     )
-                self.async_write_ha_state()
+                self.throttled_async_write_ha_state()
         else:
             LOGGER.warning(f"entity {self.entity_id} key not found")
 
@@ -264,7 +269,7 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
 
                 #LOGGER.debug(f'Attributes updated to: {self._attributes}')
 
-                self.async_write_ha_state()
+                self.throttled_async_write_ha_state()
 
 class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
     def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
@@ -343,7 +348,7 @@ class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
         else:
             self._state = self._value2
 
-        self.async_write_ha_state()
+        self.throttled_async_write_ha_state()
 
 class CombinedSensor(MonitorMySolarEntity, SensorEntity):
     def __init__(self, sensor_info, hass, entry, dongle_id):
@@ -410,7 +415,7 @@ class CombinedSensor(MonitorMySolarEntity, SensorEntity):
 
                     # Example operation: Summing all sensor values
                     self._state = sum(self._sensor_values.values())
-                    self.async_write_ha_state()
+                    self.throttled_async_write_ha_state()
 
 class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
     def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
@@ -483,7 +488,7 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
             if attr_name in self._attributes:
                 self._attributes[attr_name] = current_time
                 self._state = current_time  # Update state to most recent update
-                self.async_write_ha_state()
+                self.throttled_async_write_ha_state()
 
     async def async_added_to_hass(self):
         """Subscribe to events when added to hass."""
@@ -578,7 +583,7 @@ class FaultWarningSensor(MonitorMySolarEntity, SensorEntity):
                     if self._history and self._history[-1]["end_time"] == "Ongoing":
                         self._history[-1]["end_time"] = value_data.get("timestamp", "Unknown")
 
-            self.async_write_ha_state()
+            self.throttled_async_write_ha_state()
 
 class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
     def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
@@ -711,7 +716,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
                     # )
 
                     self._calculate_state()
-                    self.async_write_ha_state()
+                    self.throttled_async_write_ha_state()
 
 class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
     def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
@@ -796,7 +801,7 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
                             round( ((value)-32/(9/5)), 2 ) if isinstance(value, (float, int)) else value
                         )
                 LOGGER.debug(f"Sensor {self.entity_id} state updated to {self._state}")
-                self.async_write_ha_state()
+                self.throttled_async_write_ha_state()
 
 class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
     """Sensor that combines values from multiple dongles."""
@@ -835,11 +840,14 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
             self._async_add_entity_listener(entity_id)
         
         super().__init__(self.coordinator)
+        
+        # Initialize the state based on current source values
+        self.hass.async_create_task(self._initialize_state())
     
     def _async_add_entity_listener(self, entity_id):
         """Set up a listener for a source entity."""
         @callback
-        async def async_state_changed_listener(event: Event[EventStateChangedData]) -> None:
+        def async_state_changed_listener(event: Event[EventStateChangedData]) -> None:
             """Handle entity state changes."""
             if (new_state := event.data["new_state"]) is None:
                 return
@@ -847,7 +855,8 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
             try:
                 value = float(new_state.state)
                 self._source_values[entity_id] = value
-                await self._update_combined_state()
+                # Use create_task to run the async method from a sync callback
+                self.hass.async_create_task(self._update_combined_state())
             except (ValueError, TypeError):
                 LOGGER.warning(f"Invalid state value for {entity_id}: {new_state.state}")
                 
@@ -865,7 +874,7 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
         if not values:
             LOGGER.debug(f"No values available for combined sensor {self._name}")
             self._state = None
-            self.async_write_ha_state()
+            self.throttled_async_write_ha_state()
             return
             
         if self._operation == "addition":
@@ -880,7 +889,22 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
         if isinstance(self._state, float):
             self._state = round(self._state, 2)
             
-        self.async_write_ha_state()
+        self.throttled_async_write_ha_state()
+    
+    async def _initialize_state(self):
+        """Initialize the state based on current source entity states."""
+        await asyncio.sleep(2)  # Give entities time to load
+        
+        for entity_id in self._tracked_entities:
+            state = self.hass.states.get(entity_id)
+            if state and state.state not in [STATE_UNKNOWN, "unavailable"]:
+                try:
+                    value = float(state.state)
+                    self._source_values[entity_id] = value
+                except (ValueError, TypeError):
+                    LOGGER.debug(f"Could not parse state for {entity_id}: {state.state}")
+        
+        await self._update_combined_state()
         
     @property
     def name(self):
@@ -913,11 +937,20 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
         
     @property
     def extra_state_attributes(self):
-        """Return extra attributes about the sensor."""
+        """Return extra attributes about the combined sensor."""
+        # Format the dongle values for display
+        dongle_values = {}
+        for entity_id, value in self._source_values.items():
+            # Extract dongle ID from entity_id (e.g., sensor.dongle_12_34_56_78_90_12_pall)
+            parts = entity_id.split('.')[-1].split('_')
+            if len(parts) >= 6:  # dongle_XX_XX_XX_XX_XX + setting name
+                dongle_id = '_'.join(parts[:6]).replace('_', ':')
+                dongle_values[f"{dongle_id}"] = str(value) if value is not None else "unknown"
+        
         return {
-            "operation": self._operation,
+            **dongle_values,
             "source_entities": self._tracked_entities,
-            "source_values": self._source_values
+            "operation": self._operation
         }
         
     @property
@@ -933,6 +966,214 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
         
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        # We track state changes directly via entity listeners, so this is a no-op
-        return
+        """Override to prevent looking for combined entity in coordinator."""
+        # Combined entities don't receive direct MQTT updates
+        # They only update based on their source entities
+        pass
+
+
+class SyncStatusSensor(MonitorMySolarEntity, SensorEntity):
+    """Sensor that shows the synchronization status of multiple inverters."""
+    
+    def __init__(self, hass, entry: MonitorMySolarEntry, dongle_ids):
+        """Initialize the sync status sensor."""
+        self.coordinator = entry.runtime_data
+        self._name = "Inverter Sync Status"
+        self._unique_id = f"{entry.entry_id}_sync_status".lower()
+        self._state = "unknown"
+        self._dongle_ids = dongle_ids
+        self._virtual_id = "combined_parallel"
+        self._formatted_dongle_id = "combined"
+        self.entity_id = f"sensor.{self._formatted_dongle_id}_sync_status"
+        self.hass = hass
+        self._manufacturer = entry.data.get("inverter_brand")
+        
+        # Sync status tracking
+        self._total_settings = 0
+        self._out_of_sync_count = 0
+        self._last_check_time = None
+        self._sync_details = {}  # {setting_id: {dongle_id: value}}
+        self._monitored_settings = {}  # {unique_id: entity_type}
+        
+        # Get entity configuration for monitoring
+        inverter_brand = self.coordinator.inverter_brand
+        brand_entities = ENTITIES.get(inverter_brand, {})
+        
+        # Build list of settings to monitor
+        monitored_types = ["switch", "number", "select", "time", "time_hhmm"]
+        for entity_type in monitored_types:
+            if entity_type not in brand_entities:
+                continue
+                
+            for bank_name, entities in brand_entities[entity_type].items():
+                # Skip combined entities
+                if bank_name == "combined":
+                    continue
+                    
+                for entity_config in entities:
+                    unique_id = entity_config["unique_id"]
+                    self._monitored_settings[unique_id] = entity_type
+        
+        self._total_settings = len(self._monitored_settings)
+        
+        super().__init__(self.coordinator)
+        
+        # Start periodic sync status check
+        self.hass.async_create_task(self._start_monitoring())
+    
+    async def _start_monitoring(self):
+        """Start monitoring sync status."""
+        # Initial delay to let entities load
+        await asyncio.sleep(10)
+        
+        # Initial check
+        await self._check_sync_status()
+        
+        # Set up periodic check every 30 seconds
+        while True:
+            await asyncio.sleep(30)
+            await self._check_sync_status()
+    
+    async def _check_sync_status(self):
+        """Check the sync status of all monitored settings."""
+        self._last_check_time = datetime.now().isoformat()
+        self._sync_details = {}
+        self._out_of_sync_count = 0
+        
+        for unique_id, entity_type in self._monitored_settings.items():
+            setting_values = {}
+            
+            # Get values from all dongles for this setting
+            for dongle_id in self._dongle_ids:
+                formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+                
+                # Determine entity ID based on type
+                if entity_type == "time_hhmm":
+                    entity_id = f"time.{formatted_id}_{unique_id.lower()}"
+                else:
+                    entity_id = f"{entity_type}.{formatted_id}_{unique_id.lower()}"
+                
+                state = self.hass.states.get(entity_id)
+                if state and state.state not in [STATE_UNKNOWN, "unavailable"]:
+                    setting_values[dongle_id] = state.state
+                else:
+                    setting_values[dongle_id] = "unknown"
+            
+            self._sync_details[unique_id] = setting_values
+            
+            # Check if values are different (excluding unknowns)
+            known_values = [v for v in setting_values.values() if v != "unknown"]
+            if known_values and len(set(known_values)) > 1:
+                self._out_of_sync_count += 1
+        
+        # Update state
+        if self._out_of_sync_count == 0:
+            self._state = "synced"
+        else:
+            self._state = f"{self._out_of_sync_count} unsynced"
+        
+        self.throttled_async_write_ha_state()
+        LOGGER.debug(f"Sync status check complete: {self._out_of_sync_count} out of sync settings")
+    
+    @property
+    def name(self):
+        return self._name
+        
+    @property
+    def unique_id(self):
+        return self._unique_id
+        
+    @property
+    def state(self):
+        return self._state
+        
+    @property
+    def icon(self):
+        if self._state == "synced":
+            return "mdi:check-circle"
+        elif self._state == "unknown":
+            return "mdi:help-circle"
+        else:
+            return "mdi:alert-circle"
+        
+    @property
+    def available(self):
+        return True
+        
+    @property
+    def extra_state_attributes(self):
+        """Return detailed sync status attributes."""
+        attributes = {
+            "last_check": self._last_check_time,
+            "total_settings": self._total_settings,
+            "out_of_sync_count": self._out_of_sync_count,
+            "sync_enabled": self.coordinator.get_sync_settings_enabled()
+        }
+        
+        # Create sync status grid
+        if self._sync_details:
+            # Create header row with dongle IDs
+            grid_data = {}
+            
+            # Group settings by their sync status
+            synced_settings = {}
+            unsynced_settings = {}
+            
+            for setting_id, values in self._sync_details.items():
+                # Get all non-unknown values
+                known_values = {k: v for k, v in values.items() if v != "unknown"}
+                
+                if not known_values:
+                    continue
+                    
+                # Check if all known values are the same
+                unique_values = set(known_values.values())
+                if len(unique_values) == 1:
+                    synced_settings[setting_id] = values
+                else:
+                    unsynced_settings[setting_id] = values
+            
+            # Add unsynced settings first
+            if unsynced_settings:
+                attributes["unsynced_settings"] = {}
+                for setting_id, values in unsynced_settings.items():
+                    row = {}
+                    for dongle_id, value in values.items():
+                        # Format dongle ID for display
+                        display_id = dongle_id.split('-')[1] if '-' in dongle_id else dongle_id
+                        row[display_id] = f"❌ {value}"
+                    attributes["unsynced_settings"][setting_id] = row
+            
+            # Add synced settings count
+            attributes["synced_settings_count"] = len(synced_settings)
+            
+            # Optionally show some synced settings (first 5)
+            if synced_settings:
+                attributes["synced_settings_sample"] = {}
+                for i, (setting_id, values) in enumerate(synced_settings.items()):
+                    if i >= 5:  # Only show first 5
+                        break
+                    row = {}
+                    for dongle_id, value in values.items():
+                        display_id = dongle_id.split('-')[1] if '-' in dongle_id else dongle_id
+                        row[display_id] = f"✅ {value}"
+                    attributes["synced_settings_sample"][setting_id] = row
+        
+        return attributes
+        
+    @property
+    def device_info(self):
+        # Create a custom device info for the virtual combined device
+        device_info = {
+            "identifiers": {(DOMAIN, self._virtual_id)},
+            "name": "Combined Parallel Inverters",
+            "manufacturer": f"{self._manufacturer}",
+            "model": f"Virtual Combined Device ({len(self._dongle_ids)} inverters)"
+        }
+        return device_info
+    
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Override to prevent looking for entity in coordinator."""
+        # This sensor doesn't receive direct MQTT updates
+        pass

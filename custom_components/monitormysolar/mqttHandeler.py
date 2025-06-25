@@ -112,9 +112,12 @@ class MQTTHandler:
             self.current_entity = entity
             
             try:
+                # Store original dongle IDs for response matching
                 self._pending_dongles = set(dongle_ids)
                 self._dongle_responses = {}
                 success = True
+                
+                LOGGER.info(f"Expecting responses from {len(dongle_ids)} dongles: {dongle_ids}")
                 
                 # Set up subscriptions for all dongles first
                 unsubscribe_functions = []
@@ -208,36 +211,46 @@ class MQTTHandler:
         
         modified_dongle_id = topic_parts[0]
         
-        # Convert modified_dongle_id back to original format
-        parts = modified_dongle_id.split('-')
-        if len(parts) >= 2:
-            parts[1] = parts[1].lower()
-        dongle_id = "_".join(parts)
+        # The modified_dongle_id from topic is like "dongle-12:34:56:78:90:12"
+        # We need to match this against the original dongle IDs in _pending_dongles
+        # which should also be in the format "dongle-12:34:56:78:90:12"
+        
+        # For response matching, we use the modified_dongle_id as-is
+        dongle_id_for_matching = modified_dongle_id
+        
+        # Log the conversion for debugging
+        LOGGER.debug(f"Response received from dongle: {dongle_id_for_matching}")
         
         try:
             response = json.loads(msg.payload)
             status = response.get('status')
             
-            # Store the response status for this dongle
-            self._dongle_responses[dongle_id] = status
-            
             # Remove dongle from pending set
-            if dongle_id in self._pending_dongles:
-                self._pending_dongles.remove(dongle_id)
+            if dongle_id_for_matching in self._pending_dongles:
+                self._pending_dongles.remove(dongle_id_for_matching)
+                # Store response with the original dongle ID
+                self._dongle_responses[dongle_id_for_matching] = status
+                LOGGER.info(f"Received response from {dongle_id_for_matching} (status: {status}). Still waiting for: {self._pending_dongles}")
+            else:
+                LOGGER.warning(f"Received unexpected response from {dongle_id_for_matching} - was not in pending list: {self._pending_dongles}")
                 
             # If this was the last pending dongle, signal success
             if not self._pending_dongles and self._response_event:
+                LOGGER.info(f"All dongles have responded. Responses: {self._dongle_responses}")
                 self._response_event.set()
                 
         except json.JSONDecodeError:
-            LOGGER.error(f"Failed to decode JSON response for dongle {dongle_id}: {msg.payload}")
-            # Count this as a response, but with failure
-            self._dongle_responses[dongle_id] = 'error'
+            LOGGER.error(f"Failed to decode JSON response for dongle {dongle_id_for_matching}: {msg.payload}")
             
-            if dongle_id in self._pending_dongles:
-                self._pending_dongles.remove(dongle_id)
+            # Handle error case
+            if dongle_id_for_matching in self._pending_dongles:
+                self._pending_dongles.remove(dongle_id_for_matching)
+                # Count this as a response, but with failure
+                self._dongle_responses[dongle_id_for_matching] = 'error'
+                LOGGER.info(f"Marked {dongle_id_for_matching} as error. Still waiting for: {self._pending_dongles}")
                 
             if not self._pending_dongles and self._response_event:
+                LOGGER.info(f"All dongles have responded (with errors). Responses: {self._dongle_responses}")
                 self._response_event.set()
 
     async def response_received(self, msg):

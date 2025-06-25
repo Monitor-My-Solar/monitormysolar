@@ -43,16 +43,23 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         
         # Get dongle IDs from config entry data (fallback to single dongle ID for backward compatibility)
         self._dongle_ids: List[str] = entry.data.get("dongle_ids", [entry.data.get("dongle_id")])
+        # Get dongle IPs (may be empty strings if not provided)
+        self._dongle_ips: List[str] = entry.data.get("dongle_ips", [""] * len(self._dongle_ids))
         
         # Initialize per-dongle data structures
         self._firmware_codes: Dict[str, str] = {dongle_id: None for dongle_id in self._dongle_ids}
         self.entities: Dict[str, Any] = {}
         self.current_fw_versions: Dict[str, str] = {dongle_id: "" for dongle_id in self._dongle_ids}
-        self.current_ui_versions: Dict[str, str] = {dongle_id: "" for dongle_id in self._dongle_ids}
+        # self.current_ui_versions: Dict[str, str] = {dongle_id: "" for dongle_id in self._dongle_ids}  # Commented out - UI update entity removed
         self._mqtt_unsubscribe_callbacks: Dict[str, Any] = {}
         self._ignored_entity_suffixes: Set[str] = set()  # To track entities we've already logged about
         self._pending_dongles: List[str] = self._dongle_ids.copy()  # Track dongles still needing setup
         self.server_versions = {}
+        self._sync_settings_enabled = False  # Track sync settings state
+        self._setting_history = {}  # Track setting changes with timestamps
+        self._max_history_entries = 100  # Limit history size per setting
+        self._setup_errors = []  # Track errors during setup
+        self._has_gridboss = entry.data.get("has_gridboss", False)  # Track if GridBoss is enabled
 
         super().__init__(
             hass,
@@ -69,10 +76,82 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     def inverter_brand(self) -> str:
         """The brand of the inverter."""
         return cast(str, self.entry.data["inverter_brand"])
+    
+    @property
+    def has_gridboss(self) -> bool:
+        """Check if GridBoss is enabled."""
+        return self._has_gridboss
 
     def get_firmware_code(self, dongle_id: str) -> str:
         """Get firmware code for a specific dongle."""
         return self._firmware_codes.get(dongle_id)
+    
+    def get_dongle_ip(self, dongle_id: str) -> str:
+        """Get IP address for a specific dongle."""
+        try:
+            index = self._dongle_ids.index(dongle_id)
+            return self._dongle_ips[index] if index < len(self._dongle_ips) else ""
+        except ValueError:
+            return ""
+    
+    def get_sync_settings_enabled(self) -> bool:
+        """Get the current sync settings state."""
+        return self._sync_settings_enabled
+    
+    def set_sync_settings_enabled(self, enabled: bool) -> None:
+        """Set the sync settings state."""
+        self._sync_settings_enabled = enabled
+        LOGGER.debug(f"Sync settings state set to: {enabled}")
+    
+    def record_setting_change(self, dongle_id: str, unique_id: str, value: any, timestamp: float = None) -> None:
+        """Record a setting change with timestamp for tracking."""
+        if timestamp is None:
+            timestamp = self.hass.loop.time()
+        
+        setting_key = f"{unique_id}"
+        if setting_key not in self._setting_history:
+            self._setting_history[setting_key] = []
+        
+        # Add new entry
+        self._setting_history[setting_key].append({
+            "dongle_id": dongle_id,
+            "value": value,
+            "timestamp": timestamp
+        })
+        
+        # Limit history size
+        if len(self._setting_history[setting_key]) > self._max_history_entries:
+            self._setting_history[setting_key] = self._setting_history[setting_key][-self._max_history_entries:]
+        
+        LOGGER.debug(f"Recorded setting change: {dongle_id}/{unique_id} = {value} at {timestamp}")
+    
+    def get_latest_setting_change(self, unique_id: str) -> Dict[str, any]:
+        """Get the most recent change for a setting across all dongles."""
+        setting_key = f"{unique_id}"
+        if setting_key not in self._setting_history or not self._setting_history[setting_key]:
+            return None
+        
+        # Return the most recent change
+        return max(self._setting_history[setting_key], key=lambda x: x["timestamp"])
+    
+    def get_setting_values_by_dongle(self, unique_id: str) -> Dict[str, any]:
+        """Get the current values for a setting from each dongle based on history."""
+        setting_key = f"{unique_id}"
+        if setting_key not in self._setting_history:
+            return {}
+        
+        # Get the most recent value for each dongle
+        values_by_dongle = {}
+        for entry in self._setting_history[setting_key]:
+            dongle_id = entry["dongle_id"]
+            # Keep the latest value for each dongle
+            if dongle_id not in values_by_dongle or entry["timestamp"] > values_by_dongle[dongle_id]["timestamp"]:
+                values_by_dongle[dongle_id] = {
+                    "value": entry["value"],
+                    "timestamp": entry["timestamp"]
+                }
+        
+        return values_by_dongle
 
     @callback
     async def _async_handle_mqtt_message(self, msg) -> None:
@@ -241,6 +320,24 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                     self.hass, topic_pattern, self._async_handle_mqtt_message
                 )
                 LOGGER.debug(f"Subscribed to all MQTT topics for {dongle_id} with pattern {topic_pattern}")
+                
+                # If GridBoss is enabled, subscribe to GridBoss specific topics
+                if self._has_gridboss:
+                    gridboss_topics = [
+                        f"{dongle_id}/gridboss_inputbank1",
+                        f"{dongle_id}/gridboss_inputbank2",
+                        f"{dongle_id}/gridboss_holdbank1"
+                    ]
+                    
+                    for topic in gridboss_topics:
+                        try:
+                            unsubscribe_callback = await mqtt.async_subscribe(
+                                self.hass, topic, self._async_handle_mqtt_message
+                            )
+                            self._mqtt_unsubscribe_callbacks[f"{dongle_id}_gridboss_{topic.split('/')[-1]}"] = unsubscribe_callback
+                            LOGGER.debug(f"Subscribed to GridBoss topic: {topic}")
+                        except Exception as e:
+                            LOGGER.error(f"Failed to subscribe to GridBoss topic {topic}: {e}")
             except Exception as e:
                 LOGGER.error(f"Failed to subscribe to MQTT topics for {dongle_id}: {e}")
                 subscription_success = False
@@ -349,14 +446,14 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             entity_id = f"update.{formatted_dongle_id}_firmware_update"
             self.entities[entity_id] = fw_version
 
-        # Update UI version
-        if "UI_VERSION" in payload_data:
-            ui_version = payload_data["UI_VERSION"]
-            self.current_ui_versions[dongle_id] = ui_version
-            #LOGGER.debug(f"Current UI version set for {dongle_id}: {ui_version}")
-            # Set entity value
-            entity_id = f"update.{formatted_dongle_id}_ui_update"
-            self.entities[entity_id] = ui_version
+        # Update UI version - commented out as UI update entity has been removed
+        # if "UI_VERSION" in payload_data:
+        #     ui_version = payload_data["UI_VERSION"]
+        #     self.current_ui_versions[dongle_id] = ui_version
+        #     #LOGGER.debug(f"Current UI version set for {dongle_id}: {ui_version}")
+        #     # Set entity value
+        #     entity_id = f"update.{formatted_dongle_id}_ui_update"
+        #     self.entities[entity_id] = ui_version
 
         # Process fault data
         if fault_data:

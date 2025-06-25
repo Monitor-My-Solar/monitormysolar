@@ -17,7 +17,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
     
     # Step 2: Request firmware codes for all dongles and wait for them
     # Initialize the coordinator but don't wait for data refresh
-    await coordinator.async_setup()
+    try:
+        await coordinator.async_setup()
+    except Exception as e:
+        error_msg = f"Error during coordinator setup: {e}"
+        LOGGER.error(error_msg)
+        coordinator._setup_errors.append(error_msg)
     
     # Wait for all firmware codes to be received (or timeout)
     LOGGER.debug("Waiting for firmware codes to be received for all dongles...")
@@ -30,23 +35,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
             
             # If we're halfway through the timeout and still have pending dongles, try requesting again
             if attempt == 10 and coordinator._pending_dongles:
-                LOGGER.debug(f"Still waiting for firmware codes from: {coordinator._pending_dongles}, sending request again")
+                error_msg = f"Still waiting for firmware codes from: {coordinator._pending_dongles}, sending request again"
+                LOGGER.debug(error_msg)
                 # Try requesting firmware codes again for the pending dongles
                 for dongle_id in coordinator._pending_dongles:
-                    await mqtt.async_publish(
-                        hass, f"{dongle_id}/firmwarecode/request", ""
-                    )
-                    LOGGER.debug(f"Resent firmware code request to {dongle_id}/firmwarecode/request")
+                    try:
+                        await mqtt.async_publish(
+                            hass, f"{dongle_id}/firmwarecode/request", ""
+                        )
+                        LOGGER.debug(f"Resent firmware code request to {dongle_id}/firmwarecode/request")
+                    except Exception as e:
+                        error_msg = f"Error sending firmware request to {dongle_id}: {e}"
+                        LOGGER.error(error_msg)
+                        coordinator._setup_errors.append(error_msg)
             
             await asyncio.sleep(1)
     except asyncio.CancelledError:
         # Handle if the setup is cancelled
-        LOGGER.warning("Setup was cancelled while waiting for firmware codes")
+        error_msg = "Setup was cancelled while waiting for firmware codes"
+        LOGGER.warning(error_msg)
+        coordinator._setup_errors.append(error_msg)
         return False
     
     # Log status of firmware code reception
     if coordinator._pending_dongles:
-        LOGGER.warning(f"Proceeding with setup despite missing firmware codes from: {coordinator._pending_dongles}")
+        error_msg = f"Missing firmware codes from: {coordinator._pending_dongles}"
+        LOGGER.warning(f"Proceeding with setup despite {error_msg}")
+        coordinator._setup_errors.append(error_msg)
     else:
         LOGGER.debug("Successfully received firmware codes from all dongles")
     

@@ -1,0 +1,8 @@
+
+custom_components/monitormysolar/__pycache__
+custom_components/monitormysolar/.claude
+custom_components/monitormysolar/docs/
+./claude
+*.claude
+claude.md
+docs/

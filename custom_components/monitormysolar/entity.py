@@ -1,8 +1,11 @@
 """Base MonitorMySolar entity."""
 from __future__ import annotations
 
+import time
+from datetime import datetime, timedelta
 from homeassistant.core import callback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers import recorder as recorder_helper
 
 from .coordinator import MonitorMySolar
 from .const import DOMAIN, LOGGER
@@ -23,11 +26,40 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
         # If this attribute is not set in a subclass, default to True
         if not hasattr(self, '_attr_entity_registry_enabled_default'):
             self._attr_entity_registry_enabled_default = True
+            
+        # Initialize throttling variables
+        self._last_state_change = 0
+        self._update_interval = None
 
     @property
     def available(self) -> bool:
         """Return True if entity is available."""
         return True
+        
+    @property
+    def update_interval(self) -> int:
+        """Get the update interval from config entry."""
+        if self._update_interval is None:
+            # Get from config entry, default to 60 seconds if not set
+            self._update_interval = self.coordinator.entry.data.get("update_interval", 60)
+        return self._update_interval
+    
+    def throttled_async_write_ha_state(self) -> None:
+        """Write HA state immediately - entities update in real-time."""
+        # For MonitorMySolar, we always write state immediately for real-time updates
+        # Call the parent class method directly to avoid recursion
+        super().async_write_ha_state()
+        
+    @property 
+    def should_poll(self) -> bool:
+        """No polling needed."""
+        return False
+        
+    @property
+    def force_update(self) -> bool:
+        """Force state updates even if state hasn't changed."""
+        # This ensures UI updates even when values are the same
+        return False
         
     def get_device_info(self, dongle_id: str, manufacturer: str) -> dict:
         """Return a consistent device info dictionary.
@@ -121,7 +153,7 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
             device_info["hw_version"] = ui_version
             
         # Set via_device to establish device topology
-        device_info["via_device"] = (DOMAIN, "monitor_my_solar_hub")
+        #device_info["via_device"] = (DOMAIN, "monitor_my_solar_hub")
             
         return device_info
 
@@ -133,4 +165,4 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
             self._state = self.coordinator.entities[self.entity_id]
         else:
             LOGGER.warning(f"entity {self.entity_id} key not found")
-        self.async_write_ha_state()
+        self.throttled_async_write_ha_state()

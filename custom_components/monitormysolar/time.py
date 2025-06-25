@@ -23,11 +23,15 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
 
     # Loop through each dongle ID
     for dongle_id in dongle_ids:
+        firmware_code = coordinator.get_firmware_code(dongle_id)
+        
         # Setup Time entities
         time_config = brand_entities.get("time", {})
         for bank_name, time_entities in time_config.items():
             for time_entity in time_entities:
-                entities.append(InverterTime(time_entity, hass, entry, dongle_id))
+                allowed_firmware_codes = time_entity.get("allowed_firmware_codes", [])
+                if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                    entities.append(InverterTime(time_entity, hass, entry, dongle_id))
 
     async_add_entities(entities, True)
 
@@ -105,12 +109,12 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
             self._last_mqtt_update = datetime.now()
             LOGGER.debug(f"Time {self.entity_id} state updated to {value}")
             # Schedule state update on the main thread
-            self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+            self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
     def revert_state(self):
         """Revert to the previous state."""
         # Schedule state revert on the main thread
-        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+        self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -121,4 +125,4 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
             value = self.coordinator.entities[self.entity_id]
             if value is not None:
                 self.update_state(value)
-                self.async_write_ha_state()
+                self.throttled_async_write_ha_state()

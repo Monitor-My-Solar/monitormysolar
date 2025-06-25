@@ -1,6 +1,7 @@
 from homeassistant.components.number import NumberEntity
 from homeassistant.core import callback
 import json
+import asyncio
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     Event,
@@ -25,6 +26,8 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
     
     # Loop through each dongle ID
     for dongle_id in dongle_ids:
+        firmware_code = coordinator.get_firmware_code(dongle_id)
+        
         # Process numbers for this dongle
         for bank_name, numbers in number_config.items():
             # Skip combined numbers for individual dongles
@@ -32,12 +35,14 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                 continue
                 
             for number in numbers:
-                try:
-                    entities.append(
-                        InverterNumber(number, hass, entry, bank_name, dongle_id)
-                    )
-                except Exception as e:
-                    LOGGER.error(f"Error setting up number {number} for dongle {dongle_id}: {e}")
+                allowed_firmware_codes = number.get("allowed_firmware_codes", [])
+                if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                    try:
+                        entities.append(
+                            InverterNumber(number, hass, entry, bank_name, dongle_id)
+                        )
+                    except Exception as e:
+                        LOGGER.error(f"Error setting up number {number} for dongle {dongle_id}: {e}")
                     
     # Create combined numbers if we have multiple dongles
     if len(dongle_ids) > 1 and "combined" in number_config:
@@ -90,7 +95,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
             self._previous_value = self._attr_native_value
             # Set the new value
             self._attr_native_value = value
-            self.async_write_ha_state()
+            self.throttled_async_write_ha_state()
 
             # Send the update via MQTT
             success = await mqtt_handler.send_update(
@@ -108,7 +113,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         """Revert to the previous state."""
         LOGGER.info(f"Reverting state for {self.entity_id} to {self._previous_value}")
         self._attr_native_value = self._previous_value
-        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+        self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -119,7 +124,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
             value = self.coordinator.entities[self.entity_id]
             if value is not None:
                 self._attr_native_value = value
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+                self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
     @property
     def device_info(self):
@@ -139,8 +144,10 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
         self._virtual_id = "combined_parallel"
         self._formatted_dongle_id = "combined"
         self._entity_type = entity_info["unique_id"]
-        self._source_entity = entity_info["source_entity"]
-        self.entity_id = f"number.{self._formatted_dongle_id}_{self._entity_type.lower()}"
+        self._source_entity = entity_info.get("source_entity", "")
+        # Remove 'combined_' prefix from unique_id for entity_id
+        entity_suffix = self._entity_type.lower().replace("combined_", "", 1)
+        self.entity_id = f"number.{self._formatted_dongle_id}_{entity_suffix}"
         self.hass = hass
         self._attr_native_min_value = entity_info.get("min", None)
         self._attr_native_max_value = entity_info.get("max", None)
@@ -165,10 +172,13 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
         
         super().__init__(self.coordinator)
         
+        # Initialize the state based on current source values
+        self.hass.async_create_task(self._initialize_state())
+        
     def _async_add_entity_listener(self, entity_id):
         """Set up a listener for a source entity."""
         @callback
-        async def async_state_changed_listener(event: Event) -> None:
+        def async_state_changed_listener(event: Event) -> None:
             """Handle entity state changes."""
             # Handle generic Event data structure
             if not hasattr(event, 'data'):
@@ -181,7 +191,8 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
             try:
                 value = float(new_state.state)
                 self._source_values[entity_id] = value
-                await self._update_combined_state()
+                # Use create_task to run the async method from a sync callback
+                self.hass.async_create_task(self._update_combined_state())
             except (ValueError, TypeError):
                 LOGGER.warning(f"Invalid state value for {entity_id}: {new_state.state}")
                 
@@ -208,7 +219,7 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
         
         if avg_value != self._attr_native_value:
             self._attr_native_value = avg_value
-            self.async_write_ha_state()
+            self.throttled_async_write_ha_state()
         
     @property
     def name(self):
@@ -250,7 +261,7 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
             self._previous_value = self._attr_native_value
             # Set the new value
             self._attr_native_value = value
-            self.async_write_ha_state()
+            self.throttled_async_write_ha_state()
             
             LOGGER.info(f"Setting Combined Number value for {self.entity_id} to {value} across {len(self._dongle_ids)} dongles")
             success = await mqtt_handler.send_update_to_multiple_dongles(
@@ -265,4 +276,44 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
         """Revert to the previous state."""
         LOGGER.info(f"Reverting state for {self.entity_id} to {self._previous_value}")
         self._attr_native_value = self._previous_value
-        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+        self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
+    
+    @property
+    def extra_state_attributes(self):
+        """Return extra attributes about the combined number."""
+        # Format the dongle values for display
+        dongle_values = {}
+        for entity_id, value in self._source_values.items():
+            # Extract dongle ID from entity_id
+            parts = entity_id.split('.')[-1].split('_')
+            if len(parts) >= 6:  # dongle_XX_XX_XX_XX_XX + setting name
+                dongle_id = '_'.join(parts[:6]).replace('_', ':')
+                dongle_values[f"{dongle_id}"] = str(value) if value is not None else "unknown"
+        
+        return {
+            **dongle_values,
+            "source_entities": self._tracked_entities,
+            "operation": "average"
+        }
+    
+    async def _initialize_state(self):
+        """Initialize the state based on current source entity states."""
+        await asyncio.sleep(2)  # Give entities time to load
+        
+        for entity_id in self._tracked_entities:
+            state = self.hass.states.get(entity_id)
+            if state:
+                try:
+                    value = float(state.state)
+                    self._source_values[entity_id] = value
+                except (ValueError, TypeError):
+                    LOGGER.debug(f"Could not parse state for {entity_id}: {state.state}")
+        
+        await self._update_combined_state()
+    
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Override to prevent looking for combined entity in coordinator."""
+        # Combined entities don't receive direct MQTT updates
+        # They only update based on their source entities
+        pass
