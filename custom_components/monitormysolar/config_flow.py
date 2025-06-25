@@ -459,7 +459,6 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             for dongle_id in self.config_entry.data.get("dongle_ids", []):
                 firmware_code = coordinator.get_firmware_code(dongle_id) or "Unknown"
                 fw_version = coordinator.current_fw_versions.get(dongle_id, "Unknown")
-                ui_version = coordinator.current_ui_versions.get(dongle_id, "Unknown")
                 
                 # Test connectivity
                 is_connected = await self._test_dongle_connection(dongle_id)
@@ -467,8 +466,7 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
                 
                 dongle_statuses.append(
                     f"{dongle_id}: {status}\n"
-                    f"  Firmware: {firmware_code} v{fw_version}\n"
-                    f"  UI: v{ui_version}"
+                    f"  Firmware: {firmware_code} v{fw_version}"
                 )
             
             info["dongle_statuses"] = "\n\n".join(dongle_statuses)

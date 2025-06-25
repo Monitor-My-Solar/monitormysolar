@@ -68,7 +68,7 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
         """
         # Get firmware versions if available
         fw_version = self.coordinator.current_fw_versions.get(dongle_id, "")
-        ui_version = self.coordinator.current_ui_versions.get(dongle_id, "")
+        # UI version tracking was removed in v3.0.0
         fw_code = self.coordinator.get_firmware_code(dongle_id)
         
         # Build device info dictionary with standard HA fields
