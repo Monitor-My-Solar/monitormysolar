@@ -148,10 +148,6 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
         if fw_version:
             device_info["sw_version"] = fw_version
             
-        # Add UI version as hardware version
-        if ui_version:
-            device_info["hw_version"] = ui_version
-            
         # Set via_device to establish device topology
         #device_info["via_device"] = (DOMAIN, "monitor_my_solar_hub")
             

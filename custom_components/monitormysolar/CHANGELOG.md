@@ -2,10 +2,58 @@
 
 ## Version 3.0.0 - GridBoss Support & Enhanced Multi-Inverter Features
 
-### 🎯 Major Features
 ### Minimum Requirements include the dongle Firmware 3.0.0> if your dongle is below this then a OTA update will be required. 
 - if you do not update your dongle before 02/07/2025 you will need to contact us for a upgrade path 
 - OTA updates stop working on FW Below 3.0.0 on the data above. 
+
+### ⚠️ Breaking Changes
+- UI version entities removed (no longer needed)
+- Update entities changed from brand-specific to dongle-specific
+- `current_ui_versions` attribute removed from coordinator
+
+# Migration Guide from v2.x to v3.0.0
+
+## Important: After updating to v3.0.0
+
+If you're upgrading from a previous version and see errors like:
+```
+AttributeError: 'MonitorMySolar' object has no attribute 'current_ui_versions'
+```
+
+You need to:
+
+1. **Restart Home Assistant** - This ensures all code changes are loaded
+2. If errors persist after restart:
+   - Go to Settings → Devices & Services
+   - Find Monitor My Solar integration
+   - Click the 3 dots menu → Reload
+3. If still having issues:
+   - Remove the integration (your settings will be preserved)
+   - Restart Home Assistant
+   - Re-add the integration with the same dongle IDs
+
+## What Changed in v3.0.0
+
+- UI version tracking has been removed (only firmware versions are tracked)
+- Update entities are now per-dongle instead of per-brand
+- GridBoss support added for firmware code IAAB
+- Improved multi-dongle management
+
+## Breaking Changes
+
+- `current_ui_versions` attribute removed from coordinator
+- Update entities changed from brand-specific to dongle-specific
+
+## Notes
+
+- Your entity history will be preserved
+- All settings will remain intact
+- The integration title will update to show "Inverter" or "Inverters" based on dongle count
+
+
+### 🎯 Major Features
+
+
 
 #### 1. **GridBoss Support (BETA)**
 - ✨ Full integration for GridBoss distribution units (firmware code IAAB)
@@ -177,9 +225,6 @@
 4. Enter dongle ID (e.g., `dongle-12:34:56:78:90:12`)
 5. System will test connectivity before adding
 
-### ⚠️ Breaking Changes
-- UI version entities removed (no longer needed)
-- Update entities changed from brand-specific to dongle-specific
 
 ### 📋 Requirements
 - MQTT integration configured
