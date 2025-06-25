@@ -3,20 +3,8 @@
 from __future__ import annotations
 
 import aiohttp
-from homeassistant.components.update import (
-    UpdateEntity,
-    UpdateEntityFeature,
-    UpdateDeviceClass,
-)
-from homeassistant.const import (
-    STATE_UNKNOWN,
-)
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.event import (
-    async_track_state_change_event,
-)
+from homeassistant.components.update import UpdateEntity, UpdateEntityFeature, UpdateDeviceClass
+from homeassistant.core import HomeAssistant
 from .const import DOMAIN, ENTITIES, LOGGER
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
@@ -26,175 +14,241 @@ UPDATE_URL = "https://monitoring.monitormy.solar/version"
 async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry, async_add_entities) -> None:
     """Set up update entities."""
     coordinator = entry.runtime_data
-    inverter_brand = coordinator.inverter_brand
-
-    # Fetch latest versions from server
+    dongle_ids = coordinator._dongle_ids
+    
+    # Fetch latest firmware version from server
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(UPDATE_URL) as response:
                 if response.status == 200:
                     server_data = await response.json()
                     coordinator.server_versions = server_data
-                    LOGGER.debug(f"Update server returned: {server_data}")
-                else:
-                    LOGGER.error(f"Failed to fetch versions: {response.status}")
+                    LOGGER.debug(f"Server versions: {server_data}")
     except Exception as e:
-        LOGGER.error(f"Error fetching versions: {e}")
-
-    brand_entities = ENTITIES.get(inverter_brand, {})
-    update_config = brand_entities.get("update", {})
+        LOGGER.error(f"Failed to fetch server versions: {e}")
 
     entities = []
-    for bank_name, updates in update_config.items():
-        for update in updates:
-            LOGGER.debug(f"Creating update entity: {update['name']}")
-            entities.append(
-                InverterUpdate(
-                    hass,
-                    entry,
-                    update["name"],
-                    update["unique_id"],
-                    update["version_key"],
-                    update["update_command"]
-                )
+    
+    # Create a firmware update entity for each dongle
+    for dongle_id in dongle_ids:
+        entities.append(
+            DongleFirmwareUpdate(
+                entry,
+                dongle_id
             )
+        )
 
     if entities:
-        LOGGER.debug(f"Adding {len(entities)} update entities")
         async_add_entities(entities)
-    else:
-
-        LOGGER.debug("No update entities were created")
 
 
-class InverterUpdate(MonitorMySolarEntity, UpdateEntity):
-    """Update entity for MonitorMySolar."""
-
-    _attr_has_entity_name = True
-    _attr_supported_features = UpdateEntityFeature.INSTALL | UpdateEntityFeature.RELEASE_NOTES
+class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
+    """Firmware update entity for MonitorMySolar dongle."""
+    
+    _attr_supported_features = UpdateEntityFeature.RELEASE_NOTES | UpdateEntityFeature.INSTALL | UpdateEntityFeature.PROGRESS
     _attr_device_class = UpdateDeviceClass.FIRMWARE
 
     def __init__(
         self,
-        hass: HomeAssistant,
         entry: MonitorMySolarEntry,
-        name: str,
-        unique_id: str,
-        version_key: str,
-        update_command: str,
+        dongle_id: str,
     ) -> None:
         """Initialize the update entity."""
         self.coordinator = entry.runtime_data
-        self.hass = hass
-        self._name = name
-        self._unique_id = f"{entry.entry_id}_{unique_id}"
-        self._dongle_id = self.coordinator.dongle_id
-        self._device_id = self.coordinator.dongle_id
-        self._version_key = version_key
-        self._update_command = update_command
-        self._manufacturer = entry.data.get("inverter_brand")
-        self.entity_id = f"update.{self._device_id}_{unique_id.lower()}"
-
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_firmware_update"
+        self._manufacturer = "MonitorMySolar"
+        self.entity_id = f"update.{self._formatted_dongle_id}_firmware_update"
+        self._attr_in_progress = False
+        self._attr_progress = None
+        
         super().__init__(self.coordinator)
 
-        # Set initial versions
-        self._attr_installed_version = self._get_installed_version()
-        self._attr_latest_version = self._get_latest_version()
-        self._attr_release_summary = self._get_release_notes()
-
     @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": self._manufacturer,
-        }
+    def device_info(self):
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return self._name
+        return f"{self._dongle_id} Firmware"
 
     @property
     def unique_id(self):
         """Return a unique ID."""
         return self._unique_id
 
-    def _get_installed_version(self) -> str:
-        """Get current installed version from domain data."""
-        if self._version_key == "UI_VERSION":
-            return self.coordinator.current_ui_version or "Waiting..."
-        return self.coordinator.current_fw_version or "Waiting..."
-
     @property
-    def installed_version(self) -> str:
-        """Get current version."""
-        current_version = self._get_installed_version()
-        if current_version in [None, "Waiting..."]:
-            return "1.0.0"  # Default fallback
-        return current_version
-
-
-    def _get_latest_version(self) -> str | None:
-        """Get latest version from server data."""
-        server_versions = self.coordinator.server_versions or {}
-        if self._version_key == "UI_VERSION":
-            return server_versions.get("latestUiVersion")
-        return server_versions.get("latestFwVersion")
-
-    def _get_release_notes(self) -> str | None:
-        """Get release notes from server data."""
-        server_versions = self.coordinator.server_versions or {}
-        changelog = server_versions.get("changelog")
-        if not changelog:
+    def installed_version(self) -> str | None:
+        """Version currently installed."""
+        version = self.coordinator.current_fw_versions.get(self._dongle_id)
+        
+        if version in [None, "", "Waiting...", "Unknown"]:
             return None
+            
+        return str(version)
 
-        if "UI:" in changelog and "FW:" in changelog:
-            parts = changelog.split("FW:")
-            ui_part = parts[0].replace("UI:", "").strip()
-            fw_part = parts[1].strip()
-
-            return ui_part if self._version_key == "UI_VERSION" else fw_part
-        return changelog
     @property
     def latest_version(self) -> str | None:
-        """Get latest version."""
-        latest = self._get_latest_version()
-        if latest is None:
-            return "Checking..."
-        return latest
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Update sensor with latest data from coordinator."""
-
-        # This method is called by your DataUpdateCoordinator when a successful update runs.
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
-            if value is not None:
-                self._attr_installed_version = value
-                self.async_write_ha_state()
-                # LOGGER.debug(
-                #     f"Updated {self.name} installed version to: {value}"
-                # )
-
-    # async def async_added_to_hass(self):
-    #     # Initial state update
-    #     self._attr_installed_version = self._get_installed_version()
-    #     self.async_write_ha_state()
-    #     super().async_added_to_hass()
-
-    async def async_install(
-        self, version: str | None, backup: bool, **kwargs
-    ) -> None:
+        """Latest version available."""
+        server_versions = self.coordinator.server_versions or {}
+        
+        # Check if we should use beta version
+        # You might want to add a config option for this later
+        use_beta = False  # For now, default to stable
+        
+        if use_beta:
+            version = server_versions.get("betaFwVersion")
+        else:
+            version = server_versions.get("latestFwVersion")
+            
+        if version in [None, ""]:
+            return None
+            
+        return str(version)
+    
+    def release_notes(self) -> str | None:
+        """Return the release notes."""
+        try:
+            server_versions = self.coordinator.server_versions or {}
+            
+            # Determine which changelog to show based on version
+            latest = self.latest_version
+            beta_version = server_versions.get("betaFwVersion")
+            
+            # If latest version matches beta, show beta changelog
+            if latest and beta_version and latest == beta_version:
+                changelog = server_versions.get("changelogBeta")
+            else:
+                # Otherwise show standard changelog
+                changelog = server_versions.get("changelog")
+            
+            if not changelog:
+                return None
+            
+            return str(changelog)
+        except Exception as e:
+            LOGGER.error(f"Error getting release notes: {e}")
+            return None
+    
+    @property
+    def in_progress(self) -> bool:
+        """Return True if update is in progress."""
+        return self._attr_in_progress
+    
+    @property
+    def update_percentage(self) -> int | float | None:
+        """Return update progress percentage."""
+        return self._attr_progress
+    
+    async def async_install(self, version: str | None, backup: bool, **kwargs) -> None:
         """Install an update."""
-        LOGGER.debug(f"Install update called for {self.name}")
-        mqtt_handler = self.coordinator.mqtt_handler
-        if mqtt_handler:
-            await mqtt_handler.send_update(
-                self._dongle_id,
-                self._update_command,
-                1,
-                self
-            )
+        dongle_ip = self.coordinator.get_dongle_ip(self._dongle_id)
+        if not dongle_ip:
+            raise Exception("No IP address configured for this dongle. Please configure the dongle IP in the integration settings.")
+        
+        # Use the provided version or latest version
+        target_version = version or self.latest_version
+        
+        LOGGER.info(f"Installing firmware version {target_version} on {self._dongle_id}")
+        
+        # Set update in progress
+        self._attr_in_progress = True
+        self._attr_progress = 0
+        self.async_write_ha_state()
+        
+        try:
+            # First, trigger the update
+            async with aiohttp.ClientSession() as session:
+                update_url = f"http://{dongle_ip}/api/perform-update"
+                payload = {
+                    "update": "FW_update",
+                    "fwVersion": target_version
+                }
+                
+                async with session.post(update_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                    if response.status == 200:
+                        result = await response.text()
+                        LOGGER.info(f"Update initiated successfully: {result}")
+                        # Dongle will reboot, so we need to wait and monitor progress
+                        await self._monitor_update_progress(dongle_ip)
+                    else:
+                        error_text = await response.text()
+                        raise Exception(f"Update failed with status {response.status}: {error_text}")
+                        
+        except Exception as e:
+            LOGGER.error(f"Error installing update: {e}")
+            self._attr_in_progress = False
+            self._attr_progress = None
+            self.async_write_ha_state()
+            raise
+            
+    async def _monitor_update_progress(self, dongle_ip: str) -> None:
+        """Monitor update progress via WebSocket."""
+        # Wait for dongle to reboot and start update
+        await asyncio.sleep(10)
+        
+        ws_url = f"ws://{dongle_ip}/ws"
+        retry_count = 0
+        max_retries = 30  # 5 minutes with 10 second intervals
+        
+        while retry_count < max_retries:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=300)) as ws:
+                        LOGGER.info("Connected to dongle WebSocket for update monitoring")
+                        
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                try:
+                                    import json
+                                    data = json.loads(msg.data)
+                                    
+                                    if data.get("event") == "ota_status":
+                                        status = data.get("data", "")
+                                        LOGGER.debug(f"OTA Status: {status}")
+                                        
+                                        # Parse progress from message
+                                        if "Progress:" in status and "%" in status:
+                                            import re
+                                            match = re.search(r'(\d+)%', status)
+                                            if match:
+                                                progress = int(match.group(1))
+                                                self._attr_progress = progress
+                                                self.async_write_ha_state()
+                                                
+                                        # Check for completion
+                                        if "Update complete" in status or "rebooting" in status:
+                                            LOGGER.info("Update completed successfully")
+                                            self._attr_in_progress = False
+                                            self._attr_progress = 100
+                                            self.async_write_ha_state()
+                                            return
+                                            
+                                        # Check for errors
+                                        if "failed" in status.lower() or "error" in status.lower():
+                                            raise Exception(f"Update failed: {status}")
+                                            
+                                except json.JSONDecodeError:
+                                    LOGGER.debug(f"Non-JSON WebSocket message: {msg.data}")
+                                    
+                            elif msg.type == aiohttp.WSMsgType.ERROR:
+                                LOGGER.error(f'WebSocket error: {ws.exception()}')
+                                break
+                            elif msg.type == aiohttp.WSMsgType.CLOSED:
+                                LOGGER.info("WebSocket closed")
+                                break
+                                
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                retry_count += 1
+                LOGGER.warning(f"WebSocket connection failed (attempt {retry_count}/{max_retries}): {e}")
+                if retry_count < max_retries:
+                    await asyncio.sleep(10)
+                else:
+                    # Assume update completed if we can't connect after many retries
+                    LOGGER.info("Could not monitor update progress, assuming success")
+                    self._attr_in_progress = False
+                    self._attr_progress = None
+                    self.async_write_ha_state()
+                    return

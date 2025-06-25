@@ -1,171 +1,250 @@
-# Monitor My Solar Home assistant integration
-This solution was devloped to take over from where others have started, this integration only works with hardware purchased from us directly at https://monitormy.solar
-This integration is designed to make adding your inverter to home assistant without the complexity of creating modbus solutions or other funky hardware the dongle is designed to plug in and replace your current dongle connected to your inverter
-for some brands not others (listed below) you can use our dongle to communicate with the manufacturers portal as well as our own and home assistant. 
- - Lux Power
+# Monitor My Solar - Home Assistant Integration
 
-# CHECK THE ISSUES BEFORE CONTINUING ANY FURTHER THEY MAY BE ISSUES YOU NEED TO KNOW ABOUT PRIOR TO INSTALLATION.
+[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com/Monitor-My-Solar/monitormysolar)
+[![HACS](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/hacs/integration)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-# What is this and what does it do? 
-This integration is as simple as it sounds, connect the dongle get all the entites and sensors your inverter has to offer with read and write capabilities. 
+A powerful Home Assistant integration for solar inverter monitoring and control through Monitor My Solar hardware dongles.
 
-## For issues please see the issues tab
-- if there are settings missing you would like add these to the issue already raised we will add these and then update the list with the firmware that fixes these
-- If there are settings issues please add a comment to the issue and we will add them to the list with a firmware response or HA version respons
-- if there are integration issues please add these to the issue already open and we will add these to the list with the known fix
-- if there is a issue that is worthy of its own issue the please raise a seperate issue with as much information as possible.
-- If you have a dongle issue then please raise a issue and we can look into it. 
+## Dongles are required to be on Version 3.0.0 for all the features below to work.
+- Dongles that do not update to Version 3.0.0 before 02/07/2025 will no longer receive OTA updates and you will need to contact Monitor My Solar to get a upgrade path
 
-# What inverters do you support? 
-We support the following inverters in home assistant and our monitoring portal 
-- Lux Power
-- Solis (coming soon)
-- Solax (coming Soon)
-- Growwatt (coming soon)
 
-## Want other inverters? submit a issue and we will look into the most popular ones
+## 🌟 Features
 
-# Now the important part! How to install?
+- **Real-time monitoring** of all inverter parameters
+- **Full control** over inverter settings
+- **Multi-inverter support** with automatic synchronization
+- **GridBoss support** (NEW in v3.0.0) for advanced distribution monitoring
+- **Firmware updates** with progress tracking
+- **No cloud dependency** - fully local control
 
-## Install Quirks......
-- Make sure the dongle is already sending data to the MQTT broker of your choice local in home assistant or extnernal
-- MQTT connection requires a username and password, if using homeassistants mosquitto broker you can create a user in home assistant called mqtt with a password and use this account
-- if the integration installs, but there are no entites check the logs, if it says failed to load you probabaly messed up the MQTT bit or the dongle id
-- Dongle ID is with a lowercase 'D'
-- If the dongle says its connected to mqtt its connected the issue is your setup in home assistant
-- Download MQTT FX it will be the best thing you can do to debug MQTT related issues. If MQTT FX can connect then anything can.
-- if using Mosquitto DO NOT CHANGE THE DEFAULT SERVER SETTINGS
-- We do not support MQTT over SSL
-# You have to use 24 hour time in homeassistant in youre profile and so do all users. 
-There is a bug in core that ive reported that when using 12 hour time the time entitys spam update to MQTT on state change. there is a rate limit in place of one time setting per 10 seconds with a debounce included so you can update minutes and secons in one go. if you find the time is not updating correctly this is a home assistant issue untill this is fixed we will not remove the ratelimit for time settings. 
+## 📋 Supported Inverters
 
-## Step 1:
+| Brand | Status | GridBoss Support |
+|-------|--------|------------------|
+| LuxPower | ✅ Fully Supported | ✅ IAAB Firmware |
+| Solis | 🔜 Coming Soon | ❌ |
+| Solax | 🔜 Coming Soon | ❌ |
+| Growatt | 🔜 Coming Soon | ❌ |
 
-- For the installation of this integration, you will need to have a working Home Assistant installation. If you do not have one, you can get one here: [Home Assistant Installation](https://www.home-assistant.io/installation/)
-- Once you have a working Home Assistant installation, you will need to install the Mosquitto broker. This is the broker that will be used to communicate with the dongle and Home Assistant. I will assume you have done this and know what you are doing here; these instructions will not go into detail on how to install the Mosquitto broker nor will we assist you with the installation of the broker.
-- I will also assume you have HACS installed and know how to use it. If you do not have HACS installed, you can get it here: [HACS Setup](https://hacs.xyz/docs/setup/prerequisites). Again, if you do not know how to use HACS, please do not use this integration.
+## 🚀 Quick Start
 
-### Step 1.1:
+### Prerequisites
 
-- Head to HACS and (depending on when you're reading this, you might have to add it as a custom repository) click the three dots in the top right corner and select "Custom repositories".
+1. **Monitor My Solar Dongle** - Purchase from [monitormy.solar](https://monitormy.solar)
+2. **Home Assistant** with MQTT broker (Mosquitto recommended)
+3. **HACS** installed for easy integration management
+
+### ⚠️ Important Requirements
+
+- MQTT broker must have username/password authentication
+- Use 24-hour time format in Home Assistant (due to HA core bug)
+- Dongle ID must be lowercase (e.g., `dongle-12:34:56:78:90:ab`)
+- No SSL support for MQTT connections
+
+## 📦 Installation
+
+### Step 1: Install via HACS
+
+1. Open HACS in Home Assistant
+2. Click **"+ Explore & Download Repositories"**
+3. Search for **"Monitor My Solar"**
+4. Click **Download**
+5. Restart Home Assistant
 
 <p align="center">
-  <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step1.png" target="_blank">
-    <img src="https://github.com/zakery292/monitormysolar/raw/main/images/step1.png" alt="Custom Repositories" width="150" style="display:inline-block; cursor:pointer;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/hacs.png" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/hacs.png" alt="HACS Search Results" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
-- Copy the URL of this page and paste it into the "Repository URL" field and click "Add".
+### Step 2: Configure Your Dongle
+
+1. Access your dongle's web interface: `http://[DONGLE-IP]`
+2. Enable **"Local MQTT Server"**
+3. Configure MQTT settings:
+   - Server: `mqtt://[HOME-ASSISTANT-IP]:1883`
+   - Username: Your MQTT username
+   - Password: Your MQTT password
+4. Click **Save** and wait for "Connected" status
 
 <p align="center">
-  <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step1.1.png" target="_blank">
-    <img src="https://github.com/zakery292/monitormysolar/raw/main/images/step1.1.png" alt="Add Repository URL" width="150" style="display:inline-block; cursor:pointer;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/donglemqtt.png" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/donglemqtt.png" alt="Dongle MQTT Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
-- Once added, depending on how quickly you are, it will either be right there at the top of the list or you will need to search for it. Once found, click the three dots at the end of the row and select "Download".
+### Step 3: Add Integration
 
-<table align="center">
-  <tr>
-    <td>
-      <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step1.3.png" target="_blank">
-        <img src="https://github.com/zakery292/monitormysolar/raw/main/images/step1.3.png" alt="HACS Integration Download" width="150" style="cursor:pointer;" title="Click to view full size" />
-      </a>
-    </td>
-    <td>
-      <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step1.4.png" target="_blank">
-        <img src="https://github.com/zakery292/monitormysolar/raw/main/images/step1.4.png" alt="Download Integration" width="150" style="cursor:pointer;" title="Click to view full size" />
-      </a>
-    </td>
-  </tr>
-  <tr>
-    <td><em>HACS integration download</em></td>
-    <td><em>Download integration</em></td>
-  </tr>
-</table>
-
-- Once downloaded, you will need to restart Home Assistant for the integration to be loaded.
+1. Go to **Settings** → **Devices & Services**
+2. Click **"+ Add Integration"**
+3. Search for **"Monitor My Solar"**
+4. Complete the setup:
 
 <p align="center">
-  <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step1.5.png" target="_blank">
-    <img src="https://github.com/zakery292/monitormysolar/raw/main/images/step1.5.png" alt="Restart Home Assistant" width="150" style="display:inline-block; cursor:pointer;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/integration.png" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/integration.png" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
-## Step 2:
+| Field | Description | Example |
+|-------|-------------|---------|
+| Inverter Brand | Select your inverter manufacturer | LuxPower |
+| Dongle ID | From dongle web interface (lowercase!) | dongle-12:34:56:78:90:ab |
+| Dongle IP | For firmware updates | 192.168.1.150 |
+| GridBoss Connected | Check if using GridBoss (v3.0.0+) | ☑️ |
 
-- Once Home Assistant has restarted, you will need to go to Settings -> Devices & Services -> Add Integration.
+5. Click **Submit**
 
 <p align="center">
-  <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step2.png" target="_blank">
-    <img src="images/step2.png" alt="Add Integration" width="150" style="display:inline-block; cursor:pointer;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/setup.png" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/setup.png" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
-  <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step2.1.png" target="_blank">
-    <img src="https://github.com/zakery292/monitormysolar/raw/main/images/step2.1.png" alt="Devices & Services" width="150" style="display:inline-block; cursor:pointer;" title="Click to view full size" />
+</p>
+<p align="center">
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/multiinverters.png" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/multiinverters.png" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
-- In the popup that appears, search for "Monitor My Solar" and click on the integration.
+## 🆕 GridBoss Configuration (v3.0.0)
+
+GridBoss support is available for LuxPower inverters with firmware code **IAAB**.
+
+### Enabling GridBoss
+
+**For New Installations:**
+- Check "GridBoss Connected" during initial setup
+
+**For Existing Installations:**
+1. Go to integration → **Configure**
+2. Select **Update Settings**
+3. Check **"GridBoss Connected"**
+4. Click **Submit**
+
+
+
+### GridBoss Features
+
+- **Easy House Backup**: Easily backup your house loads
+- **Smart Load Control**: Manage up to 8 loads
+- **Generator Integration**: Auto start/stop control
+- **AC Coupling**: External solar monitoring
+- **Advanced Scheduling**: Time-based automation
+
+
+
+## 🔧 Configuration Options
+
+Access via **Configure** button on the integration:
+
+### 1. Manage Dongles
+- Add parallel inverters
+- Remove dongles
+- Update IP addresses
 
 <p align="center">
-  <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step2.2.png" target="_blank">
-    <img src="https://github.com/zakery292/monitormysolar/raw/main/images/step2.2.png" alt="Search Integration" width="150" style="display:inline-block; cursor:pointer;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/configflow.png" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/configflow.png" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
-- Before going any further, you will need the "dongle-ID". You can find this on the webpage that the dongle provides when you connect directly to it. If you know the IP address of your dongle, you should be able to put that in your browser to get to the dongle config page. Once on the dongle config page, we need to set up the Home Assistant MQTT Server settings.
+### 2. Update Settings
+- Database write intervals
+- GridBoss enable/disable
+
+### 3. Check Status
+- View connection status
+- Check firmware versions
+- Monitor entity counts
 
 <p align="center">
-  <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step2.3.png" target="_blank">
-    <img src="https://github.com/zakery292/monitormysolar/raw/main/images/step2.3.png" alt="Dongle Config Page" width="150" style="display:inline-block; cursor:pointer;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/healthcheck.png" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/healthcheck.png" alt="Integration Helth check" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
-## IF YOU DO NOT FOLLOW THIS STEP IT WILL NOT WORK AND YOU WILL NOT BE GIVEN ANY HELP. DONGLE SETUP FIRST BEFORE INTEGRATION SETUP. YOU MUST SET THE MQTT SERVER AS LISTED BELOW INCLUDING THE PORT. 
+## 🔄 Firmware Updates
 
-- On the Dongle config page, click the box "Enable Local MQTT Server", fill out the MQTT Server Address as ```mqtt://<IP ADDRESS OF HOME ASSISTANT>:1883```, fill out the MQTT Server Username and MQTT Server Password with the credentials you set up in Home Assistant for Mosquitto (you can use your username and password although this is not recommended). Once done, click save. The dongle will restart.
-
+1. Ensure dongle IP is configured
+2. Click on the update entity
+3. View available updates and release notes
+4. Click **Install** to update
+5. Monitor real-time progress
 
 <p align="center">
-  <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step2.4.png" target="_blank">
-    <img src="https://github.com/zakery292/monitormysolar/raw/main/images/step2.4.png" alt="Enable Local MQTT Server" width="150" style="display:inline-block; cursor:pointer;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/firmware.png" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/firmware.png" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
-- Dongle ID is presented at the bottom of the config page for Home Assistant. You will need to change the capitalization of Dongle to lowercase dongle.
-- Once you have the Dongle-ID and you have set up the MQTT server on the dongle (you'll see connected on the webpage if it worked under Local MQTT Server), you can go back to Home Assistant and finish the integration setup.
-- For the integration, select the inverter you're setting up. Then add the dongleID the dongleID needs to be in all lowercase There is a bug on the dongle that presents the dongleID with a capital D this will be amended shortly.
+## 🤝 Multi-Inverter Setup
+
+### Automatic Synchronization
+
+Enable setting synchronization across parallel inverters:
+
+```yaml
+switch.combined_sync_settings  # Enable/disable sync
+sensor.combined_sync_status    # Monitor sync status
+```
 
 <p align="center">
-  <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step2.5.png" target="_blank">
-    <img src="https://github.com/zakery292/monitormysolar/raw/main/images/step2.5.png" alt="Finish Integration Setup" width="150" style="display:inline-block; cursor:pointer;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/multipledongles.png" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/multipledongles.png" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
-## Step 3:
+## 🛠️ Troubleshooting
 
-- If you followed these instructions and did not deviate, then you will be presented with a popup like the below image.
+### Common Issues
 
-<p align="center">
-  <a href="https://github.com/zakery292/monitormysolar/raw/main/images/step3.png" target="_blank">
-    <img src="https://github.com/zakery292/monitormysolar/raw/main/images/step3.png" alt="Integration Popup" width="150" style="display:inline-block; cursor:pointer;" title="Click to view full size" />
-  </a>
-</p>
+| Issue | Solution |
+|-------|----------|
+| No entities created | Check MQTT connection and logs |
+| Firmware timeout | Verify dongle ID is lowercase |
+| Time settings not saving | Switch to 24-hour format |
+| GridBoss entities missing | Verify firmware code IAAB |
 
-- If you are presented with this popup, then you are complete.
-- If you are not presented with this popup, then you have done something wrong and you will need to go back and check your work. If you are still stuck, please open an issue on the GitHub page and we will try to help you.
+### Debug Tools
 
-# FAQ
+1. **MQTT Explorer** - Monitor MQTT traffic
+2. **Home Assistant Logs** - Check for errors
+3. **Dongle Web Interface** - Verify connection status
 
-- **Q: Can I use an external MQTT broker?**
-  - **A:** Yes, you can. For the Dongle, just put the IP address of the MQTT broker in the server address field and enter the username and password. In Home Assistant, you need to change core-mosquitto to the IP of the MQTT broker.
-- **Q: It didn’t work?**
-  - **A:** There is not much I can do for you. You need to check your work and make sure you have done everything correctly. If you are still stuck, please open an issue on the GitHub page and we will try to help you.
-- **Q: It created the integration, told me to check the logs, and it said firmware response timeout.**
-  - **A:** This is an issue with the dongle or Home Assistant not being connected to the broker. I suggest to help you debug the issue you download MQTTFX, connect to the broker and subscribe to the topic dongle-id/#, reboot the dongle, reboot Home Assistant, delete the integration, reinstall and try again. You should see a topic called dongle-id/firmware-request and then another with /firmware-response. If you see both of these, raise an issue and include pictures of the logs or the logs in general.
-- **Q: I have a question that is not answered here.**
-  - **A:** Please open an issue on the GitHub page and we will try to help you.
+### Getting Help
 
+1. Check existing [GitHub Issues](https://github.com/Monitor-My-Solar/monitormysolar/issues)
+2. Include in bug reports:
+   - Home Assistant version
+   - Integration version
+   - Dongle firmware version
+   - Debug logs
 
+## 📊 Entity Types
 
+| Type | Count | Description |
+|------|-------|-------------|
+| Sensors | 100+ | Power, energy, temperature, etc. |
+| Switches | 20+ | EPS, charging, discharge control |
+| Numbers | 50+ | Limits, rates, thresholds |
+| Time | 40+ | Charge/discharge schedules |
+| Select | 10+ | Operating modes |
+| Binary Sensors | 5+ | Status indicators |
+| Update | 1 per dongle | Firmware updates |
 
+## 🔗 Resources
+
+- **Hardware**: [monitormy.solar](https://monitormy.solar)
+- **Documentation**: [GitHub Wiki](https://github.com/Monitor-My-Solar/monitormysolar/wiki)
+- **Support**: [GitHub Issues](https://github.com/Monitor-My-Solar/monitormysolar/issues)
+- **Community**: [Home Assistant Forum](https://community.home-assistant.io/)
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+**Note**: This integration requires official Monitor My Solar hardware. Third-party hardware is not supported.
