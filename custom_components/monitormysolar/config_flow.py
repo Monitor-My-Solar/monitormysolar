@@ -51,7 +51,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             
             # Once the user submits the form, create the entry
             return self.async_create_entry(
-                title=self._get_inverter_title(user_input['inverter_brand'], 1),
+                title=f"{user_input['inverter_brand']} - {user_input['dongle_id']}",
                 data=user_input,
             )
 
@@ -100,7 +100,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             
             # Create the entry with all the data
             return self.async_create_entry(
-                title=self._get_inverter_title(self.initial_data['inverter_brand'], len(dongle_ids)),
+                title=f"{self.initial_data['inverter_brand']} - Multiple Dongles",
                 data=combined_data,
             )
 
@@ -220,15 +220,10 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
                 
                 # Test connection to new dongle
                 if await self._test_dongle_connection(new_dongle_id):
-                    # Update the title based on new dongle count
-                    brand = self.config_entry.data.get("inverter_brand", "Lux")
-                    new_title = self._get_inverter_title(brand, len(dongle_ids))
-                    
-                    # Update entry with new data and title
+                    # Update entry with new data
                     self.hass.config_entries.async_update_entry(
                         self.config_entry, 
-                        data=new_data,
-                        title=new_title
+                        data=new_data
                     )
                     
                     # Reload the integration
@@ -275,15 +270,10 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
                 new_data["dongle_ids"] = dongle_ids
                 new_data["dongle_ips"] = dongle_ips
                 
-                # Update the title based on new dongle count
-                brand = self.config_entry.data.get("inverter_brand", "Lux")
-                new_title = self._get_inverter_title(brand, len(dongle_ids))
-                
-                # Update entry with new data and title
+                # Update entry with new data
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, 
-                    data=new_data,
-                    title=new_title
+                    data=new_data
                 )
                 
                 # Reload the integration
