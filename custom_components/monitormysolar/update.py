@@ -1,15 +1,34 @@
 # custom_components/monitormysolar/update.py
-"""Update entity for MonitorMySolar."""
+"""Update entity for MonitorMySolar.
+
+This module provides firmware update functionality with:
+- Automatic update checks every 6 hours
+- Manual update checks via the entity UI
+- Real-time progress tracking during updates
+- Release notes display
+- Support for stable and beta versions
+
+The update entity will:
+1. Check for updates automatically every 6 hours
+2. Check when user clicks on the entity (via async_release_notes)
+3. Display release notes from the server
+4. Show progress during firmware installation
+"""
 from __future__ import annotations
 
 import aiohttp
+import asyncio
+from datetime import timedelta
+from homeassistant.components import mqtt
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature, UpdateDeviceClass
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_interval
 from .const import DOMAIN, ENTITIES, LOGGER
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
 
 UPDATE_URL = "https://monitoring.monitormy.solar/version"
+UPDATE_CHECK_INTERVAL = timedelta(hours=6)  # Check every 6 hours
 
 async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry, async_add_entities) -> None:
     """Set up update entities."""
@@ -17,15 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry, asy
     dongle_ids = coordinator._dongle_ids
     
     # Fetch latest firmware version from server
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(UPDATE_URL) as response:
-                if response.status == 200:
-                    server_data = await response.json()
-                    coordinator.server_versions = server_data
-                    LOGGER.debug(f"Server versions: {server_data}")
-    except Exception as e:
-        LOGGER.error(f"Failed to fetch server versions: {e}")
+    await _fetch_server_versions(coordinator)
 
     entities = []
     
@@ -33,6 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry, asy
     for dongle_id in dongle_ids:
         entities.append(
             DongleFirmwareUpdate(
+                hass,
                 entry,
                 dongle_id
             )
@@ -40,6 +52,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry, asy
 
     if entities:
         async_add_entities(entities)
+        
+async def _fetch_server_versions(coordinator) -> None:
+    """Fetch latest firmware versions from server."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(UPDATE_URL, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    server_data = await response.json()
+                    coordinator.server_versions = server_data
+                    LOGGER.debug(f"Server versions updated: {server_data}")
+                else:
+                    LOGGER.warning(f"Failed to fetch server versions: HTTP {response.status}")
+    except asyncio.TimeoutError:
+        LOGGER.warning("Timeout fetching server versions")
+    except Exception as e:
+        LOGGER.error(f"Failed to fetch server versions: {e}")
 
 
 class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
@@ -47,13 +75,16 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
     
     _attr_supported_features = UpdateEntityFeature.RELEASE_NOTES | UpdateEntityFeature.INSTALL | UpdateEntityFeature.PROGRESS
     _attr_device_class = UpdateDeviceClass.FIRMWARE
+    _attr_has_entity_name = True
 
     def __init__(
         self,
+        hass: HomeAssistant,
         entry: MonitorMySolarEntry,
         dongle_id: str,
     ) -> None:
         """Initialize the update entity."""
+        self.hass = hass
         self.coordinator = entry.runtime_data
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
@@ -62,6 +93,8 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         self.entity_id = f"update.{self._formatted_dongle_id}_firmware_update"
         self._attr_in_progress = False
         self._attr_progress = None
+        self._unsubscribe_timer = None
+        self._last_check = None
         
         super().__init__(self.coordinator)
 
@@ -151,7 +184,10 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         # Use the provided version or latest version
         target_version = version or self.latest_version
         
-        LOGGER.info(f"Installing firmware version {target_version} on {self._dongle_id}")
+        if not target_version:
+            raise Exception("No target version specified and no latest version available")
+        
+        LOGGER.info(f"Installing firmware version {target_version} on {self._dongle_id} at IP {dongle_ip}")
         
         # Set update in progress
         self._attr_in_progress = True
@@ -166,6 +202,8 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
                     "update": "FW_update",
                     "fwVersion": target_version
                 }
+                
+                LOGGER.debug(f"Sending update request to {update_url} with payload: {payload}")
                 
                 async with session.post(update_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
                     if response.status == 200:
@@ -224,6 +262,12 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
                                             self._attr_in_progress = False
                                             self._attr_progress = 100
                                             self.async_write_ha_state()
+                                            
+                                            # Wait for dongle to reboot and update the firmware version
+                                            await asyncio.sleep(30)  # Give dongle time to reboot
+                                            
+                                            # Force a refresh of the firmware version
+                                            await self._refresh_firmware_version()
                                             return
                                             
                                         # Check for errors
@@ -251,4 +295,76 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
                     self._attr_in_progress = False
                     self._attr_progress = None
                     self.async_write_ha_state()
+                    
+                    # Wait additional time for dongle to fully reboot
+                    await asyncio.sleep(60)
+                    
+                    # Force a refresh of the firmware version
+                    await self._refresh_firmware_version()
                     return
+                    
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+        
+        # Set up periodic update checks
+        async def _periodic_update_check(_):
+            """Check for updates periodically."""
+            await self._async_check_for_update()
+        
+        self._unsubscribe_timer = async_track_time_interval(
+            self.hass, _periodic_update_check, UPDATE_CHECK_INTERVAL
+        )
+        
+        LOGGER.debug(f"Set up periodic update check for {self._dongle_id} every {UPDATE_CHECK_INTERVAL}")
+    
+    async def async_will_remove_from_hass(self) -> None:
+        """When entity will be removed from hass."""
+        if self._unsubscribe_timer:
+            self._unsubscribe_timer()
+        await super().async_will_remove_from_hass()
+    
+    async def _async_check_for_update(self) -> None:
+        """Check for firmware updates."""
+        LOGGER.debug(f"Checking for firmware updates for {self._dongle_id}")
+        await _fetch_server_versions(self.coordinator)
+        self._last_check = self.hass.loop.time()
+        self.async_write_ha_state()
+    
+    async def async_release_notes(self) -> str | None:
+        """Return the release notes and trigger update check if needed."""
+        # Check for updates if we haven't checked recently
+        if self._last_check is None or (self.hass.loop.time() - self._last_check) > 300:  # 5 minutes
+            await self._async_check_for_update()
+        
+        return self.release_notes()
+    
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Return if the entity should be enabled when first added to the entity registry."""
+        return True
+    
+    async def _refresh_firmware_version(self) -> None:
+        """Refresh the firmware version after an update."""
+        LOGGER.info(f"Refreshing firmware version for {self._dongle_id}")
+        
+        # Request the dongle to send its current firmware version
+        try:
+            await mqtt.async_publish(
+                self.hass, 
+                f"{self._dongle_id}/firmwarecode/request", 
+                ""
+            )
+            LOGGER.debug(f"Sent firmware version request to {self._dongle_id}")
+            
+            # Wait a bit for the response
+            await asyncio.sleep(5)
+            
+            # The coordinator will handle the response and update current_fw_versions
+            # Force an update check to refresh latest version
+            await self._async_check_for_update()
+            
+            LOGGER.info(f"Firmware version refreshed for {self._dongle_id}: {self.installed_version}")
+            
+        except Exception as e:
+            LOGGER.error(f"Error refreshing firmware version: {e}")

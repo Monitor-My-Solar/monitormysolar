@@ -5,3 +5,8 @@ reload_integration:
     dummy_field:
       name: "Dummy Field"
       description: "A placeholder field for reloading the integration."
+
+check_for_updates:
+  name: "Check for Updates"
+  description: "Manually check for firmware updates on all dongles"
+  fields: {}

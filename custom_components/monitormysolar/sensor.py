@@ -27,6 +27,7 @@ from homeassistant.core import (
 )
 from homeassistant.helpers.event import (
     async_track_state_change_event,
+    async_track_time_change,
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util.unit_system import METRIC_SYSTEM, US_CUSTOMARY_SYSTEM
@@ -131,6 +132,8 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
         self.entity_id: str = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
+        self._unsubscribe_midnight = None
+        self._reset_at_midnight = self._sensor_type in ["HourlyConsumption", "DailyConsumption"]
         LOGGER.debug(f"Initialized sensor {self.entity_id}")
 
         super().__init__(self.coordinator)
@@ -196,6 +199,50 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
                 self.throttled_async_write_ha_state()
         else:
             LOGGER.warning(f"entity {self.entity_id} key not found")
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
+        await super().async_added_to_hass()
+        
+        # Set up midnight reset for consumption sensors
+        if self._reset_at_midnight:
+            @callback
+            def reset_consumption(_):
+                """Reset consumption to 0 at midnight."""
+                LOGGER.info(f"Resetting {self._sensor_type} to 0 at midnight for {self._dongle_id}")
+                self._state = 0
+                self.async_write_ha_state()
+                
+                # Also reset in coordinator data
+                self.coordinator.entities[self.entity_id] = 0
+            
+            # Schedule reset at midnight (00:00:00)
+            # For HourlyConsumption, also reset every hour
+            if self._sensor_type == "HourlyConsumption":
+                # Reset every hour on the hour
+                self._unsubscribe_midnight = async_track_time_change(
+                    self.hass,
+                    reset_consumption,
+                    minute=0,
+                    second=0
+                )
+                LOGGER.debug(f"Set up hourly reset for {self._sensor_type} on {self._dongle_id}")
+            else:  # DailyConsumption
+                # Reset at midnight only
+                self._unsubscribe_midnight = async_track_time_change(
+                    self.hass,
+                    reset_consumption,
+                    hour=0,
+                    minute=0,
+                    second=0
+                )
+                LOGGER.debug(f"Set up daily midnight reset for {self._sensor_type} on {self._dongle_id}")
+    
+    async def async_will_remove_from_hass(self) -> None:
+        """When entity will be removed from hass."""
+        if self._unsubscribe_midnight:
+            self._unsubscribe_midnight()
+        await super().async_will_remove_from_hass()
 
 
 

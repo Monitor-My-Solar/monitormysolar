@@ -629,6 +629,17 @@ ENTITIES = {
                 ],
                 "holdbank4": [
                     {"name": "Off-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "SOCLowLimitForESPSDischg", "unit": "PERCENT", "min": 0, "max": 90, "mode": "slider"},
+                    {"name": "Start Charge SOC Limit", "type": "number", "unique_id": "ACChgStartSOC", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider"},
+                    {"name": "Start Discharge SOC Limit", "type": "number", "unique_id": "ACChgEndSOC", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider"},
+                    {"name": "Max Grid Input Power", "type": "number", "unique_id": "MaxGridInputPower", "unit": "kW", "min": 0, "max": 24, "mode": "slider", "step": 0.1},
+                    {"name": "Generator Ratied Input Power", "type": "number", "unique_id": "GenRatePower", "unit": "kW", "min": 0, "max": 24, "mode": "slider", "step": 0.1, "allowed_firmware_codes": ["HAAA", "FAAA", "FAAB", "ccaa", "ceaa"]},
+                    {"name": "Generator Charge Start Voltage", "type": "number", "unique_id": "GenChgStartVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "step": 0.1, "allowed_firmware_codes": ["HAAA", "FAAA", "FAAB", "ccaa", "ceaa"]},
+                    {"name": "Generator Charge End Voltage", "type": "number", "unique_id": "GenChgEndVolt", "unit": "V", "min": 50, "max": 60, "mode": "slider", "step": 0.1, "allowed_firmware_codes": ["HAAA", "FAAA", "FAAB", "ccaa", "ceaa"]},
+                    {"name": "Generator Charge Start SOC", "type": "number", "unique_id": "GenChgStartSOC", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider", "step": 1, "allowed_firmware_codes": ["HAAA", "FAAA", "FAAB", "ccaa", "ceaa"]},
+                    {"name": "Generator Charge End SOC", "type": "number", "unique_id": "GenChgEndSOC", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider", "step": 1, "allowed_firmware_codes": ["HAAA", "FAAA", "FAAB", "ccaa", "ceaa"]},
+                    {"name": "Max Generator Charge Battery Current", "type": "number", "unique_id": "MaxGenChgBatCurr", "unit": "A", "min": 0, "max": 140, "mode": "slider", "step": 1, "allowed_firmware_codes": ["HAAA", "FAAA", "FAAB", "ccaa", "ceaa"]},
+                    {"name": "Generator Charge Start Current", "type": "number", "unique_id": "GenChgStartCurr", "unit": "A", "min": 0, "max": 140, "mode": "slider", "step": 1, "allowed_firmware_codes": ["HAAA", "FAAA", "FAAB", "ccaa", "ceaa"]}
+                    
                 ],
                 "combined": [
                     {"name": "Combined AC Charge Rate", "type": "number", "unique_id": "combined_acchgpowercmd", "source_entity": "ACChgPowerCMD", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider"},
