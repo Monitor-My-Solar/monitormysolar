@@ -75,7 +75,6 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
     
     _attr_supported_features = UpdateEntityFeature.RELEASE_NOTES | UpdateEntityFeature.INSTALL | UpdateEntityFeature.PROGRESS
     _attr_device_class = UpdateDeviceClass.FIRMWARE
-    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -105,7 +104,12 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
     @property
     def name(self):
         """Return the name of the entity."""
-        return f"{self._dongle_id} Firmware"
+        if self._attr_has_entity_name:
+            # Multiple dongles - return just "Firmware"
+            return "Firmware"
+        else:
+            # Single dongle - return full name
+            return "Firmware Update"
 
     @property
     def unique_id(self):
