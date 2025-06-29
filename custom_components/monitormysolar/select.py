@@ -60,7 +60,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
 
     @property
     def name(self):
-        return f"{self._name} ({self._dongle_id})"
+        return self._name
 
     @property
     def unique_id(self):
@@ -139,7 +139,7 @@ class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
         
     @property
     def name(self):
-        return f"{self._attr_name} ({self._dongle_id})"
+        return self._attr_name
 
     @property
     def device_info(self):

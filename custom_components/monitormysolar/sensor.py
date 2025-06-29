@@ -140,7 +140,10 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def name(self):
-        return f"{self._name} ({self._dongle_id})"
+        """Return the name of the sensor."""
+        # When has_entity_name is True, just return the entity name
+        # Home Assistant will combine it with the device name
+        return self._name
 
     @property
     def unique_id(self):
@@ -271,7 +274,10 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def name(self):
-        return f"{self._name} ({self._dongle_id})"
+        """Return the name of the sensor."""
+        # When has_entity_name is True, just return the entity name
+        # Home Assistant will combine it with the device name
+        return self._name
 
     @property
     def unique_id(self):
@@ -341,7 +347,10 @@ class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def name(self):
-        return f"{self._name} ({self._dongle_id})"
+        """Return the name of the sensor."""
+        # When has_entity_name is True, just return the entity name
+        # Home Assistant will combine it with the device name
+        return self._name
 
     @property
     def unique_id(self):
@@ -489,7 +498,10 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def name(self):
-        return f"{self._name} ({self._dongle_id})"
+        """Return the name of the sensor."""
+        # When has_entity_name is True, just return the entity name
+        # Home Assistant will combine it with the device name
+        return self._name
 
     @property
     def unique_id(self):
