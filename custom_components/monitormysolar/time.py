@@ -57,7 +57,7 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
 
     @property
     def name(self):
-        return f"{self._name} ({self._dongle_id})"
+        return self._name
 
     @property
     def unique_id(self):

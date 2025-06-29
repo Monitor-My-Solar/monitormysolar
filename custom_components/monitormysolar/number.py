@@ -84,7 +84,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
 
     @property
     def name(self):
-        return f"{self._attr_name} ({self._dongle_id})"
+        return self._attr_name
 
     async def async_set_native_value(self, value):
         """Set the number value."""
