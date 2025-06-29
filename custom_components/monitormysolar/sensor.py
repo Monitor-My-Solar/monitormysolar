@@ -141,9 +141,13 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def name(self):
         """Return the name of the sensor."""
-        # When has_entity_name is True, just return the entity name
-        # Home Assistant will combine it with the device name
-        return self._name
+        # If single dongle (has_entity_name is False), return just the name
+        # If multiple dongles (has_entity_name is True), return entity name only
+        if self._attr_has_entity_name:
+            return self._name
+        else:
+            # For single dongle, return a clean name without device prefix
+            return self._name
 
     @property
     def unique_id(self):
@@ -275,9 +279,13 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def name(self):
         """Return the name of the sensor."""
-        # When has_entity_name is True, just return the entity name
-        # Home Assistant will combine it with the device name
-        return self._name
+        # If single dongle (has_entity_name is False), return just the name
+        # If multiple dongles (has_entity_name is True), return entity name only
+        if self._attr_has_entity_name:
+            return self._name
+        else:
+            # For single dongle, return a clean name without device prefix
+            return self._name
 
     @property
     def unique_id(self):
@@ -348,9 +356,13 @@ class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def name(self):
         """Return the name of the sensor."""
-        # When has_entity_name is True, just return the entity name
-        # Home Assistant will combine it with the device name
-        return self._name
+        # If single dongle (has_entity_name is False), return just the name
+        # If multiple dongles (has_entity_name is True), return entity name only
+        if self._attr_has_entity_name:
+            return self._name
+        else:
+            # For single dongle, return a clean name without device prefix
+            return self._name
 
     @property
     def unique_id(self):
@@ -499,9 +511,13 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def name(self):
         """Return the name of the sensor."""
-        # When has_entity_name is True, just return the entity name
-        # Home Assistant will combine it with the device name
-        return self._name
+        # If single dongle (has_entity_name is False), return just the name
+        # If multiple dongles (has_entity_name is True), return entity name only
+        if self._attr_has_entity_name:
+            return self._name
+        else:
+            # For single dongle, return a clean name without device prefix
+            return self._name
 
     @property
     def unique_id(self):

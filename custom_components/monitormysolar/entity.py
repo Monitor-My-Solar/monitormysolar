@@ -13,8 +13,6 @@ from .const import DOMAIN, LOGGER
 class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
     """Base MonitorMySolar entity."""
 
-    _attr_has_entity_name = True
-
     def __init__(
         self,
         coordinator: MonitorMySolar,
@@ -22,6 +20,11 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
         # self.coordinator = coordinator
         """Initialize light."""
         super().__init__(coordinator)
+        
+        # Dynamically set has_entity_name based on number of dongles
+        # If single dongle, don't use entity name (cleaner display)
+        # If multiple dongles, use entity name for clarity
+        self._attr_has_entity_name = len(coordinator._dongle_ids) > 1
         
         # If this attribute is not set in a subclass, default to True
         if not hasattr(self, '_attr_entity_registry_enabled_default'):
@@ -75,7 +78,7 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
         # Note: Home Assistant expects exactly these field names
         device_info = {
             "identifiers": {(DOMAIN, dongle_id)},
-            "name": f"{dongle_id}",
+            "name": dongle_id,
         }
         
         # Default model and manufacturer values
