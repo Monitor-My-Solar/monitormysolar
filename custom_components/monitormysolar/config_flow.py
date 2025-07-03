@@ -14,6 +14,30 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
     
+    def _normalize_dongle_id(self, dongle_id):
+        """Normalize dongle ID to format: dongle-XX:XX:XX:XX:XX:XX."""
+        if not dongle_id:
+            return ""
+        
+        # Remove any whitespace
+        dongle_id = dongle_id.strip()
+        
+        # Extract MAC address part (everything after 'dongle-' or the whole string if no prefix)
+        if dongle_id.lower().startswith("dongle-"):
+            mac_part = dongle_id[7:]  # Remove 'dongle-' prefix
+        else:
+            mac_part = dongle_id
+        
+        # Normalize MAC address: remove non-alphanumeric chars and ensure uppercase
+        mac_part = ''.join(c for c in mac_part if c.isalnum()).upper()
+        
+        # Insert colons if not present (assuming 12 character MAC)
+        if len(mac_part) == 12 and ':' not in mac_part:
+            mac_part = ':'.join(mac_part[i:i+2] for i in range(0, 12, 2))
+        
+        # Return normalized format
+        return f"dongle-{mac_part}"
+    
     def _get_inverter_title(self, brand, dongle_count=1):
         """Generate a proper title based on brand and number of dongles."""
         # Map brand codes to proper names
@@ -39,6 +63,9 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             _LOGGER.debug("User input received: %s", user_input)
+            
+            # Normalize the dongle ID
+            user_input["dongle_id"] = self._normalize_dongle_id(user_input["dongle_id"])
             
             # If parallel inverters is selected, store the data and move to the parallel step
             if user_input.get("parallel_inverters", False):
@@ -90,7 +117,9 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             for i in range(1, 4):  # Check for dongle_id_2, dongle_id_3, dongle_id_4
                 additional_dongle = user_input.get(f"dongle_id_{i+1}")
                 if additional_dongle and additional_dongle.strip():
-                    dongle_ids.append(additional_dongle)
+                    # Normalize the additional dongle ID
+                    normalized_dongle = self._normalize_dongle_id(additional_dongle)
+                    dongle_ids.append(normalized_dongle)
                     # Get corresponding IP or empty string
                     additional_ip = user_input.get(f"dongle_ip_{i+1}", "")
                     dongle_ips.append(additional_ip)
@@ -140,6 +169,30 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
     def config_entry(self):
         """Return the config entry."""
         return self._config_entry
+    
+    def _normalize_dongle_id(self, dongle_id):
+        """Normalize dongle ID to format: dongle-XX:XX:XX:XX:XX:XX."""
+        if not dongle_id:
+            return ""
+        
+        # Remove any whitespace
+        dongle_id = dongle_id.strip()
+        
+        # Extract MAC address part (everything after 'dongle-' or the whole string if no prefix)
+        if dongle_id.lower().startswith("dongle-"):
+            mac_part = dongle_id[7:]  # Remove 'dongle-' prefix
+        else:
+            mac_part = dongle_id
+        
+        # Normalize MAC address: remove non-alphanumeric chars and ensure uppercase
+        mac_part = ''.join(c for c in mac_part if c.isalnum()).upper()
+        
+        # Insert colons if not present (assuming 12 character MAC)
+        if len(mac_part) == 12 and ':' not in mac_part:
+            mac_part = ':'.join(mac_part[i:i+2] for i in range(0, 12, 2))
+        
+        # Return normalized format
+        return f"dongle-{mac_part}"
     
     def _get_inverter_title(self, brand, dongle_count=1):
         """Generate a proper title based on brand and number of dongles."""
@@ -198,7 +251,8 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
         errors = {}
         
         if user_input is not None:
-            new_dongle_id = user_input["dongle_id"]
+            # Normalize the new dongle ID
+            new_dongle_id = self._normalize_dongle_id(user_input["dongle_id"])
             new_dongle_ip = user_input.get("dongle_ip", "")
             
             # Get current data

@@ -168,6 +168,13 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def device_class(self):
         return self.sensor_info.get("device_class")
+    
+    @property
+    def suggested_display_precision(self):
+        """Return the suggested display precision for energy sensors."""
+        if self.device_class == SensorDeviceClass.ENERGY:
+            return 2
+        return None
 
     @property
     def last_reset(self):
@@ -305,6 +312,13 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def device_class(self):
         return self.sensor_info.get("device_class")
+    
+    @property
+    def suggested_display_precision(self):
+        """Return the suggested display precision for energy sensors."""
+        if self.device_class == SensorDeviceClass.ENERGY:
+            return 2
+        return None
 
     @property
     def extra_state_attributes(self):
@@ -382,6 +396,13 @@ class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def device_class(self):
         return self.sensor_info.get("device_class")
+    
+    @property
+    def suggested_display_precision(self):
+        """Return the suggested display precision for energy sensors."""
+        if self.device_class == SensorDeviceClass.ENERGY:
+            return 2
+        return None
 
 
     @property
@@ -459,6 +480,13 @@ class CombinedSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def device_class(self):
         return self.sensor_info.get("device_class")
+    
+    @property
+    def suggested_display_precision(self):
+        """Return the suggested display precision for energy sensors."""
+        if self.device_class == SensorDeviceClass.ENERGY:
+            return 2
+        return None
 
 
     @property
@@ -531,6 +559,13 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def device_class(self):
         return self.sensor_info.get("device_class")
+    
+    @property
+    def suggested_display_precision(self):
+        """Return the suggested display precision for energy sensors."""
+        if self.device_class == SensorDeviceClass.ENERGY:
+            return 2
+        return None
 
     @property
     def extra_state_attributes(self):
@@ -711,6 +746,13 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def device_class(self):
         return self.sensor_info.get("device_class")
+    
+    @property
+    def suggested_display_precision(self):
+        """Return the suggested display precision for energy sensors."""
+        if self.device_class == SensorDeviceClass.ENERGY:
+            return 2
+        return None
 
     @property
     def device_info(self):
@@ -840,6 +882,13 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def device_class(self):
         return self.sensor_info.get("device_class")
+    
+    @property
+    def suggested_display_precision(self):
+        """Return the suggested display precision for energy sensors."""
+        if self.device_class == SensorDeviceClass.ENERGY:
+            return 2
+        return None
 
     @property
     def last_reset(self):
@@ -1004,6 +1053,13 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
     @property
     def device_class(self):
         return self.sensor_info.get("device_class")
+    
+    @property
+    def suggested_display_precision(self):
+        """Return the suggested display precision for energy sensors."""
+        if self.device_class == SensorDeviceClass.ENERGY:
+            return 2
+        return None
         
     @property
     def available(self):
