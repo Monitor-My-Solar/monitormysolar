@@ -707,7 +707,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
 
         # Store the formatted IDs
         self._dongle_id = dongle_id  # For device_info
-        self._formatted_id = dongle_id.replace(":", "_")   # For sensor entity matching
+        self._formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)   # For sensor entity matching
 
         self._sensor_type = sensor_info["unique_id"]
         self.entity_id = f"sensor.{self._formatted_id}_{self._sensor_type.lower()}"
