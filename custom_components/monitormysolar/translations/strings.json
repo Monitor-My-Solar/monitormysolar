@@ -10,7 +10,10 @@
                     "mqtt_username": "MQTT Username",
                     "mqtt_password": "MQTT Password",
                     "dongle_id": "Dongle ID",
+                    "dongle_ip": "Dongle IP Address (optional)",
                     "parallel_inverters": "Setup Multiple Inverters in Parallel",
+                    "has_gridboss": "GridBoss Connected",
+                    "update_interval": "Database Update Interval",
                     "dongle_id_2": "Additional Dongle ID #2 (optional)",
                     "dongle_id_3": "Additional Dongle ID #3 (optional)",
                     "dongle_id_4": "Additional Dongle ID #4 (optional)"
@@ -21,11 +24,21 @@
             "parallel": {
                 "data": {
                     "dongle_id_2": "Dongle ID #2",
+                    "dongle_ip_2": "Dongle IP #2 (optional)",
                     "dongle_id_3": "Dongle ID #3",
-                    "dongle_id_4": "Dongle ID #4"
+                    "dongle_ip_3": "Dongle IP #3 (optional)",
+                    "dongle_id_4": "Dongle ID #4",
+                    "dongle_ip_4": "Dongle IP #4 (optional)"
                 },
                 "description": "Enter the additional dongle IDs for your parallel inverters.",
                 "title": "Multiple Inverter Configuration"
+            },
+            "gridboss": {
+                "data": {
+                    "gridboss_dongle": "GridBoss Dongle"
+                },
+                "description": "Select which dongle is connected to your GridBoss unit.",
+                "title": "GridBoss Configuration"
             }
         },
         "error": {
@@ -43,7 +56,10 @@
                     "mqtt_username": "Nombre de usuario MQTT",
                     "mqtt_password": "Contraseña MQTT",
                     "dongle_id": "ID del Dongle",
+                    "dongle_ip": "Dirección IP del Dongle (opcional)",
                     "parallel_inverters": "Configurar Múltiples Inversores en Paralelo",
+                    "has_gridboss": "GridBoss Conectado",
+                    "update_interval": "Intervalo de Actualización de Base de Datos",
                     "dongle_id_2": "ID de Dongle Adicional #2 (opcional)",
                     "dongle_id_3": "ID de Dongle Adicional #3 (opcional)",
                     "dongle_id_4": "ID de Dongle Adicional #4 (opcional)"
@@ -54,11 +70,21 @@
             "parallel": {
                 "data": {
                     "dongle_id_2": "ID de Dongle #2",
+                    "dongle_ip_2": "IP de Dongle #2 (opcional)",
                     "dongle_id_3": "ID de Dongle #3",
-                    "dongle_id_4": "ID de Dongle #4"
+                    "dongle_ip_3": "IP de Dongle #3 (opcional)",
+                    "dongle_id_4": "ID de Dongle #4",
+                    "dongle_ip_4": "IP de Dongle #4 (opcional)"
                 },
                 "description": "Ingrese los IDs de dongle adicionales para sus inversores en paralelo.",
                 "title": "Configuración de Múltiples Inversores"
+            },
+            "gridboss": {
+                "data": {
+                    "gridboss_dongle": "Dongle GridBoss"
+                },
+                "description": "Seleccione qué dongle está conectado a su unidad GridBoss.",
+                "title": "Configuración de GridBoss"
             }
         },
         "error": {

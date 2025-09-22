@@ -2,6 +2,7 @@
 custom_components/monitormysolar/__pycache__
 custom_components/monitormysolar/.claude
 custom_components/monitormysolar/docs/
+custom_components/monitormysolar/registers
 ./claude
 *.claude
 claude.md

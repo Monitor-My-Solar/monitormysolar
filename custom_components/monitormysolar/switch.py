@@ -30,6 +30,11 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
     for dongle_id in dongle_ids:
         firmware_code = coordinator.get_firmware_code(dongle_id)
         
+        # Only create entities if we have a firmware code
+        if not firmware_code:
+            _LOGGER.debug(f"Skipping entity creation for {dongle_id} - no firmware code available yet")
+            continue
+        
         # Process switches for this dongle
         for bank_name, switches in switch_config.items():
             # Skip combined switches for individual dongles
@@ -38,13 +43,23 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                 
             for switch in switches:
                 allowed_firmware_codes = switch.get("allowed_firmware_codes", [])
-                if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                    try:
-                        entities.append(
-                            InverterSwitch(switch, hass, entry, bank_name, dongle_id)
-                        )
-                    except Exception as e:
-                        _LOGGER.error(f"Error setting up switch {switch} for dongle {dongle_id}: {e}")
+                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
+                if coordinator.is_gridboss_dongle(dongle_id):
+                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
+                        continue
+                else:
+                    # For regular dongles, use the original logic
+                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                        pass  # Continue to entity creation
+                    else:
+                        continue  # Skip this entity
+                
+                try:
+                    entities.append(
+                        InverterSwitch(switch, hass, entry, bank_name, dongle_id)
+                    )
+                except Exception as e:
+                    _LOGGER.error(f"Error setting up switch {switch} for dongle {dongle_id}: {e}")
                         
     # Create combined switches if we have multiple dongles
     if len(dongle_ids) > 1 and "combined" in switch_config:
@@ -102,8 +117,20 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
     def device_info(self):
         return self.get_device_info(self._dongle_id, self._manufacturer)
 
+    @property
+    def available(self) -> bool:
+        """Check if the switch is available based on coordinator state and conditional logic."""
+        if not self.coordinator.last_update_success:
+            return False
+        
+        # Check if entity should be available based on Port Mode, SOC/Volt settings, and SmartLoad enable state
+        return self.coordinator.is_entity_available_for_smartload(self._dongle_id, self._entity_type)
+
     async def async_turn_on(self, **kwargs):
         """Turn the switch on."""
+        # Allow the action to proceed - availability logic only affects UI display
+        # The MQTT handler will send the command regardless of availability
+        
         mqtt_handler = self.coordinator.mqtt_handler
         if mqtt_handler is not None:
             self._previous_state = self._state
@@ -120,6 +147,9 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs):
         """Turn the switch off."""
+        # Allow the action to proceed - availability logic only affects UI display
+        # The MQTT handler will send the command regardless of availability
+        
         mqtt_handler = self.coordinator.mqtt_handler
         if mqtt_handler is not None:
             self._previous_state = self._state  # Save the current state before changing
@@ -139,6 +169,7 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
         if self._previous_state is not None:
             self._state = self._previous_state
             self.throttled_async_write_ha_state()
+    
 
     @callback
     def _handle_coordinator_update(self) -> None:

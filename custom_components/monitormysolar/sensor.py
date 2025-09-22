@@ -51,6 +51,11 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
         firmware_code = coordinator.get_firmware_code(dongle_id)
         formatted_dongle_id = coordinator.get_formatted_dongle_id(dongle_id)
         
+        # Only create entities if we have a firmware code
+        if not firmware_code:
+            LOGGER.debug(f"Skipping entity creation for {dongle_id} - no firmware code available yet")
+            continue
+        
         # Loop through the sensors in the configuration for this dongle
         for bank_name, sensors in sensors_config.items():
             # Skip combined sensors for individual dongles
@@ -59,43 +64,53 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                 
             for sensor in sensors:
                 allowed_firmware_codes = sensor.get("allowed_firmware_codes", [])
-                if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                    try:
-                        # Check if the sensor is of type 'status' to create the StatusSensor class
-                        if bank_name == "status":
-                            entities.append(
-                                StatusSensor(sensor, hass, entry, bank_name, dongle_id),
-                            )
-                        elif bank_name == "powerflow":
-                            entities.append(
-                                PowerFlowSensor(sensor, hass, entry, bank_name, dongle_id)
-                            )
-                        elif bank_name == "timestamp":
-                            entities.append(
-                                BankUpdateSensor(sensor, hass, entry, bank_name, dongle_id)
-                            )
-                        elif bank_name == "warning":
-                            entities.append(
-                                FaultWarningSensor(sensor, hass, entry, bank_name, dongle_id)
-                            )
-                        elif bank_name == "fault":
-                            entities.append(
-                                FaultWarningSensor(sensor, hass, entry, bank_name, dongle_id)
-                            )
-                        elif bank_name == "calculated":
-                            entities.append(
-                                CalculatedSensor(sensor, hass, entry, bank_name, dongle_id)
-                            )
-                        elif bank_name == "temperature":
-                            entities.append(
-                                TemperatureSensor(sensor, hass, entry, bank_name, dongle_id)
-                            )
-                        else:
-                            entities.append(
-                                InverterSensor(sensor, hass, entry, bank_name, dongle_id)
-                            )
-                    except Exception as e:
-                        LOGGER.error(f"Error setting up sensor {sensor} for dongle {dongle_id}: {e}")
+                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
+                if coordinator.is_gridboss_dongle(dongle_id):
+                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
+                        continue
+                else:
+                    # For regular dongles, use the original logic
+                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                        pass  # Continue to entity creation
+                    else:
+                        continue  # Skip this entity
+                
+                try:
+                    # Check if the sensor is of type 'status' to create the StatusSensor class
+                    if bank_name == "status":
+                        entities.append(
+                            StatusSensor(sensor, hass, entry, bank_name, dongle_id),
+                        )
+                    elif bank_name == "powerflow":
+                        entities.append(
+                            PowerFlowSensor(sensor, hass, entry, bank_name, dongle_id)
+                        )
+                    elif bank_name == "timestamp":
+                        entities.append(
+                            BankUpdateSensor(sensor, hass, entry, bank_name, dongle_id)
+                        )
+                    elif bank_name == "warning":
+                        entities.append(
+                            FaultWarningSensor(sensor, hass, entry, bank_name, dongle_id)
+                        )
+                    elif bank_name == "fault":
+                        entities.append(
+                            FaultWarningSensor(sensor, hass, entry, bank_name, dongle_id)
+                        )
+                    elif bank_name == "calculated":
+                        entities.append(
+                            CalculatedSensor(sensor, hass, entry, bank_name, dongle_id)
+                        )
+                    elif bank_name == "temperature":
+                        entities.append(
+                            TemperatureSensor(sensor, hass, entry, bank_name, dongle_id)
+                        )
+                    else:
+                        entities.append(
+                            InverterSensor(sensor, hass, entry, bank_name, dongle_id)
+                        )
+                except Exception as e:
+                    LOGGER.error(f"Error setting up sensor {sensor} for dongle {dongle_id}: {e}")
 
     # Create combined parallel sensors if we have multiple dongles
     if len(dongle_ids) > 1 and "combined" in sensors_config:
@@ -1149,8 +1164,19 @@ class SyncStatusSensor(MonitorMySolarEntity, SensorEntity):
         
         super().__init__(self.coordinator)
         
-        # Start periodic sync status check
-        self.hass.async_create_task(self._start_monitoring())
+        # Start periodic sync status check (but not during startup)
+        if self.coordinator._hass_startup_complete:
+            self.hass.async_create_task(self._start_monitoring())
+        else:
+            # Schedule to start after startup is complete
+            from homeassistant.helpers.event import async_call_later
+            async def start_after_startup(now=None):
+                if self.coordinator._hass_startup_complete:
+                    self.hass.async_create_task(self._start_monitoring())
+                else:
+                    # If still not ready, schedule again
+                    async_call_later(self.hass, 5, start_after_startup)
+            async_call_later(self.hass, 35, start_after_startup)  # Start after our 30s startup delay
     
     async def _start_monitoring(self):
         """Start monitoring sync status."""
@@ -1160,10 +1186,19 @@ class SyncStatusSensor(MonitorMySolarEntity, SensorEntity):
         # Initial check
         await self._check_sync_status()
         
-        # Set up periodic check every 30 seconds
-        while True:
-            await asyncio.sleep(30)
+        # Set up periodic check every 30 seconds using async_call_later instead of blocking loop
+        self._schedule_next_check()
+    
+    def _schedule_next_check(self):
+        """Schedule the next sync status check."""
+        from homeassistant.helpers.event import async_call_later
+        
+        async def check_and_schedule():
             await self._check_sync_status()
+            self._schedule_next_check()  # Schedule the next check
+        
+        # Schedule next check in 30 seconds
+        async_call_later(self.hass, 30, check_and_schedule)
     
     async def _check_sync_status(self):
         """Check the sync status of all monitored settings."""
