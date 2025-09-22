@@ -25,13 +25,28 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
     for dongle_id in dongle_ids:
         firmware_code = coordinator.get_firmware_code(dongle_id)
         
+        # Only create entities if we have a firmware code
+        if not firmware_code:
+            LOGGER.debug(f"Skipping entity creation for {dongle_id} - no firmware code available yet")
+            continue
+        
         # Setup Time entities
         time_config = brand_entities.get("time", {})
         for bank_name, time_entities in time_config.items():
             for time_entity in time_entities:
                 allowed_firmware_codes = time_entity.get("allowed_firmware_codes", [])
-                if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                    entities.append(InverterTime(time_entity, hass, entry, dongle_id))
+                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
+                if coordinator.is_gridboss_dongle(dongle_id):
+                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
+                        continue
+                else:
+                    # For regular dongles, use the original logic
+                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                        pass  # Continue to entity creation
+                    else:
+                        continue  # Skip this entity
+                
+                entities.append(InverterTime(time_entity, hass, entry, dongle_id))
 
     async_add_entities(entities, True)
 
@@ -56,6 +71,16 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
         super().__init__(self.coordinator)
 
     @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        if not self.coordinator.last_update_success:
+            return False
+        
+        # Check if entity should be available based on SmartLoad SOC/Volt settings
+        return self.coordinator.is_entity_available_for_smartload(self._dongle_id, self._entity_type)
+    
+
+    @property
     def name(self):
         return self._name
 
@@ -74,6 +99,9 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
     async def async_set_value(self, value):
         """Handle user input and send to MQTT."""
         now = datetime.now()
+
+        # Allow the action to proceed - availability logic only affects UI display
+        # The MQTT handler will send the command regardless of availability
 
         # Check if the state has changed
         if self._state == value or self._state is None:

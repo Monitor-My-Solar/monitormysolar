@@ -67,20 +67,28 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # Normalize the dongle ID
             user_input["dongle_id"] = self._normalize_dongle_id(user_input["dongle_id"])
             
-            # If parallel inverters is selected, store the data and move to the parallel step
-            if user_input.get("parallel_inverters", False):
-                self.initial_data = user_input
+            # Store initial data
+            self.initial_data = user_input
+            
+            # Determine next step based on selections
+            if user_input.get("parallel_inverters", False) and user_input.get("has_gridboss", False):
+                # Both parallel and GridBoss selected - go to parallel first, then GridBoss
                 return await self.async_step_parallel()
-            
-            # If no parallel inverters, create a single dongle entry
-            user_input["dongle_ids"] = [user_input["dongle_id"]]
-            user_input["dongle_ips"] = [user_input.get("dongle_ip", "")]
-            
-            # Once the user submits the form, create the entry
-            return self.async_create_entry(
-                title=f"{user_input['inverter_brand']} - {user_input['dongle_id']}",
-                data=user_input,
-            )
+            elif user_input.get("parallel_inverters", False):
+                # Only parallel selected
+                return await self.async_step_parallel()
+            elif user_input.get("has_gridboss", False):
+                # Only GridBoss selected
+                return await self.async_step_gridboss()
+            else:
+                # Neither selected - create single dongle entry
+                user_input["dongle_ids"] = [user_input["dongle_id"]]
+                user_input["dongle_ips"] = [user_input.get("dongle_ip", "")]
+                
+                return self.async_create_entry(
+                    title=f"{user_input['inverter_brand']} - {user_input['dongle_id']}",
+                    data=user_input,
+                )
 
         _LOGGER.debug("Displaying the form with translations")
 
@@ -124,14 +132,21 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     additional_ip = user_input.get(f"dongle_ip_{i+1}", "")
                     dongle_ips.append(additional_ip)
             
-            # Combine all data
-            combined_data = {**self.initial_data, **user_input, "dongle_ids": dongle_ids, "dongle_ips": dongle_ips}
+            # Update initial data with parallel dongle info
+            self.initial_data.update({
+                "dongle_ids": dongle_ids,
+                "dongle_ips": dongle_ips
+            })
             
-            # Create the entry with all the data
-            return self.async_create_entry(
-                title=f"{self.initial_data['inverter_brand']} - Multiple Dongles",
-                data=combined_data,
-            )
+            # Check if we need to go to GridBoss step
+            if self.initial_data.get("has_gridboss", False):
+                return await self.async_step_gridboss()
+            else:
+                # Create the entry with all the data
+                return self.async_create_entry(
+                    title=f"{self.initial_data['inverter_brand']} - Multiple Dongles",
+                    data=self.initial_data,
+                )
 
         # Create schema for additional dongles
         schema = vol.Schema(
@@ -146,6 +161,43 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
         return self.async_show_form(step_id="parallel", data_schema=schema, errors=errors)
+
+    async def async_step_gridboss(self, user_input=None):
+        """Handle the GridBoss configuration step."""
+        errors = {}
+
+        if user_input is not None:
+            # Get the GridBoss dongle selection
+            gridboss_dongle = user_input.get("gridboss_dongle", "")
+            
+            # Update initial data with GridBoss info
+            self.initial_data["gridboss_dongle"] = gridboss_dongle
+            
+            # Create the entry with all the data
+            return self.async_create_entry(
+                title=f"{self.initial_data['inverter_brand']} - GridBoss Configuration",
+                data=self.initial_data,
+            )
+
+        # Create schema for GridBoss dongle selection
+        # Build the options based on available dongles
+        dongle_options = {"": "None"}
+        
+        # Add first dongle
+        dongle_options["dongle_id"] = f"First Dongle ({self.initial_data['dongle_id']})"
+        
+        # Add additional dongles if they exist
+        dongle_ids = self.initial_data.get("dongle_ids", [])
+        for i in range(1, len(dongle_ids)):
+            dongle_options[f"dongle_id_{i+1}"] = f"Dongle {i+1} ({dongle_ids[i]})"
+
+        schema = vol.Schema(
+            {
+                vol.Required("gridboss_dongle"): vol.In(dongle_options),
+            }
+        )
+
+        return self.async_show_form(step_id="gridboss", data_schema=schema, errors=errors)
 
     async def async_setup_entry(self, hass, entry):
         _LOGGER.info("Monitor My Solar Being Setup")

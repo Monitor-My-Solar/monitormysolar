@@ -166,6 +166,24 @@ FIRMWARE_CODES = {
             "B": "Parallel Model",
             "C": "Others"
         }
+    },
+    "I_GridBoss": {
+        "Device_Type": "I GridBoss Model",
+        "Derived_Device_Type": {
+            "A": "Standard Model",
+            "B": "Others",
+            "C": "Others"
+        },
+        "ODM_Code": {
+            "A": "Luxpower",
+            "B": "Others",
+            "C": "Others"
+        },
+        "Feature_Code": {
+            "A": "Standard Model",
+            "B": "Parallel Model",
+            "C": "Others"
+        }
     }
 }
 
@@ -715,6 +733,16 @@ ENTITIES = {
                 "holdbank6": [
                     {"name": "Quick Charge Duration", "type": "select", "unique_id": "quickchgtime", "options": ["0", "15", "30", "45", "60", "90", "120"], "additional_payload": {"key": "ubquickchgstarten","value_map": {"0": "0","default": "1"}}},
 
+                ],
+                "gridboss_holdbank1": [
+                    {"name": "Smart Port 1", "type": "select", "unique_id": "SmartLoad1_PortMode", "options": ["Does Not Operate", "Smart Load", "Ac Coupled"], "allowed_firmware_codes": ["IAAB"]},
+                    {"name": "Smart Port 2", "type": "select", "unique_id": "SmartLoad2_PortMode", "options": ["Does Not Operate", "Smart Load", "Ac Coupled"], "allowed_firmware_codes": ["IAAB"]},
+                    {"name": "Smart Port 3", "type": "select", "unique_id": "SmartLoad3_PortMode", "options": ["Does Not Operate", "Smart Load", "Ac Coupled"], "allowed_firmware_codes": ["IAAB"]},
+                    {"name": "Smart Port 4", "type": "select", "unique_id": "SmartLoad4_PortMode", "options": ["Does Not Operate", "Smart Load", "Ac Coupled"], "allowed_firmware_codes": ["IAAB"]},
+                    {"name": "Smart Load 1 Mode", "type": "select", "unique_id": "SmartLoad1_SOC_Volt", "options": ["Time", "SOC/Volt"], "allowed_firmware_codes": ["IAAB"]},
+                    {"name": "Smart Load 2 Mode", "type": "select", "unique_id": "SmartLoad2_SOC_Volt", "options": ["Time", "SOC/Volt"], "allowed_firmware_codes": ["IAAB"]},
+                    {"name": "Smart Load 3 Mode", "type": "select", "unique_id": "SmartLoad3_SOC_Volt", "options": ["Time", "SOC/Volt"], "allowed_firmware_codes": ["IAAB"]},
+                    {"name": "Smart Load 4 Mode", "type": "select", "unique_id": "SmartLoad4_SOC_Volt", "options": ["Time", "SOC/Volt"], "allowed_firmware_codes": ["IAAB"]},
                 ]
             },
             "button": {
@@ -807,7 +835,8 @@ ENTITIES = {
                          "type": "update", 
                          "unique_id": "firmware_update",
                          "version_key": "SW_VERSION",
-                         "update_command": "updatedongle"
+                         "update_command": "updatedongle",
+                         "allowed_firmware_codes": ["IAAB", "AAAA", "AAAB", "BAAA", "BAAB", "ccaa", "FAAB", "FAAA", "EAAA", "EAAB", "HAAA", "ceaa"]
                      }
                  ]
              }

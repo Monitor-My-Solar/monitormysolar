@@ -24,18 +24,33 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
     for dongle_id in dongle_ids:
         firmware_code = coordinator.get_firmware_code(dongle_id)
         
+        # Only create entities if we have a firmware code
+        if not firmware_code:
+            LOGGER.debug(f"Skipping entity creation for {dongle_id} - no firmware code available yet")
+            continue
+        
         # Process selects for this dongle
         for bank_name, selects in select_config.items():
             for select in selects:
                 allowed_firmware_codes = select.get("allowed_firmware_codes", [])
-                if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                    try:
-                        if bank_name == "holdbank6":
-                            entities.append(QuickChargeDurationSelect(select, hass, entry, bank_name, dongle_id))
-                        else:
-                            entities.append(InverterSelect(select, hass, entry, dongle_id))
-                    except Exception as e:
-                        LOGGER.error(f"Error setting up select {select} for dongle {dongle_id}: {e}")
+                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
+                if coordinator.is_gridboss_dongle(dongle_id):
+                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
+                        continue
+                else:
+                    # For regular dongles, use the original logic
+                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                        pass  # Continue to entity creation
+                    else:
+                        continue  # Skip this entity
+                
+                try:
+                    if bank_name == "holdbank6":
+                        entities.append(QuickChargeDurationSelect(select, hass, entry, bank_name, dongle_id))
+                    else:
+                        entities.append(InverterSelect(select, hass, entry, dongle_id))
+                except Exception as e:
+                    LOGGER.error(f"Error setting up select {select} for dongle {dongle_id}: {e}")
 
     async_add_entities(entities, True)
 
@@ -81,13 +96,73 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
     async def async_select_option(self, option):
         """Update the select option."""
         LOGGER.info(f"Setting select option for {self.entity_id} to {option}")
+        
+        # Store the previous state before changing
+        self._previous_state = self._state
         self._state = option
+        
+        # Set a flag to indicate this is a user-initiated change
+        self._user_initiated_change = True
+        
         self.throttled_async_write_ha_state()
-
-
 
         bit_value = self._options.index(option)
         LOGGER.info(f"Setting Select value for {self.entity_id} to {option}")
+        
+        # If this is a Port Mode change, trigger immediate availability update
+        if "PortMode" in self.entity_info["unique_id"]:
+            LOGGER.info(f"Port Mode changed to {option} (value: {bit_value}), triggering immediate availability update")
+            # Update the Port Mode data immediately for availability logic
+            smartload_number = None
+            if "SmartLoad1" in self.entity_info["unique_id"]:
+                smartload_number = 1
+            elif "SmartLoad2" in self.entity_info["unique_id"]:
+                smartload_number = 2
+            elif "SmartLoad3" in self.entity_info["unique_id"]:
+                smartload_number = 3
+            elif "SmartLoad4" in self.entity_info["unique_id"]:
+                smartload_number = 4
+            
+            if smartload_number is not None:
+                # Update the Port Mode data immediately
+                port_modes = self.coordinator.get_port_modes(self._dongle_id)
+                port_modes[f"SmartLoad{smartload_number}_PortMode"] = bit_value
+                self.coordinator.update_port_modes(self._dongle_id, port_modes)
+                
+                # Log what entities should become available
+                if bit_value == 1:  # Smart Load mode
+                    LOGGER.info(f"SmartLoad{smartload_number} set to Smart Load mode - SmartLoad{smartload_number} Enable switch and SOC/Volt mode select should become available")
+                elif bit_value == 2:  # AC Coupled mode
+                    LOGGER.info(f"SmartLoad{smartload_number} set to AC Coupled mode - AC Coupled{smartload_number} Enable switch and SOC/Volt mode select should become available")
+                elif bit_value == 0:  # Does Not Operate mode
+                    LOGGER.info(f"SmartLoad{smartload_number} set to Does Not Operate mode - all related entities should become unavailable")
+        
+        # If this is a SOC/Volt mode change, trigger immediate availability update
+        elif "SOC_Volt" in self.entity_info["unique_id"]:
+            LOGGER.info(f"SOC/Volt mode changed to {option} (value: {bit_value}), triggering immediate availability update")
+            # Update the SOC/Volt mode data immediately for availability logic
+            smartload_number = None
+            if "SmartLoad1" in self.entity_info["unique_id"]:
+                smartload_number = 1
+            elif "SmartLoad2" in self.entity_info["unique_id"]:
+                smartload_number = 2
+            elif "SmartLoad3" in self.entity_info["unique_id"]:
+                smartload_number = 3
+            elif "SmartLoad4" in self.entity_info["unique_id"]:
+                smartload_number = 4
+            
+            if smartload_number is not None:
+                # Update the SOC/Volt mode data immediately
+                soc_volt_bits = self.coordinator.get_smart_soc_volt_bits(self._dongle_id)
+                soc_volt_bits[f"SmartLoad{smartload_number}_SOC_Volt"] = bit_value == 1  # True for SOC/Volt, False for Time
+                self.coordinator.update_smart_soc_volt_bits(self._dongle_id, soc_volt_bits)
+                
+                # Log what entities should become available
+                if bit_value == 1:  # SOC/Volt mode
+                    LOGGER.info(f"SmartLoad{smartload_number} set to SOC/Volt mode - SOC/Volt entities should become available, Time entities should become unavailable")
+                elif bit_value == 0:  # Time mode
+                    LOGGER.info(f"SmartLoad{smartload_number} set to Time mode - Time entities should become available, SOC/Volt entities should become unavailable")
+        
         await self.coordinator.mqtt_handler.send_update(
             self._dongle_id,
             self.entity_info["unique_id"],
@@ -97,9 +172,21 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
 
     def revert_state(self):
         """Revert to the previous state."""
-        LOGGER.info(f"Reverting state for {self.entity_id} to {self._state}")
-        # Schedule state revert on the main thread
-        self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
+        if hasattr(self, '_previous_state') and self._previous_state is not None:
+            LOGGER.info(f"Reverting state for {self.entity_id} from {self._state} to {self._previous_state}")
+            self._state = self._previous_state
+            # Clear the user-initiated flag since we're reverting
+            if hasattr(self, '_user_initiated_change'):
+                self._user_initiated_change = False
+            self.throttled_async_write_ha_state()
+        else:
+            LOGGER.warning(f"No previous state to revert to for {self.entity_id}")
+    
+    def clear_user_initiated_flag(self):
+        """Clear the user-initiated change flag when MQTT response is successful."""
+        if hasattr(self, '_user_initiated_change'):
+            LOGGER.debug(f"Select {self.entity_id}: Clearing user_initiated flag after successful MQTT response")
+            self._user_initiated_change = False
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -109,13 +196,46 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         if self.entity_id in self.coordinator.entities:
             value = self.coordinator.entities[self.entity_id]
             if value is not None:
-                self._state = (
-                    self._options[value]
-                    if isinstance(value, int) and value < len(self._options)
-                    else value
-                )
-                # Schedule state update on the main thread
-                self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
+                # Handle different value types for different select types
+                if "SOC_Volt" in self.entity_info["unique_id"]:
+                    # For SOC/Volt mode selects, value might be boolean (True/False) or int (0/1)
+                    if isinstance(value, bool):
+                        new_state = "SOC/Volt" if value else "Time"
+                    elif isinstance(value, int):
+                        new_state = self._options[value] if value < len(self._options) else value
+                    else:
+                        new_state = value
+                else:
+                    # For other selects (like Port Mode), value is typically int
+                    new_state = (
+                        self._options[value]
+                        if isinstance(value, int) and value < len(self._options)
+                        else value
+                    )
+                
+                # Debug logging to see what's happening
+                LOGGER.debug(f"Select {self.entity_id}: Coordinator update - current state: {self._state}, coordinator value: {value}, new state: {new_state}, user_initiated: {getattr(self, '_user_initiated_change', False)}")
+                
+                # If this is a user-initiated change, don't override it with coordinator data
+                # unless the coordinator data matches what the user selected
+                if hasattr(self, '_user_initiated_change') and self._user_initiated_change:
+                    if new_state == self._state:
+                        # Coordinator data matches user selection, clear the flag
+                        LOGGER.debug(f"Select {self.entity_id}: Coordinator data matches user selection, clearing user_initiated flag")
+                        self._user_initiated_change = False
+                    else:
+                        # Coordinator data doesn't match, this might be stale data
+                        LOGGER.warning(f"Select {self.entity_id}: Ignoring coordinator update during user-initiated change (coordinator: {new_state}, user: {self._state})")
+                        return
+                
+                # Only update if the state actually changed to prevent unnecessary updates
+                if new_state != self._state:
+                    LOGGER.info(f"Select {self.entity_id}: Updating state from {self._state} to {new_state} (coordinator value: {value})")
+                    self._state = new_state
+                    # Schedule state update on the main thread
+                    self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
+                else:
+                    LOGGER.debug(f"Select {self.entity_id}: No state change needed (already {self._state})")
 
 
 class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):

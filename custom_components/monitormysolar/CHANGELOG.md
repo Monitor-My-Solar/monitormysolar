@@ -1,5 +1,88 @@
 # Changelog
 
+## Version 3.1.0 - GridBoss Enhancements & Performance Improvements
+
+### 🔄 **Important: GridBoss Upgrade Instructions**
+If you are using GridBoss functionality, please follow these steps to upgrade:
+1. **Delete the integration** from Home Assistant
+2. **Reboot** Home Assistant
+3. **Update through HACS** to get the latest version
+4. **Re-setup** the integration with your GridBoss configuration
+
+This ensures a clean upgrade and prevents any configuration conflicts with the new GridBoss features.
+- **Multi-Inverter**: Enhanced support for parallel inverter configurations with GridBoss
+
+### 🚀 Major Performance Improvements
+- **Fixed Home Assistant Slow Startup**: Implemented startup delay to prevent MQTT message processing during HA initialization
+- **Eliminated Excessive Coordinator Updates**: Reduced coordinator update frequency from every 1.5 seconds to only when needed
+- **Optimized MQTT Processing**: Deferred non-critical MQTT message processing until after HA startup completion
+- **Improved Main Thread Performance**: Prevented blocking operations during Home Assistant startup
+- **Resolved Bootstrap Timeout**: Fixed blocking `while True:` loop in SyncStatusSensor that was causing 5+ minute startup times
+- **Non-Blocking Async Scheduling**: Replaced blocking loops with proper async scheduling using `async_call_later()`
+
+### 🔧 GridBoss Configuration & Setup Fixes
+- **Enhanced Config Flow**: Added dedicated GridBoss configuration step with proper dongle selection
+- **Improved Error Handling**: Added comprehensive error handling for dongle connectivity and firmware code reception
+- **Fixed Entity Creation Logic**: Implemented strict GridBoss entity filtering to prevent creation of unnecessary standard entities
+- **Corrected Device Naming**: Fixed GridBoss device naming to display "GridBoss" instead of generic names
+
+### 📡 GridBoss MQTT & Payload Processing
+- **Fixed Nested Payload Parsing**: Implemented proper handling of GridBoss nested JSON payload structure
+- **Corrected Entity Name Mapping**: Fixed mapping between payload keys and entity unique_ids
+- **Enhanced Topic Routing**: Improved MQTT topic routing for GridBoss-specific settings
+- **Simplified Payload Processing**: Streamlined nested data processing with recursive flattening
+
+### 🛠️ Technical Improvements
+- **Removed Complex Throttling**: Simplified coordinator update mechanism for better performance
+- **Enhanced Fault/Warning Deduplication**: Prevented duplicate processing of identical fault/warning data
+- **Improved Entity Type Determination**: Optimized entity type detection for better performance
+- **Better Error Recovery**: Enhanced error handling and recovery mechanisms
+
+### 🎯 User Experience Enhancements
+- **Faster Home Assistant Startup**: Reduced startup time by deferring MQTT processing
+- **Cleaner Debug Logs**: Eliminated excessive "Manually updated MonitorySolar Coordinator data" messages
+- **More Responsive Interface**: Home Assistant becomes responsive much faster after restart
+- **Better Configuration Flow**: Improved GridBoss setup process with clear error messages
+
+### 🔄 Backward Compatibility
+- **Maintained All Existing Features**: All previous functionality preserved
+- **No Breaking Changes**: Existing configurations continue to work without modification
+- **Preserved Entity History**: All entity data and settings remain intact
+- **Seamless Upgrade Path**: No manual intervention required for existing users
+
+### 📋 Technical Details
+- **Startup Delay**: 30-second delay before MQTT message processing begins
+- **Firmware Code Processing**: Still processed immediately for proper entity creation
+- **GridBoss Entity Filtering**: Only creates entities explicitly allowed for "IAAB" firmware
+- **Payload Structure**: Supports both old and new nested payload formats
+
+### 🐛 Bug Fixes
+- Fixed `IndentationError` in sensor.py that prevented integration loading
+- Resolved `NameError: name 'data_to_process' is not defined` in coordinator
+- Fixed GridBoss entity count issues (was creating ~400 entities, now creates only relevant ones)
+- Corrected GridBoss device naming in Home Assistant interface
+- Fixed nested payload parsing for GridBoss settings updates
+- **Fixed Home Assistant startup timeout**: Replaced blocking `while True:` loop in SyncStatusSensor with non-blocking async scheduling
+- **Resolved 5+ minute startup times**: Prevented bootstrap timeout warnings and excessive coordinator updates during startup
+- **Fixed GridBoss MQTT routing issue**: GridBoss settings were incorrectly being sent to bank-specific topics instead of the standard `/update` topic, causing settings to be rejected
+- **Enhanced GridBoss conditional entity system**: Implemented hierarchical availability logic based on Port Mode → SOC/Volt mode → Enable state
+- **Added Port Mode selects**: New SmartLoad1-4 Port Mode selects with proper numeric value mapping (0=Does Not Operate, 1=Smart Load, 2=AC Coupled)
+- **Fixed switch availability logic**: Added proper availability checking to switch entities based on Port Mode, SOC/Volt mode, and SmartLoad enable state
+- **Firmware code persistence**: Firmware codes are now saved to config entry data and only requested when not already available, improving startup performance
+- **Fixed availability timing issue**: Added 0.5s delay to availability updates to prevent blocking legitimate user actions when Port Mode changes
+- **Removed availability blocking from user actions**: Availability logic now only affects UI display (grayed out entities) but no longer blocks user actions, preventing the "revert" issue
+- **Fixed select entity revert issue**: Select entities now properly store previous state before changing and revert correctly on MQTT failure, preventing the auto-revert issue with Port Mode selects
+- **Fixed coordinator override issue**: Added user-initiated change flag to prevent coordinator from overriding user selections during MQTT processing, solving the select revert problem
+- **Fixed availability delay issue**: Port Mode changes now trigger immediate availability updates, and enable switches are always available when Port Mode is set to "Smart Load" or "AC Coupled" (both SmartLoad and AC Coupled enable switches)
+- **Added SOC/Volt mode select entities**: New SmartLoad1-4 Mode selects with "Time" and "SOC/Volt" options, available when Port Mode is set to "Smart Load" or "AC Coupled"
+
+### 📝 Notes
+- **Dongle Firmware**: Requires dongle firmware 3.1.0+ for optimal GridBoss functionality
+- **Performance**: Significant improvement in Home Assistant startup time
+- **GridBoss**: Full support for GridBoss units with firmware code "IAAB"
+
+---
+
 ## Version 3.0.1 - GridBoss Support & Enhanced Multi-Inverter Features
 
 ### Minimum Requirements include the dongle Firmware 3.0.0> if your dongle is below this then a OTA update will be required. 
