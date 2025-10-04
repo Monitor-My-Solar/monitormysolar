@@ -12,7 +12,6 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
     coordinator = entry.runtime_data
     inverter_brand = coordinator.inverter_brand
     dongle_ids = coordinator._dongle_ids
-    mqtt_handler = coordinator.mqtt_handler
 
     brand_entities = ENTITIES.get(inverter_brand, {})
     buttons_config = brand_entities.get("button", {})
@@ -47,11 +46,11 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                 try:
                     if bank_name == "inputbank1": 
                         entities.append(
-                            FirmwareUpdateButton(button, hass, entry, bank_name, mqtt_handler, dongle_id)
+                            FirmwareUpdateButton(button, hass, entry, bank_name, dongle_id)
                         )
                     elif bank_name == "restart":
                         entities.append(
-                            RestartButton(button, hass, entry, bank_name, mqtt_handler, dongle_id)
+                            RestartButton(button, hass, entry, bank_name, dongle_id)
                         )
                 except Exception as e:
                     LOGGER.error(f"Error setting up button {button} for dongle {dongle_id}: {e}")
@@ -59,7 +58,7 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
     async_add_entities(entities, True)
 
 class FirmwareUpdateButton(MonitorMySolarEntity, ButtonEntity):
-    def __init__(self, button_info, hass, entry: MonitorMySolarEntry, bank_name, mqtt_handler, dongle_id):
+    def __init__(self, button_info, hass, entry: MonitorMySolarEntry, bank_name, dongle_id):
         """Initialize the button."""
         LOGGER.debug(f"Initializing button with info: {button_info} for dongle {dongle_id}")
         self.coordinator = entry.runtime_data
@@ -73,7 +72,6 @@ class FirmwareUpdateButton(MonitorMySolarEntity, ButtonEntity):
         self.entity_id = f"button.{self._formatted_dongle_id}_{self._button_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
-        self._mqtt_handler = mqtt_handler
 
         super().__init__(self.coordinator)
 
@@ -119,7 +117,7 @@ class FirmwareUpdateButton(MonitorMySolarEntity, ButtonEntity):
             })
 
 class RestartButton(MonitorMySolarEntity, ButtonEntity):
-    def __init__(self, button_info, hass, entry, bank_name, mqtt_handler, dongle_id):
+    def __init__(self, button_info, hass, entry, bank_name, dongle_id):
         """Initialize the button."""
         self.coordinator = entry.runtime_data
         self.button_info = button_info
@@ -132,7 +130,6 @@ class RestartButton(MonitorMySolarEntity, ButtonEntity):
         self.entity_id = f"button.{self._formatted_dongle_id}_{self._button_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
-        self._mqtt_handler = mqtt_handler
 
         super().__init__(self.coordinator)
 

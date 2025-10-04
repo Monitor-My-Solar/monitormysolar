@@ -308,6 +308,135 @@ AttributeError: 'MonitorMySolar' object has no attribute 'current_ui_versions'
    - May be set to 0
    - Increase limit values
 
+## Conditional Entity Issues
+
+### GridBoss Entities Grayed Out/Unavailable
+
+**Symptoms:**
+- SmartLoad or AC Coupling entities appear grayed out
+- Cannot configure port-specific settings
+- Entities show as "Unavailable" in Home Assistant
+
+**Solutions:**
+
+1. **Check port mode configuration**:
+   - Verify `select.dongle_XX_SmartLoadX_PortMode` is set to "Smart Load" or "Ac Coupled"
+   - **Critical**: Port mode must be set BEFORE configuring port-specific settings
+
+2. **Follow proper configuration sequence**:
+   - **Step 1**: Set port mode (`SmartLoadX_PortMode`)
+   - **Step 2**: Configure port-specific settings (switches, numbers, time schedules)
+
+3. **Verify SmartLoad mode** (if using SmartLoad):
+   - Check `select.dongle_XX_SmartLoadX_SOC_Volt` is set to "Time" or "SOC/Volt"
+   - SOC/Volt settings only available when mode is "SOC/Volt"
+   - Time settings only available when mode is "Time"
+
+### SmartLoad Settings Not Available
+
+**Symptoms:**
+- SmartLoad SOC/Voltage settings grayed out
+- Time schedule settings unavailable
+- Cannot set SmartLoad thresholds
+
+**Solutions:**
+
+1. **Verify port is configured as SmartLoad**:
+   - `select.dongle_XX_SmartLoadX_PortMode` = "Smart Load"
+   - If set to "Ac Coupled", SmartLoad settings will be unavailable
+
+2. **Check SmartLoad mode setting**:
+   - For SOC/Voltage settings: `select.dongle_XX_SmartLoadX_SOC_Volt` = "SOC/Volt"
+   - For Time settings: `select.dongle_XX_SmartLoadX_SOC_Volt` = "Time"
+
+3. **Enable SmartLoad first**:
+   - `switch.dongle_XX_SmartLoadX_Enable` = "on"
+   - Some settings may be unavailable when SmartLoad is disabled
+
+### AC Coupling Settings Not Available
+
+**Symptoms:**
+- AC Coupling switches grayed out
+- AC Coupling SOC/Voltage settings unavailable
+- Cannot configure AC Coupling parameters
+
+**Solutions:**
+
+1. **Verify port is configured as AC Coupling**:
+   - `select.dongle_XX_SmartLoadX_PortMode` = "Ac Coupled"
+   - If set to "Smart Load", AC Coupling settings will be unavailable
+
+2. **Check AC Coupling enable switch**:
+   - `switch.dongle_XX_ACcoupleX_Enable` = "on"
+   - Some settings may be unavailable when AC Coupling is disabled
+
+### Standard Unit Charge/Discharge Settings Unavailable
+
+**Symptoms:**
+- Charge voltage settings grayed out
+- Discharge SOC settings unavailable
+- Time-based charge settings not accessible
+
+**Solutions:**
+
+1. **Check charge control setting**:
+   - For voltage settings: `select.dongle_XX_ubBatChgcontrol` = "Voltage"
+   - For SOC settings: `select.dongle_XX_ubBatChgcontrol` = "SOC"
+
+2. **Verify charge type setting**:
+   - For SOC/Volt settings: `select.dongle_XX_ACChargeType` = "SOC/Volt According To" or "Time and SOC/Volt According To"
+   - For time settings: `select.dongle_XX_ACChargeType` = "Time According To"
+
+3. **Check discharge control setting**:
+   - For voltage settings: `select.dongle_XX_ubBatDischgControl` = "Voltage"
+   - For SOC settings: `select.dongle_XX_ubBatDischgControl` = "SOC"
+
+### Port Mode Conflicts
+
+**Symptoms:**
+- Cannot use both SmartLoad and AC Coupling on same port
+- Settings become unavailable when changing port mode
+- Confusion about which settings are available
+
+**Solutions:**
+
+1. **Understand port exclusivity**:
+   - Each port can only be "Smart Load" OR "Ac Coupled", not both
+   - Changing port mode will make other mode's settings unavailable
+
+2. **Plan port configuration**:
+   - Decide which ports will be SmartLoads vs AC Coupling before configuration
+   - Document your port assignments
+
+3. **Change port mode first**:
+   - Set `select.dongle_XX_SmartLoadX_PortMode` to desired mode
+   - Then configure the appropriate settings for that mode
+
+### Entity Availability Not Updating
+
+**Symptoms:**
+- Changed port mode but entities still grayed out
+- Settings remain unavailable after configuration changes
+- Conditional logic not working properly
+
+**Solutions:**
+
+1. **Wait for entity updates**:
+   - Entity availability updates are triggered asynchronously
+   - May take a few seconds to reflect changes
+
+2. **Reload integration**:
+   - Settings → Devices & Services → Monitor My Solar → Reload
+   - This forces a refresh of entity availability
+
+3. **Check MQTT message processing**:
+   - Verify MQTT messages are being received
+   - Look for conditional logic updates in debug logs
+
+4. **Restart Home Assistant**:
+   - If conditional logic seems stuck, restart HA completely
+   - This resets all entity availability states
+
 ## General Troubleshooting Steps
 
 ### 1. Enable Debug Logging

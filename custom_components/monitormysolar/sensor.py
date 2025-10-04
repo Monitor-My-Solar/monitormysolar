@@ -36,6 +36,30 @@ from .const import DOMAIN, ENTITIES, FIRMWARE_CODES, LOGGER
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
 
+def _check_source_entities_exist(sensor_info, dongle_ids, coordinator):
+    """Check if the source entities for a combined sensor exist."""
+    calculation = sensor_info.get("calculation", {})
+    source_entity = calculation.get("source_entity")
+    source_entities = calculation.get("source_entities", [])
+    
+    if source_entities:
+        # Check multiple source entities (for NET calculations)
+        for dongle_id in dongle_ids:
+            formatted_id = coordinator.get_formatted_dongle_id(dongle_id)
+            for source_entity in source_entities:
+                entity_id = f"sensor.{formatted_id}_{source_entity.lower()}"
+                if entity_id not in coordinator.entities:
+                    return False
+    else:
+        # Check single source entity
+        for dongle_id in dongle_ids:
+            formatted_id = coordinator.get_formatted_dongle_id(dongle_id)
+            entity_id = f"sensor.{formatted_id}_{source_entity}"
+            if entity_id not in coordinator.entities:
+                return False
+    
+    return True
+
 async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities):
     coordinator = entry.runtime_data
     inverter_brand = coordinator.inverter_brand
@@ -113,13 +137,28 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                     LOGGER.error(f"Error setting up sensor {sensor} for dongle {dongle_id}: {e}")
 
     # Create combined parallel sensors if we have multiple dongles
-    if len(dongle_ids) > 1 and "combined" in sensors_config:
+    if len(dongle_ids) > 1:
         LOGGER.info(f"Creating combined sensors for {len(dongle_ids)} dongles")
-        combined_sensors = sensors_config.get("combined", [])
+        combined_sensors = coordinator.get_combined_entities_for_setup_type("sensor")
         for sensor in combined_sensors:
             try:
+                # Get the appropriate dongle IDs based on the dongle_filter
+                dongle_filter = sensor.get("calculation", {}).get("dongle_filter")
+                if dongle_filter:
+                    filtered_dongle_ids = coordinator.get_dongles_by_filter(dongle_filter)
+                    if not filtered_dongle_ids:
+                        LOGGER.debug(f"Skipping combined sensor {sensor['name']} - no dongles match filter {dongle_filter}")
+                        continue
+                else:
+                    filtered_dongle_ids = dongle_ids
+                
+                # Check if source entities exist before creating combined sensor
+                if not _check_source_entities_exist(sensor, filtered_dongle_ids, coordinator):
+                    LOGGER.debug(f"Skipping combined sensor {sensor['name']} - source entities don't exist yet")
+                    continue
+                
                 entities.append(
-                    CombinedParallelSensor(sensor, hass, entry, dongle_ids)
+                    CombinedParallelSensor(sensor, hass, entry, filtered_dongle_ids)
                 )
             except Exception as e:
                 LOGGER.error(f"Error setting up combined sensor {sensor}: {e}")
@@ -700,7 +739,7 @@ class FaultWarningSensor(MonitorMySolarEntity, SensorEntity):
                             "start_time": start_time,
                             "end_time": end_time
                         })
-                    LOGGER.debug(f"History: {self._history}")
+                    # LOGGER.debug(f"History: {self._history}")
                 else:  # Reset state
                     self._state = "No Fault" if "fault" in self._sensor_type else "No Warning"
 
@@ -722,7 +761,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
 
         # Store the formatted IDs
         self._dongle_id = dongle_id  # For device_info
-        self._formatted_id = dongle_id.replace(":", "_")   # For sensor entity matching
+        self._formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)   # For sensor entity matching
 
         self._sensor_type = sensor_info["unique_id"]
         self.entity_id = f"sensor.{self._formatted_id}_{self._sensor_type.lower()}"
@@ -964,15 +1003,27 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
         self._calculation = sensor_info.get("calculation", {})
         self._operation = self._calculation.get("operation")
         self._source_entity = self._calculation.get("source_entity")
+        self._source_entities = self._calculation.get("source_entities", [])
         self._source_values = {}
         
         # Track source entities that we need to monitor
         self._tracked_entities = []
-        for dongle_id in dongle_ids:
-            formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
-            source_entity_id = f"sensor.{formatted_id}_{self._source_entity}"
-            self._tracked_entities.append(source_entity_id)
-            self._source_values[source_entity_id] = None
+        
+        if self._source_entities:
+            # Handle multiple source entities (for NET calculations)
+            for dongle_id in dongle_ids:
+                formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+                for source_entity in self._source_entities:
+                    source_entity_id = f"sensor.{formatted_id}_{source_entity.lower()}"
+                    self._tracked_entities.append(source_entity_id)
+                    self._source_values[source_entity_id] = None
+        else:
+            # Handle single source entity (for standard combined calculations)
+            for dongle_id in dongle_ids:
+                formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+                source_entity_id = f"sensor.{formatted_id}_{self._source_entity}"
+                self._tracked_entities.append(source_entity_id)
+                self._source_values[source_entity_id] = None
         
         # Set up state tracking
         for entity_id in self._tracked_entities:
@@ -985,6 +1036,11 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
     
     def _async_add_entity_listener(self, entity_id):
         """Set up a listener for a source entity."""
+        # Check if the entity exists before setting up the listener
+        if entity_id not in self.coordinator.entities:
+            LOGGER.debug(f"Source entity {entity_id} does not exist yet, skipping listener setup")
+            return
+            
         @callback
         def async_state_changed_listener(event: Event[EventStateChangedData]) -> None:
             """Handle entity state changes."""
@@ -1020,6 +1076,12 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
             self._state = sum(values)
         elif self._operation == "average":
             self._state = sum(values) / len(values)
+        elif self._operation == "net_power":
+            # For NET power calculations (L1 + L2)
+            self._state = sum(values)
+        elif self._operation == "net_current":
+            # For NET current calculations (L1 + L2)
+            self._state = sum(values)
         else:
             LOGGER.warning(f"Unknown operation {self._operation} for combined sensor {self._name}")
             return
@@ -1193,7 +1255,7 @@ class SyncStatusSensor(MonitorMySolarEntity, SensorEntity):
         """Schedule the next sync status check."""
         from homeassistant.helpers.event import async_call_later
         
-        async def check_and_schedule():
+        async def check_and_schedule(_):
             await self._check_sync_status()
             self._schedule_next_check()  # Schedule the next check
         

@@ -276,10 +276,36 @@ class MQTTHandler:
             
             if response.get('status') == 'success':
                 LOGGER.info(f"Successfully updated state of entity {entity.entity_id}.")
+                
+                # Update coordinator's internal state with the new value for all entities
+                setting_name = response.get('setting')
+                if setting_name and hasattr(entity, '_state'):
+                    # Get the dongle_id from the entity
+                    dongle_id = getattr(entity, '_dongle_id', None)
+                    if dongle_id:
+                        new_value = entity._state
+                        LOGGER.info(f"Updating coordinator's internal state for {setting_name} to: {new_value}")
+                        
+                        # Update the coordinator's entities dictionary with the new value
+                        # This ensures the coordinator has the most up-to-date state
+                        # The entity_id is the same as the entity's entity_id
+                        entity_id = entity.entity_id
+                        if entity_id in self.coordinator.entities:
+                            self.coordinator.entities[entity_id] = new_value
+                        
+                        # Special handling for conditional entity settings
+                        if setting_name == "ACChargeType":
+                            self.coordinator.update_charge_type_setting(dongle_id, new_value)
+                        elif setting_name == "ubBatChgcontrol":
+                            self.coordinator.update_charge_control_setting(dongle_id, new_value)
+                        elif setting_name == "ubBatDischgControl":
+                            self.coordinator.update_discharge_control_setting(dongle_id, new_value)
+                
                 # Keep the current state as it was already optimistically updated
                 self.hass.loop.call_soon_threadsafe(entity.async_write_ha_state)
                 # Clear user-initiated flag for select entities
                 if hasattr(entity, 'clear_user_initiated_flag'):
+                    LOGGER.info(f"Clearing user_initiated flag for {entity.entity_id}")
                     self.hass.loop.call_soon_threadsafe(entity.clear_user_initiated_flag)
             else:
                 LOGGER.error(f"Failed to update state for {entity.entity_id}, reverting state.")

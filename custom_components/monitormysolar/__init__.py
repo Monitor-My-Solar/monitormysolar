@@ -1,6 +1,7 @@
 from homeassistant.core import HomeAssistant
 import asyncio
 from homeassistant.components import mqtt
+from homeassistant.helpers import service
 from .const import LOGGER, PLATFORMS
 from .coordinator import MonitorMySolar, MonitorMySolarEntry
 
@@ -65,17 +66,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
     else:
         LOGGER.debug("Successfully received firmware codes from all dongles")
     
-    # Step 3: Now that we have tried to get firmware codes, set up the platforms
+    # Step 3: Register platform entity services using the new October 2025 API
+    # Note: Service registration temporarily disabled due to API compatibility issues
+    # TODO: Re-enable when Home Assistant service registration API is clarified
+    LOGGER.debug("Skipping platform entity service registration - API compatibility issue")
+    
+    # Step 4: Now that we have tried to get firmware codes, set up the platforms
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except Exception as e:
         LOGGER.error(f"Error setting up platforms: {e}")
         return False
     
-    # Step 4: Mark setup as complete
+    # Step 5: Mark setup as complete
     LOGGER.info(f"Monitor My Solar setup completed successfully for {len(dongle_ids)} dongles")
     
-    # Step 5: Start listening to all MQTT topics for all dongles
+    # Step 6: Start listening to all MQTT topics for all dongles
     # Only do this once to avoid duplicate subscriptions
     await coordinator.start_mqtt_subscription()
     

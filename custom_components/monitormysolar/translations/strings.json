@@ -5,33 +5,79 @@
             "user": {
                 "data": {
                     "inverter_brand": "Inverter Brand",
-                    "mqtt_server": "MQTT Server",
-                    "mqtt_port": "MQTT Port",
-                    "mqtt_username": "MQTT Username",
-                    "mqtt_password": "MQTT Password",
-                    "dongle_id": "Dongle ID",
-                    "dongle_ip": "Dongle IP Address (optional)",
-                    "parallel_inverters": "Setup Multiple Inverters in Parallel",
-                    "has_gridboss": "GridBoss Connected",
-                    "update_interval": "Database Update Interval",
-                    "dongle_id_2": "Additional Dongle ID #2 (optional)",
-                    "dongle_id_3": "Additional Dongle ID #3 (optional)",
-                    "dongle_id_4": "Additional Dongle ID #4 (optional)"
+                    "update_interval": "Data Update Frequency"
                 },
-                "description": "Please enter the following information to set up your inverter.",
-                "title": "Inverter MQTT Configuration"
+                "description": "Please select your inverter brand and configure how often data is saved to the database.",
+                "title": "Inverter Brand Selection"
+            },
+            "single_inverter": {
+                "data": {
+                    "dongle_id": "Dongle ID",
+                    "dongle_ip": "Dongle IP Address (optional)"
+                },
+                "description": "Configure your {brand} inverter settings.",
+                "title": "Single Inverter Setup"
+            },
+            "setup_type": {
+                "data": {
+                    "setup_type": "Setup Type"
+                },
+                "description": "Choose the type of setup for your {brand} inverter(s).",
+                "title": "Setup Type Selection"
             },
             "parallel": {
                 "data": {
-                    "dongle_id_2": "Dongle ID #2",
-                    "dongle_ip_2": "Dongle IP #2 (optional)",
-                    "dongle_id_3": "Dongle ID #3",
-                    "dongle_ip_3": "Dongle IP #3 (optional)",
-                    "dongle_id_4": "Dongle ID #4",
-                    "dongle_ip_4": "Dongle IP #4 (optional)"
+                    "master_dongle_id": "Master Dongle ID",
+                    "master_dongle_ip": "Master Dongle IP (optional)",
+                    "slave_dongle_id_1": "Slave Dongle ID #1 (optional)",
+                    "slave_dongle_ip_1": "Slave Dongle IP #1 (optional)",
+                    "slave_dongle_id_2": "Slave Dongle ID #2 (optional)",
+                    "slave_dongle_ip_2": "Slave Dongle IP #2 (optional)",
+                    "slave_dongle_id_3": "Slave Dongle ID #3 (optional)",
+                    "slave_dongle_ip_3": "Slave Dongle IP #3 (optional)",
+                    "slave_dongle_id_4": "Slave Dongle ID #4 (optional)",
+                    "slave_dongle_ip_4": "Slave Dongle IP #4 (optional)",
+                    "slave_dongle_id_5": "Slave Dongle ID #5 (optional)",
+                    "slave_dongle_ip_5": "Slave Dongle IP #5 (optional)"
                 },
-                "description": "Enter the additional dongle IDs for your parallel inverters.",
-                "title": "Multiple Inverter Configuration"
+                "description": "Configure your {brand} parallel setup with the master dongle and up to 5 slave inverters.",
+                "title": "Parallel Inverter Configuration"
+            },
+            "single_gridboss": {
+                "data": {
+                    "gridboss_dongle_id": "GridBoss Dongle ID",
+                    "gridboss_dongle_ip": "GridBoss Dongle IP (optional)",
+                    "slave_dongle_id_1": "Slave Dongle ID #1 (optional)",
+                    "slave_dongle_ip_1": "Slave Dongle IP #1 (optional)",
+                    "slave_dongle_id_2": "Slave Dongle ID #2 (optional)",
+                    "slave_dongle_ip_2": "Slave Dongle IP #2 (optional)",
+                    "slave_dongle_id_3": "Slave Dongle ID #3 (optional)",
+                    "slave_dongle_ip_3": "Slave Dongle IP #3 (optional)"
+                },
+                "description": "Configure your {brand} single GridBoss setup with the GridBoss dongle and up to 3 slave inverters.",
+                "title": "Single GridBoss Configuration"
+            },
+            "dual_gridboss": {
+                "data": {
+                    "gridboss1_dongle_id": "GridBoss 1 Dongle ID",
+                    "gridboss1_dongle_ip": "GridBoss 1 Dongle IP (optional)",
+                    "gridboss2_dongle_id": "GridBoss 2 Dongle ID",
+                    "gridboss2_dongle_ip": "GridBoss 2 Dongle IP (optional)",
+                    "gridboss1_slave_dongle_id_1": "GridBoss 1 Slave Dongle ID #1 (optional)",
+                    "gridboss1_slave_dongle_ip_1": "GridBoss 1 Slave Dongle IP #1 (optional)",
+                    "gridboss1_slave_dongle_id_2": "GridBoss 1 Slave Dongle ID #2 (optional)",
+                    "gridboss1_slave_dongle_ip_2": "GridBoss 1 Slave Dongle IP #2 (optional)",
+                    "gridboss1_slave_dongle_id_3": "GridBoss 1 Slave Dongle ID #3 (optional)",
+                    "gridboss1_slave_dongle_ip_3": "GridBoss 1 Slave Dongle IP #3 (optional)",
+                    "gridboss2_slave_dongle_id_1": "GridBoss 2 Slave Dongle ID #1 (optional)",
+                    "gridboss2_slave_dongle_ip_1": "GridBoss 2 Slave Dongle IP #1 (optional)",
+                    "gridboss2_slave_dongle_id_2": "GridBoss 2 Slave Dongle ID #2 (optional)",
+                    "gridboss2_slave_dongle_ip_2": "GridBoss 2 Slave Dongle IP #2 (optional)",
+                    "gridboss2_slave_dongle_id_3": "GridBoss 2 Slave Dongle ID #3 (optional)",
+                    "gridboss2_slave_dongle_ip_3": "GridBoss 2 Slave Dongle IP #3 (optional)"
+                },
+                "description": "Configure your {brand} dual GridBoss setup with two GridBoss dongles, each with up to 3 slave inverters.",
+                "title": "Dual GridBoss Configuration"
             },
             "gridboss": {
                 "data": {

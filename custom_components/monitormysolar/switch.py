@@ -2,6 +2,7 @@ import logging
 import asyncio
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     Event,
@@ -62,19 +63,29 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                     _LOGGER.error(f"Error setting up switch {switch} for dongle {dongle_id}: {e}")
                         
     # Create combined switches if we have multiple dongles
-    if len(dongle_ids) > 1 and "combined" in switch_config:
+    if len(dongle_ids) > 1:
         _LOGGER.info(f"Creating combined switches for {len(dongle_ids)} dongles")
-        combined_switches = switch_config.get("combined", [])
+        combined_switches = coordinator.get_combined_entities_for_setup_type("switch")
         for switch in combined_switches:
             try:
+                # Get the appropriate dongle IDs based on the dongle_filter
+                dongle_filter = switch.get("dongle_filter")
+                if dongle_filter:
+                    filtered_dongle_ids = coordinator.get_dongles_by_filter(dongle_filter)
+                    if not filtered_dongle_ids:
+                        _LOGGER.debug(f"Skipping combined switch {switch['name']} - no dongles match filter {dongle_filter}")
+                        continue
+                else:
+                    filtered_dongle_ids = dongle_ids
+                
                 # Check if this is the sync settings switch
                 if switch.get("is_sync_switch", False):
                     entities.append(
-                        CombinedSyncSwitch(switch, hass, entry, dongle_ids)
+                        CombinedSyncSwitch(switch, hass, entry, filtered_dongle_ids)
                     )
                 else:
                     entities.append(
-                        CombinedSwitch(switch, hass, entry, dongle_ids)
+                        CombinedSwitch(switch, hass, entry, filtered_dongle_ids)
                     )
             except Exception as e:
                 _LOGGER.error(f"Error setting up combined switch {switch}: {e}")
@@ -120,16 +131,24 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
     @property
     def available(self) -> bool:
         """Check if the switch is available based on coordinator state and conditional logic."""
-        if not self.coordinator.last_update_success:
-            return False
-        
-        # Check if entity should be available based on Port Mode, SOC/Volt settings, and SmartLoad enable state
-        return self.coordinator.is_entity_available_for_smartload(self._dongle_id, self._entity_type)
+        # Always return True - we'll use HomeAssistantError for conditional logic
+        return self.coordinator.last_update_success
+    
+    @property
+    def device_state_attributes(self) -> dict:
+        """Return device state attributes."""
+        attrs = {}
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            attrs["unavailable_reason"] = availability_info["reason"]
+        return attrs
 
     async def async_turn_on(self, **kwargs):
         """Turn the switch on."""
-        # Allow the action to proceed - availability logic only affects UI display
-        # The MQTT handler will send the command regardless of availability
+        # Check if entity should be available based on conditional settings
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            raise HomeAssistantError(availability_info["reason"])
         
         mqtt_handler = self.coordinator.mqtt_handler
         if mqtt_handler is not None:
@@ -147,8 +166,10 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs):
         """Turn the switch off."""
-        # Allow the action to proceed - availability logic only affects UI display
-        # The MQTT handler will send the command regardless of availability
+        # Check if entity should be available based on conditional settings
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            raise HomeAssistantError(availability_info["reason"])
         
         mqtt_handler = self.coordinator.mqtt_handler
         if mqtt_handler is not None:

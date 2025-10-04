@@ -41,37 +41,72 @@ Ensure you have:
 
 ### Configuration Wizard
 
+The Monitor My Solar integration uses a multi-step configuration wizard to guide you through setup.
+
 1. Go to **Settings** → **Devices & Services**
 2. Click **"+ Add Integration"**
 3. Search for **"Monitor My Solar"**
-4. Fill in the configuration form:
+4. Follow the configuration wizard steps:
 
-### Configuration Fields
+### Step 1: Basic Configuration
 
 | Field | Description | Example |
 |-------|-------------|---------|
-| **Inverter Brand** | Select your inverter manufacturer | LuxPower |
-| **Dongle ID** | From dongle web interface (lowercase!) | dongle-12:34:56:78:90:ab |
-| **Dongle IP** | IP address for firmware updates | 192.168.1.150 |
-| **Parallel Inverters** | Check if you have multiple inverters | ☐ |
-| **Update Interval** | How often to write to database | 1 minute |
-| **GridBoss Connected** | Check if using GridBoss (IAAB only) | ☐ |
+| **Inverter Brand** | Select your inverter manufacturer | LuxPower, Solis, Solax, Growatt |
+| **Update Interval** | How often to write to database | 1 minute (default) |
 
-### Single Inverter Setup
+### Step 2: Setup Type Selection
 
-For a single inverter:
-1. Enter your dongle ID
-2. Optionally enter dongle IP (for firmware updates)
-3. Leave "Parallel Inverters" unchecked
-4. Click **Submit**
+Choose your setup type:
 
-### Multiple Inverters Setup
+| Option | Description | Use Case |
+|--------|-------------|----------|
+| **Single Inverter (Standard Setup)** | One inverter with one dongle | Basic single inverter setup |
+| **Parallel Inverters** | Multiple inverters in parallel | 2-6 inverters working together |
+| **Single GridBoss Setup** | One GridBoss with up to 3 slave inverters | GridBoss distribution system |
+| **Dual GridBoss Setup** | Two GridBoss units with slaves | Large GridBoss distribution system |
 
-For parallel inverters:
-1. Check "Parallel Inverters"
-2. Click **Submit**
-3. On the next screen, enter additional dongle IDs
-4. Click **Submit**
+### Step 3: Dongle Configuration
+
+Based on your setup type, you'll configure your dongles:
+
+#### Single Inverter Setup
+| Field | Description | Example |
+|-------|-------------|---------|
+| **Dongle ID** | From dongle web interface | dongle-12:34:56:78:90:ab |
+| **Dongle IP** | IP address for firmware updates (optional) | 192.168.1.150 |
+
+#### Parallel Inverters Setup
+| Field | Description | Example |
+|-------|-------------|---------|
+| **Master Dongle ID** | Primary dongle ID | dongle-12:34:56:78:90:ab |
+| **Master Dongle IP** | Master dongle IP (optional) | 192.168.1.150 |
+| **Slave Dongle ID 1-5** | Additional dongle IDs (optional) | dongle-12:34:56:78:90:ac |
+
+#### Single GridBoss Setup
+| Field | Description | Example |
+|-------|-------------|---------|
+| **GridBoss Dongle ID** | GridBoss dongle ID | dongle-12:34:56:78:90:ab |
+| **GridBoss Dongle IP** | GridBoss dongle IP (optional) | 192.168.1.150 |
+| **Slave Dongle ID 1-3** | Slave inverter dongle IDs (optional) | dongle-12:34:56:78:90:ac |
+
+#### Dual GridBoss Setup
+| Field | Description | Example |
+|-------|-------------|---------|
+| **GridBoss 1 Dongle ID** | First GridBoss dongle ID | dongle-12:34:56:78:90:ab |
+| **GridBoss 1 Dongle IP** | First GridBoss dongle IP (optional) | 192.168.1.150 |
+| **GridBoss 1 Slave IDs** | Up to 3 slave dongle IDs (optional) | dongle-12:34:56:78:90:ac |
+| **GridBoss 2 Dongle ID** | Second GridBoss dongle ID | dongle-12:34:56:78:90:ad |
+| **GridBoss 2 Dongle IP** | Second GridBoss dongle IP (optional) | 192.168.1.151 |
+| **GridBoss 2 Slave IDs** | Up to 3 slave dongle IDs (optional) | dongle-12:34:56:78:90:ae |
+
+### Dongle ID Format
+
+The integration automatically normalizes dongle IDs to the correct format:
+- **Input**: `12:34:56:78:90:ab` or `dongle-12:34:56:78:90:ab` or `1234567890ab`
+- **Normalized**: `dongle-12:34:56:78:90:AB`
+
+⚠️ **Important**: Dongle IDs are case-insensitive and will be automatically formatted.
 
 ## Step 3: Verify Setup
 
@@ -94,7 +129,46 @@ After successful setup:
    - Dongle MQTT settings
    - Network connectivity
 
-## Step 4: Configure Dashboard
+## Step 4: Post-Setup Configuration
+
+### Integration Options
+
+After initial setup, you can access additional configuration options:
+
+1. Go to **Settings** → **Devices & Services**
+2. Click on your Monitor My Solar integration
+3. Click the **"Configure"** button (gear icon)
+4. Choose from these options:
+
+#### Manage Dongles
+- **Add new dongle**: Add additional dongles to your setup
+- **Remove existing dongle**: Remove dongles (minimum 1 required)
+- **Update dongle IPs**: Change IP addresses for firmware updates
+
+#### Update Settings
+- **Update Interval**: Change how often data is written to database
+- **GridBoss Settings**: Enable/disable GridBoss features
+
+#### Check Status
+- **Dongle Connectivity**: Test if dongles are responding
+- **Firmware Information**: View firmware codes and versions
+- **Entity Count**: See total number of entities created
+- **Setup Errors**: Review any configuration issues
+
+### Connection Testing
+
+The integration automatically tests dongle connections when:
+- Adding new dongles
+- Checking status
+- During initial setup
+
+If a dongle doesn't respond:
+1. Check network connectivity
+2. Verify MQTT broker connection
+3. Confirm dongle is powered and connected
+4. Check dongle web interface shows "Connected"
+
+## Step 5: Configure Dashboard
 
 ### Quick Dashboard Setup
 
@@ -126,15 +200,28 @@ entities:
 
 ## Common Setup Issues
 
+### Configuration Wizard Issues
+
+**Symptoms**: Can't complete setup wizard or wrong setup type selected
+
+**Solutions**:
+1. **Wrong Setup Type**: Use the integration options to reconfigure:
+   - Go to integration settings → Configure
+   - Choose "Update Settings" to change GridBoss settings
+   - Use "Manage Dongles" to add/remove dongles
+2. **Missing Dongle IDs**: Ensure you have all dongle IDs from web interfaces
+3. **Invalid Dongle Format**: The integration auto-normalizes IDs, but ensure they're valid MAC addresses
+
 ### No Entities Created
 
 **Symptoms**: Integration added but no entities appear
 
 **Solutions**:
 1. Check MQTT broker logs for connection from dongle
-2. Verify dongle ID is lowercase
+2. Verify dongle ID format (integration auto-normalizes)
 3. Check firmware code is being received (logs)
-4. Restart Home Assistant
+4. Use "Check Status" in integration options to test connectivity
+5. Restart Home Assistant
 
 ### Entities Show "Unavailable"
 
@@ -147,6 +234,7 @@ entities:
    - Check for topics: `dongle-XX:XX:XX:XX:XX:XX/#`
 2. Check dongle web interface shows "Connected"
 3. Verify network connectivity
+4. Use "Check Status" to test dongle connectivity
 
 ### Wrong Firmware Code
 
@@ -155,11 +243,33 @@ entities:
 **Solutions**:
 1. Check logs for firmware code received
 2. Verify dongle firmware version (v3.0.0+)
-3. Contact support if firmware code unexpected
+3. Use "Check Status" to view firmware information
+4. Contact support if firmware code unexpected
+
+### GridBoss Setup Issues
+
+**Symptoms**: GridBoss features not working or missing entities
+
+**Solutions**:
+1. Verify you selected the correct GridBoss setup type
+2. Check GridBoss dongle is responding (use "Check Status")
+3. Ensure slave dongles are properly configured
+4. Verify GridBoss firmware supports the features you're trying to use
+
+### Multi-Dongle Setup Issues
+
+**Symptoms**: Some dongles not working in parallel/GridBoss setup
+
+**Solutions**:
+1. Test each dongle individually using "Check Status"
+2. Verify all dongles are on the same network
+3. Check MQTT broker can reach all dongles
+4. Use "Manage Dongles" to add/remove problematic dongles
 
 ## Next Steps
 
 - [Supported Entities](Supported-Entities) - Understand available entities
+- [Conditional Entity System](Conditional-Entity-System) - Learn about dynamic entity availability
 - [Multi-Inverter Setup](Multi-Inverter-Setup) - Add more inverters
 - [GridBoss Configuration](GridBoss-Configuration) - Enable GridBoss features
 - [Energy Dashboard](Energy-Dashboard) - Set up energy monitoring

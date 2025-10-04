@@ -1,5 +1,6 @@
 from homeassistant.components.number import NumberEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 import json
 import asyncio
 from homeassistant.helpers.event import (
@@ -60,13 +61,23 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                     LOGGER.error(f"Error setting up number {number} for dongle {dongle_id}: {e}")
                     
     # Create combined numbers if we have multiple dongles
-    if len(dongle_ids) > 1 and "combined" in number_config:
+    if len(dongle_ids) > 1:
         LOGGER.info(f"Creating combined number entities for {len(dongle_ids)} dongles")
-        combined_numbers = number_config.get("combined", [])
+        combined_numbers = coordinator.get_combined_entities_for_setup_type("number")
         for number in combined_numbers:
             try:
+                # Get the appropriate dongle IDs based on the dongle_filter
+                dongle_filter = number.get("dongle_filter")
+                if dongle_filter:
+                    filtered_dongle_ids = coordinator.get_dongles_by_filter(dongle_filter)
+                    if not filtered_dongle_ids:
+                        LOGGER.debug(f"Skipping combined number {number['name']} - no dongles match filter {dongle_filter}")
+                        continue
+                else:
+                    filtered_dongle_ids = dongle_ids
+                
                 entities.append(
-                    CombinedNumber(number, hass, entry, dongle_ids)
+                    CombinedNumber(number, hass, entry, filtered_dongle_ids)
                 )
             except Exception as e:
                 LOGGER.error(f"Error setting up combined number {number}: {e}")
@@ -100,11 +111,17 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        if not self.coordinator.last_update_success:
-            return False
-        
-        # Check if entity should be available based on SmartLoad SOC/Volt settings
-        return self.coordinator.is_entity_available_for_smartload(self._dongle_id, self._entity_type)
+        # Always return True - we'll use HomeAssistantError for conditional logic
+        return self.coordinator.last_update_success
+    
+    @property
+    def device_state_attributes(self) -> dict:
+        """Return device state attributes."""
+        attrs = {}
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            attrs["unavailable_reason"] = availability_info["reason"]
+        return attrs
     
 
     @property
@@ -115,8 +132,10 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         """Set the number value."""
         LOGGER.debug(f"Setting value of number {self.entity_id} to {value}")
         
-        # Allow the action to proceed - availability logic only affects UI display
-        # The MQTT handler will send the command regardless of availability
+        # Check if entity should be available based on conditional settings
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            raise HomeAssistantError(availability_info["reason"])
         
         mqtt_handler = self.coordinator.mqtt_handler
         if mqtt_handler is not None:
@@ -148,7 +167,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
 
-        # This method is called by your DataUpdateCoordinator when a successful update runs.
+
         if self.entity_id in self.coordinator.entities:
             value = self.coordinator.entities[self.entity_id]
             if value is not None:
