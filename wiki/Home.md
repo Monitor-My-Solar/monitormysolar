@@ -17,6 +17,7 @@ Welcome to the Monitor My Solar wiki! This integration connects Home Assistant t
 
 ### Features
 - [Supported Entities](Supported-Entities)
+- [Conditional Entity System](Conditional-Entity-System)
 - [Firmware Updates](Firmware-Updates)
 - [Inverter Synchronization](Inverter-Synchronization)
 - [Energy Dashboard Integration](Energy-Dashboard)

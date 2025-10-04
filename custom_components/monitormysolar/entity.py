@@ -165,3 +165,15 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
         else:
             LOGGER.warning(f"entity {self.entity_id} key not found")
         self.throttled_async_write_ha_state()
+    
+    def reload_integration(self) -> None:
+        """Reload the integration."""
+        LOGGER.info("Reload integration service called")
+        # This would typically reload the integration
+        # For now, just log the call
+    
+    def check_for_updates(self) -> None:
+        """Check for firmware updates."""
+        LOGGER.info("Check for updates service called")
+        # This would typically check for firmware updates
+        # For now, just log the call

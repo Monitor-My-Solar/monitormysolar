@@ -57,6 +57,9 @@ This ensures a clean upgrade and prevents any configuration conflicts with the n
 - **Payload Structure**: Supports both old and new nested payload formats
 
 ### 🐛 Bug Fixes
+- **Fixed entity filtering issue**: Corrected `allowed_device_types` to `allowed_firmware_codes` in const.py to ensure proper entity creation filtering based on firmware codes
+- **Resolved duplicate entity creation**: Fixed issue where entities with same unique_id but different firmware code requirements were both being created due to incorrect filtering key names
+- **Improved firmware code filtering**: All sensor, switch, number, select, and time entities now properly respect firmware code restrictions during entity creation
 - Fixed `IndentationError` in sensor.py that prevented integration loading
 - Resolved `NameError: name 'data_to_process' is not defined` in coordinator
 - Fixed GridBoss entity count issues (was creating ~400 entities, now creates only relevant ones)
@@ -75,6 +78,15 @@ This ensures a clean upgrade and prevents any configuration conflicts with the n
 - **Fixed coordinator override issue**: Added user-initiated change flag to prevent coordinator from overriding user selections during MQTT processing, solving the select revert problem
 - **Fixed availability delay issue**: Port Mode changes now trigger immediate availability updates, and enable switches are always available when Port Mode is set to "Smart Load" or "AC Coupled" (both SmartLoad and AC Coupled enable switches)
 - **Added SOC/Volt mode select entities**: New SmartLoad1-4 Mode selects with "Time" and "SOC/Volt" options, available when Port Mode is set to "Smart Load" or "AC Coupled"
+- **Added enhanced charge control entities**: New charge control system with dual-condition logic:
+  - **Charge Control Select**: "Charge Control" select with "Voltage" and "SOC" options
+  - **Charge Based On Select**: "Charge Based on" select with "Time According To", "SOC/Volt According To", and "Time and SOC/Volt According To" options (firmware-dependent)
+  - **Charge Voltage Entities**: "AC Charge Start (Voltage)" and "AC Charge End (Voltage)" number entities (available when Charge Control = "Voltage" AND Charge Based On = "SOC/Volt According To" or "Time and SOC/Volt According To")
+  - **Charge SOC Entities**: "AC Charge Start (SOC)" and "AC Charge End (SOC)" number entities (available when Charge Control = "SOC" AND Charge Based On = "SOC/Volt According To" or "Time and SOC/Volt According To")
+  - **Charge Time Entities**: 48 time slot select entities (Time0-Time47) for 30-minute intervals with "Does Not Operate", "AC Charge", "PV Charge", "Discharge" options (available when Charge Based On = "Time According To")
+  - **Charge Time Entities**: "AC Charge Start", "AC Charge End", "AC Charge Start1", "AC Charge End1", "AC Charge Start2", "AC Charge End2" time entities (available when Charge Based On = "Time According To")
+- **Fixed device page hanging issue**: Resolved invalid min/max range in "Battery Charge Start Point (W)" number entity that was causing device pages to hang when loading entities
+- **Migrated to Home Assistant October 2025 service registration API**: Updated service registration to use the new `service.async_register_platform_entity_service` API to ensure compatibility with the latest Home Assistant version
 
 ### 📝 Notes
 - **Dongle Firmware**: Requires dongle firmware 3.1.0+ for optimal GridBoss functionality

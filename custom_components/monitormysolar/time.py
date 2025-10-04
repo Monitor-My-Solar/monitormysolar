@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import asyncio
 from homeassistant.components.time import TimeEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import (
     async_track_state_change_event,
 )
@@ -73,11 +74,17 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        if not self.coordinator.last_update_success:
-            return False
-        
-        # Check if entity should be available based on SmartLoad SOC/Volt settings
-        return self.coordinator.is_entity_available_for_smartload(self._dongle_id, self._entity_type)
+        # Always return True - we'll use HomeAssistantError for conditional logic
+        return self.coordinator.last_update_success
+    
+    @property
+    def device_state_attributes(self) -> dict:
+        """Return device state attributes."""
+        attrs = {}
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            attrs["unavailable_reason"] = availability_info["reason"]
+        return attrs
     
 
     @property
@@ -100,8 +107,10 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
         """Handle user input and send to MQTT."""
         now = datetime.now()
 
-        # Allow the action to proceed - availability logic only affects UI display
-        # The MQTT handler will send the command regardless of availability
+        # Check if entity should be available based on conditional settings
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            raise HomeAssistantError(availability_info["reason"])
 
         # Check if the state has changed
         if self._state == value or self._state is None:

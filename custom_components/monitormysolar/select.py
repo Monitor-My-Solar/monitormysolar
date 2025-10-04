@@ -1,5 +1,6 @@
 from homeassistant.components.select import SelectEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import (
     async_track_state_change_event,
 )
@@ -92,10 +93,30 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
     @property
     def device_info(self):
         return self.get_device_info(self._dongle_id, self._manufacturer)
+    
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Always return True - we'll use HomeAssistantError for conditional logic
+        return self.coordinator.last_update_success
+    
+    @property
+    def device_state_attributes(self) -> dict:
+        """Return device state attributes."""
+        attrs = {}
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            attrs["unavailable_reason"] = availability_info["reason"]
+        return attrs
 
     async def async_select_option(self, option):
         """Update the select option."""
         LOGGER.info(f"Setting select option for {self.entity_id} to {option}")
+        
+        # Check if entity should be available based on conditional settings
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            raise HomeAssistantError(availability_info["reason"])
         
         # Store the previous state before changing
         self._previous_state = self._state
@@ -109,11 +130,13 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         bit_value = self._options.index(option)
         LOGGER.info(f"Setting Select value for {self.entity_id} to {option}")
         
+        # Initialize smartload_number for Port Mode logic
+        smartload_number = None
+        
         # If this is a Port Mode change, trigger immediate availability update
         if "PortMode" in self.entity_info["unique_id"]:
             LOGGER.info(f"Port Mode changed to {option} (value: {bit_value}), triggering immediate availability update")
             # Update the Port Mode data immediately for availability logic
-            smartload_number = None
             if "SmartLoad1" in self.entity_info["unique_id"]:
                 smartload_number = 1
             elif "SmartLoad2" in self.entity_info["unique_id"]:
@@ -122,20 +145,33 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
                 smartload_number = 3
             elif "SmartLoad4" in self.entity_info["unique_id"]:
                 smartload_number = 4
+        
+        # If this is a charge/discharge control change, trigger immediate availability update
+        elif self.entity_info["unique_id"] == "ubBatChgcontrol":
+            LOGGER.info(f"Charge Control changed to {option}, triggering immediate availability update")
+            self.coordinator.update_charge_control_setting(self._dongle_id, option)
+        elif self.entity_info["unique_id"] == "ubBatDischgControl":
+            LOGGER.info(f"Discharge Control changed to {option}, triggering immediate availability update")
+            self.coordinator.update_discharge_control_setting(self._dongle_id, option)
+        elif self.entity_info["unique_id"] == "ACChargeType":
+            LOGGER.info(f"Charge Type changed to {option}, triggering immediate availability update")
+            self.coordinator.update_charge_type_setting(self._dongle_id, option)
+            LOGGER.info(f"Current charge type setting after update: {self.coordinator.get_charge_type_setting(self._dongle_id)}")
+        
+        # Handle Port Mode updates
+        if smartload_number is not None:
+            # Update the Port Mode data immediately
+            port_modes = self.coordinator.get_port_modes(self._dongle_id)
+            port_modes[f"SmartLoad{smartload_number}_PortMode"] = bit_value
+            self.coordinator.update_port_modes(self._dongle_id, port_modes)
             
-            if smartload_number is not None:
-                # Update the Port Mode data immediately
-                port_modes = self.coordinator.get_port_modes(self._dongle_id)
-                port_modes[f"SmartLoad{smartload_number}_PortMode"] = bit_value
-                self.coordinator.update_port_modes(self._dongle_id, port_modes)
-                
-                # Log what entities should become available
-                if bit_value == 1:  # Smart Load mode
-                    LOGGER.info(f"SmartLoad{smartload_number} set to Smart Load mode - SmartLoad{smartload_number} Enable switch and SOC/Volt mode select should become available")
-                elif bit_value == 2:  # AC Coupled mode
-                    LOGGER.info(f"SmartLoad{smartload_number} set to AC Coupled mode - AC Coupled{smartload_number} Enable switch and SOC/Volt mode select should become available")
-                elif bit_value == 0:  # Does Not Operate mode
-                    LOGGER.info(f"SmartLoad{smartload_number} set to Does Not Operate mode - all related entities should become unavailable")
+            # Log what entities should become available
+            if bit_value == 1:  # Smart Load mode
+                LOGGER.info(f"SmartLoad{smartload_number} set to Smart Load mode - SmartLoad{smartload_number} Enable switch and SOC/Volt mode select should become available")
+            elif bit_value == 2:  # AC Coupled mode
+                LOGGER.info(f"SmartLoad{smartload_number} set to AC Coupled mode - AC Coupled{smartload_number} Enable switch and SOC/Volt mode select should become available")
+            elif bit_value == 0:  # Does Not Operate mode
+                LOGGER.info(f"SmartLoad{smartload_number} set to Does Not Operate mode - all related entities should become unavailable")
         
         # If this is a SOC/Volt mode change, trigger immediate availability update
         elif "SOC_Volt" in self.entity_info["unique_id"]:
@@ -214,7 +250,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
                     )
                 
                 # Debug logging to see what's happening
-                LOGGER.debug(f"Select {self.entity_id}: Coordinator update - current state: {self._state}, coordinator value: {value}, new state: {new_state}, user_initiated: {getattr(self, '_user_initiated_change', False)}")
+                # LOGGER.info(f"Select {self.entity_id}: Coordinator update - current state: {self._state}, coordinator value: {value}, new state: {new_state}, user_initiated: {getattr(self, '_user_initiated_change', False)}")
                 
                 # If this is a user-initiated change, don't override it with coordinator data
                 # unless the coordinator data matches what the user selected
@@ -230,12 +266,17 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
                 
                 # Only update if the state actually changed to prevent unnecessary updates
                 if new_state != self._state:
-                    LOGGER.info(f"Select {self.entity_id}: Updating state from {self._state} to {new_state} (coordinator value: {value})")
+                    # Only log if this isn't the initial state setup (when _state was None)
+                    if self._state is not None:
+                        LOGGER.info(f"Select {self.entity_id}: Updating state from {self._state} to {new_state} (coordinator value: {value})")
+                    else:
+                        LOGGER.debug(f"Select {self.entity_id}: Initializing state to {new_state} (coordinator value: {value})")
                     self._state = new_state
                     # Schedule state update on the main thread
                     self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
                 else:
-                    LOGGER.debug(f"Select {self.entity_id}: No state change needed (already {self._state})")
+                    # LOGGER.debug(f"Select {self.entity_id}: No state change needed (already {self._state})")
+                    pass
 
 
 class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):

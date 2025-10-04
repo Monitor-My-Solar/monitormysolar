@@ -41,10 +41,29 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self.entry = entry
         self.mqtt_handler = {}
         
-        # Get dongle IDs from config entry data (fallback to single dongle ID for backward compatibility)
-        self._dongle_ids: List[str] = entry.data.get("dongle_ids", [entry.data.get("dongle_id")])
-        # Get dongle IPs (may be empty strings if not provided)
-        self._dongle_ips: List[str] = entry.data.get("dongle_ips", [""] * len(self._dongle_ids))
+        # Get dongle data from config entry (new structure with bundle tracking)
+        self._dongle_data: List[Dict[str, Any]] = entry.data.get("dongle_data", [])
+        
+        # Fallback to old structure for backward compatibility
+        if not self._dongle_data:
+            # Create dongle_data from old structure
+            dongle_ids = entry.data.get("dongle_ids", [entry.data.get("dongle_id")])
+            dongle_ips = entry.data.get("dongle_ips", [""] * len(dongle_ids))
+            self._dongle_data = []
+            for i, (dongle_id, dongle_ip) in enumerate(zip(dongle_ids, dongle_ips)):
+                self._dongle_data.append({
+                    "dongle_id": dongle_id,
+                    "dongle_ip": dongle_ip,
+                    "is_master": i == 0,  # First dongle is master
+                    "is_slave": i > 0,    # Others are slaves
+                    "is_gridboss": False,
+                    "is_gridboss_slave": False,
+                    "gridboss_bundle": None
+                })
+        
+        # Extract dongle IDs and IPs for backward compatibility
+        self._dongle_ids: List[str] = [d["dongle_id"] for d in self._dongle_data]
+        self._dongle_ips: List[str] = [d["dongle_ip"] for d in self._dongle_data]
         
         # Initialize per-dongle data structures
         # Load saved firmware codes from config entry
@@ -70,6 +89,11 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._smart_soc_volt_bits = {}  # Track SmartSOCVoltBits for each dongle
         self._smartload_bits = {}  # Track SmartLoad Bits for each dongle
         self._port_modes = {}  # Track Port Mode settings for each dongle
+        
+        # Track charge/discharge control settings for standard units
+        self._charge_control_settings = {}  # Track ubBatChgcontrol for each dongle
+        self._discharge_control_settings = {}  # Track ubBatDischgControl for each dongle
+        self._charge_type_settings = {}  # Track ACChargeType for each dongle
 
         super().__init__(
             hass,
@@ -100,7 +124,12 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         if firmware_code == "IAAB":
             return True
         
-        # If no firmware code yet, check config flow setting
+        # Use the new dongle data structure to check if this dongle is marked as GridBoss
+        dongle_info = self.get_dongle_info(dongle_id)
+        if dongle_info.get("is_gridboss", False):
+            return True
+        
+        # Fallback to old logic for backward compatibility
         if not self._has_gridboss or not self._gridboss_dongle:
             return False
         
@@ -122,7 +151,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Update the SmartSOCVoltBits settings for a dongle."""
         old_bits = self._smart_soc_volt_bits.get(dongle_id, {})
         self._smart_soc_volt_bits[dongle_id] = smart_soc_volt_bits
-        LOGGER.debug(f"Updated SmartSOCVoltBits for {dongle_id}: {smart_soc_volt_bits}")
+        # LOGGER.debug(f"Updated SmartSOCVoltBits for {dongle_id}: {smart_soc_volt_bits}")
         
         # If the bits changed, trigger entity updates
         if old_bits != smart_soc_volt_bits:
@@ -132,13 +161,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Trigger entity availability updates for a dongle."""
         # Don't trigger updates during startup
         if not self._hass_startup_complete:
-            LOGGER.debug(f"Skipping entity availability update for {dongle_id} - HA startup not complete")
+            # LOGGER.debug(f"Skipping entity availability update for {dongle_id} - HA startup not complete")
             return
         
         # Add a small delay to allow MQTT responses to be processed first
         # This prevents availability logic from blocking legitimate user actions
         from homeassistant.helpers.event import async_call_later
-        async_call_later(self.hass, 2, self._async_update_entity_availability, dongle_id)
+        async def delayed_update(_):
+            await self._async_update_entity_availability(dongle_id)
+        async_call_later(self.hass, 2, delayed_update)
     
     async def _async_update_entity_availability(self, dongle_id: str):
         """Update entity availability states."""
@@ -146,7 +177,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # Simply trigger a single coordinator update to refresh entity availability
             # The entities will check their availability in their available() property
             self.async_set_updated_data(self.entities)
-            LOGGER.debug(f"Triggered entity availability update for {dongle_id}")
+            # LOGGER.debug(f"Triggered entity availability update for {dongle_id}")
         except Exception as e:
             LOGGER.error(f"Error updating entity availability for {dongle_id}: {e}")
     
@@ -199,7 +230,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Update the SmartLoad Bits settings for a dongle."""
         old_bits = self._smartload_bits.get(dongle_id, {})
         self._smartload_bits[dongle_id] = smartload_bits
-        LOGGER.debug(f"Updated SmartLoad Bits for {dongle_id}: {smartload_bits}")
+        # LOGGER.debug(f"Updated SmartLoad Bits for {dongle_id}: {smartload_bits}")
         
         # If the bits changed, trigger entity updates
         if old_bits != smartload_bits:
@@ -213,7 +244,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Update the Port Mode settings for a dongle."""
         old_modes = self._port_modes.get(dongle_id, {})
         self._port_modes[dongle_id] = port_modes
-        LOGGER.debug(f"Updated Port Modes for {dongle_id}: {port_modes}")
+        # LOGGER.debug(f"Updated Port Modes for {dongle_id}: {port_modes}")
         
         # If the modes changed, trigger entity updates
         if old_modes != port_modes:
@@ -228,6 +259,42 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         port_modes = self.get_port_modes(dongle_id)
         key = f"SmartLoad{smartload_number}_PortMode"  # The payload uses "SmartLoad1_PortMode", "SmartLoad2_PortMode", etc.
         return port_modes.get(key, 0)  # Default to "Does Not Operate"
+    
+    def update_charge_control_setting(self, dongle_id: str, charge_control: str):
+        """Update the charge control setting for a dongle."""
+        if dongle_id not in self._charge_control_settings:
+            self._charge_control_settings[dongle_id] = {}
+        self._charge_control_settings[dongle_id] = charge_control
+        # LOGGER.debug(f"Updated charge control setting for {dongle_id}: {charge_control}")
+        self._trigger_entity_availability_update(dongle_id)
+    
+    def get_charge_control_setting(self, dongle_id: str) -> str:
+        """Get the charge control setting for a dongle."""
+        return self._charge_control_settings.get(dongle_id, "SOC")  # Default to SOC
+    
+    def update_discharge_control_setting(self, dongle_id: str, discharge_control: str):
+        """Update the discharge control setting for a dongle."""
+        if dongle_id not in self._discharge_control_settings:
+            self._discharge_control_settings[dongle_id] = {}
+        self._discharge_control_settings[dongle_id] = discharge_control
+        # LOGGER.debug(f"Updated discharge control setting for {dongle_id}: {discharge_control}")
+        self._trigger_entity_availability_update(dongle_id)
+    
+    def get_discharge_control_setting(self, dongle_id: str) -> str:
+        """Get the discharge control setting for a dongle."""
+        return self._discharge_control_settings.get(dongle_id, "SOC")  # Default to SOC
+    
+    def update_charge_type_setting(self, dongle_id: str, charge_type: str):
+        """Update the charge type setting for a dongle."""
+        if dongle_id not in self._charge_type_settings:
+            self._charge_type_settings[dongle_id] = {}
+        self._charge_type_settings[dongle_id] = charge_type
+        LOGGER.debug(f"Updated charge type setting for {dongle_id}: {charge_type}")
+        self._trigger_entity_availability_update(dongle_id)
+    
+    def get_charge_type_setting(self, dongle_id: str) -> str:
+        """Get the charge type setting for a dongle."""
+        return self._charge_type_settings.get(dongle_id, "Time According To")  # Default to Time According To
     
     def is_smartload_enabled(self, dongle_id: str, smartload_number: int) -> bool:
         """Check if a SmartLoad is enabled."""
@@ -259,10 +326,10 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         if "SOC_Volt" in entity_unique_id:
             port_mode = self.get_smartload_port_mode(dongle_id, smartload_number)
             if port_mode in [1, 2]:  # Smart Load or AC Coupled mode
-                LOGGER.debug(f"Entity {entity_unique_id}: SOC/Volt mode select, Port Mode={port_mode}, available")
+                # LOGGER.debug(f"Entity {entity_unique_id}: SOC/Volt mode select, Port Mode={port_mode}, available")
                 return True
             else:
-                LOGGER.debug(f"Entity {entity_unique_id}: SOC/Volt mode select, Port Mode={port_mode}, not available")
+                # LOGGER.debug(f"Entity {entity_unique_id}: SOC/Volt mode select, Port Mode={port_mode}, not available")
                 return False
         
         # If it's not a SmartLoad entity and not a Port Mode select, check if it's AC Coupled
@@ -291,11 +358,11 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         
         # Step 1: Check Port Mode first
         port_mode = self.get_smartload_port_mode(dongle_id, smartload_number)
-        LOGGER.debug(f"Entity {entity_unique_id}: SmartLoad{smartload_number} Port Mode={port_mode}")
+        # LOGGER.debug(f"Entity {entity_unique_id}: SmartLoad{smartload_number} Port Mode={port_mode}")
         
         # If Port Mode is "Does Not Operate" (0), no entities are available
         if port_mode == 0:
-            LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=0, entity not available")
+            # LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=0, entity not available")
             return False
         
         # Step 2: Check entity type based on Port Mode
@@ -305,22 +372,22 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 # Step 3: Check SOC/Volt vs Time mode for Smart Load entities
                 if self._is_soc_volt_entity(entity_unique_id):
                     soc_volt_enabled = self.is_smartload_soc_volt_enabled(dongle_id, smartload_number)
-                    LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=1, SOC/Volt entity, SOC/Volt enabled={soc_volt_enabled}")
+                    # LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=1, SOC/Volt entity, SOC/Volt enabled={soc_volt_enabled}")
                     return soc_volt_enabled
                 elif self._is_time_entity(entity_unique_id):
                     time_enabled = not self.is_smartload_soc_volt_enabled(dongle_id, smartload_number)
-                    LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=1, Time entity, Time enabled={time_enabled}")
+                    # LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=1, Time entity, Time enabled={time_enabled}")
                     return time_enabled
                 else:
                     # Enable/Disable switches are always available when Port Mode is Smart Load
                     if "Enable" in entity_unique_id:
-                        LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=1, Enable switch, always available")
+                        # LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=1, Enable switch, always available")
                         return True
                     # Other entities are available if SmartLoad is enabled
                     smartload_enabled = self.is_smartload_enabled(dongle_id, smartload_number)
-                    LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=1, Other entity, SmartLoad enabled={smartload_enabled}")
+                    # LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=1, Other entity, SmartLoad enabled={smartload_enabled}")
                     return smartload_enabled
-            LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=1, but not a SmartLoad entity")
+            # LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=1, but not a SmartLoad entity")
             return False
             
         elif port_mode == 2:  # AC Coupled mode
@@ -328,10 +395,10 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             if "ACcouple" in entity_unique_id:
                 # AC Coupled enable switches are always available when Port Mode is AC Coupled
                 if "Enable" in entity_unique_id:
-                    LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=2, AC Coupled Enable switch, always available")
+                        # LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=2, AC Coupled Enable switch, always available")
                     return True
                 # Other AC Coupled entities are available
-                LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=2, AC Coupled entity, available")
+                # LOGGER.debug(f"Entity {entity_unique_id}: Port Mode=2, AC Coupled entity, available")
                 return True
             return False
         
@@ -347,10 +414,194 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         time_entities = ["Start0", "End0", "Start1", "End1", "Start2", "End2", "StartMinute", "EndMinute"]
         return any(entity in entity_unique_id for entity in time_entities)
     
+    def _is_charge_voltage_entity(self, entity_unique_id: str) -> bool:
+        """Check if an entity is charge voltage related."""
+        charge_voltage_entities = ["ACChgStartVolt", "ACChgEndVolt"]
+        return any(entity in entity_unique_id for entity in charge_voltage_entities)
+    
+    def _is_charge_soc_entity(self, entity_unique_id: str) -> bool:
+        """Check if an entity is charge SOC related."""
+        charge_soc_entities = ["ACChgStartSOC", "ACChgEndSOC"]
+        return any(entity in entity_unique_id for entity in charge_soc_entities)
+    
+    def _is_discharge_voltage_entity(self, entity_unique_id: str) -> bool:
+        """Check if an entity is discharge voltage related."""
+        discharge_voltage_entities = ["ForceDichgEndVolt"]
+        return any(entity in entity_unique_id for entity in discharge_voltage_entities)
+    
+    def _is_discharge_soc_entity(self, entity_unique_id: str) -> bool:
+        """Check if an entity is discharge SOC related."""
+        discharge_soc_entities = ["ForcedDischgSOCLimit"]
+        return any(entity in entity_unique_id for entity in discharge_soc_entities)
+    
+    def _is_charge_time_entity(self, entity_unique_id: str) -> bool:
+        """Check if an entity is charge time related (select entities for time-based charging)."""
+        # Check for Time0-Time47 select entities (30-minute time slots)
+        # Entity IDs are formatted as "dongle_id_Time0", "dongle_id_Time1", etc.
+        for i in range(48):  # Time0 through Time47
+            if entity_unique_id.endswith(f"_Time{i}") or entity_unique_id == f"Time{i}":
+                return True
+        
+        # Check for other time-based charge entities
+        charge_time_entities = ["ACChgStart", "ACChgEnd", "ACChgStart1", "ACChgEnd1", "ACChgStart2", "ACChgEnd2"]
+        return any(entity in entity_unique_id for entity in charge_time_entities)
+    
+    def is_entity_available_for_standard_units(self, dongle_id: str, entity_unique_id: str) -> bool:
+        """Check if an entity should be available for standard units based on charge/discharge control settings."""
+        # Check charge control entities (independent of ACChargeType)
+        if self._is_charge_voltage_entity(entity_unique_id):
+            charge_control = self.get_charge_control_setting(dongle_id)
+            # ubBatChgcontrol: 0="Voltage", 1="SOC"
+            return charge_control == 0  # 0 = "Voltage"
+        
+        if self._is_charge_soc_entity(entity_unique_id):
+            charge_control = self.get_charge_control_setting(dongle_id)
+            # ubBatChgcontrol: 0="Voltage", 1="SOC"
+            return charge_control == 1  # 1 = "SOC"
+        
+        # Check charge time entities
+        if self._is_charge_time_entity(entity_unique_id):
+            charge_type = self.get_charge_type_setting(dongle_id)
+            # ACChargeType: 0="Time According To", 1="SOC/Volt According To", 2="Time and SOC/Volt According To"
+            return charge_type == 0  # 0 = "Time According To"
+        
+        # Check discharge control entities
+        if self._is_discharge_voltage_entity(entity_unique_id):
+            discharge_control = self.get_discharge_control_setting(dongle_id)
+            # ubBatDischgControl: 0="Voltage", 1="SOC"
+            return discharge_control == 0  # 0 = "Voltage"
+        
+        if self._is_discharge_soc_entity(entity_unique_id):
+            discharge_control = self.get_discharge_control_setting(dongle_id)
+            # ubBatDischgControl: 0="Voltage", 1="SOC"
+            return discharge_control == 1  # 1 = "SOC"
+        
+        # For all other entities, they are always available
+        return True
+    
     def is_entity_available_for_smartload(self, dongle_id: str, entity_unique_id: str) -> bool:
         """Check if an entity should be available based on Port Mode, SOC/Volt settings, and SmartLoad enable state."""
         # Use the new hierarchical availability logic
         return self.is_entity_available_for_smartload_enable(dongle_id, entity_unique_id)
+    
+    def is_entity_available(self, dongle_id: str, entity_unique_id: str) -> bool:
+        """Unified method to check entity availability for both GridBoss and standard units."""
+        if self.is_gridboss_dongle(dongle_id):
+            # Use GridBoss conditional logic
+            return self.is_entity_available_for_smartload_enable(dongle_id, entity_unique_id)
+        else:
+            # Use standard unit conditional logic
+            return self.is_entity_available_for_standard_units(dongle_id, entity_unique_id)
+    
+    def get_entity_availability_info(self, dongle_id: str, entity_unique_id: str) -> dict:
+        """Get detailed availability information including reason for unavailability."""
+        if not self.last_update_success:
+            return {
+                "available": False,
+                "reason": "Integration not responding - check connection"
+            }
+        
+        if self.is_gridboss_dongle(dongle_id):
+            # GridBoss logic
+            available = self.is_entity_available_for_smartload_enable(dongle_id, entity_unique_id)
+            if not available:
+                reason = self._get_gridboss_unavailability_reason(dongle_id, entity_unique_id)
+            else:
+                reason = None
+        else:
+            # Standard unit logic
+            available = self.is_entity_available_for_standard_units(dongle_id, entity_unique_id)
+            if not available:
+                reason = self._get_standard_unit_unavailability_reason(dongle_id, entity_unique_id)
+            else:
+                reason = None
+        
+        return {
+            "available": available,
+            "reason": reason
+        }
+    
+    def _get_gridboss_unavailability_reason(self, dongle_id: str, entity_unique_id: str) -> str:
+        """Get specific reason why a GridBoss entity is unavailable."""
+        # Check if it's a SmartLoad entity
+        if "SmartLoad" in entity_unique_id:
+            # Extract SmartLoad number
+            for i in range(1, 5):
+                if f"SmartLoad{i}" in entity_unique_id:
+                    smartload_number = i
+                    break
+            else:
+                return "SmartLoad configuration not detected"
+            
+            port_mode = self.get_smartload_port_mode(dongle_id, smartload_number)
+            
+            if port_mode == 0:  # Does Not Operate
+                return f"Smart Port {smartload_number} is set to 'Does Not Operate'"
+            elif port_mode == 1:  # Smart Load
+                if "Enable" in entity_unique_id:
+                    return f"Smart Port {smartload_number} is in Smart Load mode - Enable switch should be available"
+                elif "SOC_Volt" in entity_unique_id:
+                    return f"Smart Port {smartload_number} is in Smart Load mode - SOC/Volt mode should be available"
+                elif self._is_soc_volt_entity(entity_unique_id):
+                    soc_volt_mode = self.is_smartload_soc_volt_enabled(dongle_id, smartload_number)
+                    if not soc_volt_mode:
+                        return f"Smart Port {smartload_number} is in Time mode - SOC/Volt settings not available"
+                elif self._is_time_entity(entity_unique_id):
+                    soc_volt_mode = self.is_smartload_soc_volt_enabled(dongle_id, smartload_number)
+                    if soc_volt_mode:
+                        return f"Smart Port {smartload_number} is in SOC/Volt mode - Time settings not available"
+            elif port_mode == 2:  # AC Coupled
+                if "Enable" in entity_unique_id:
+                    return f"Smart Port {smartload_number} is in AC Coupled mode - Enable switch should be available"
+                elif "SOC_Volt" in entity_unique_id:
+                    return f"Smart Port {smartload_number} is in AC Coupled mode - SOC/Volt mode should be available"
+                elif self._is_soc_volt_entity(entity_unique_id):
+                    soc_volt_mode = self.is_smartload_soc_volt_enabled(dongle_id, smartload_number)
+                    if not soc_volt_mode:
+                        return f"Smart Port {smartload_number} is in Time mode - SOC/Volt settings not available"
+                elif self._is_time_entity(entity_unique_id):
+                    soc_volt_mode = self.is_smartload_soc_volt_enabled(dongle_id, smartload_number)
+                    if soc_volt_mode:
+                        return f"Smart Port {smartload_number} is in SOC/Volt mode - Time settings not available"
+        
+        return "Entity not available for current configuration"
+    
+    def _get_standard_unit_unavailability_reason(self, dongle_id: str, entity_unique_id: str) -> str:
+        """Get specific reason why a standard unit entity is unavailable."""
+        # Check charge control settings
+        if self._is_charge_voltage_entity(entity_unique_id):
+            charge_control = self.get_charge_control_setting(dongle_id)
+            charge_type = self.get_charge_type_setting(dongle_id)
+            if charge_control != "Voltage":
+                return f"Charge control is set to '{charge_control}' - Voltage settings not available"
+            elif charge_type not in ["SOC/Volt According To", "Time and SOC/Volt According To"]:
+                return f"Charge type is set to '{charge_type}' - Voltage settings not available"
+        
+        elif self._is_charge_soc_entity(entity_unique_id):
+            charge_control = self.get_charge_control_setting(dongle_id)
+            charge_type = self.get_charge_type_setting(dongle_id)
+            if charge_control != "SOC":
+                return f"Charge control is set to '{charge_control}' - SOC settings not available"
+            elif charge_type not in ["SOC/Volt According To", "Time and SOC/Volt According To"]:
+                return f"Charge type is set to '{charge_type}' - SOC settings not available"
+        
+        elif self._is_charge_time_entity(entity_unique_id):
+            charge_type = self.get_charge_type_setting(dongle_id)
+            if charge_type != "Time According To":
+                return f"Charge type is set to '{charge_type}' - Time settings not available"
+        
+        # Check discharge control settings
+        elif self._is_discharge_voltage_entity(entity_unique_id):
+            discharge_control = self.get_discharge_control_setting(dongle_id)
+            if discharge_control != "Voltage":
+                return f"Discharge control is set to '{discharge_control}' - Voltage settings not available"
+        
+        elif self._is_discharge_soc_entity(entity_unique_id):
+            discharge_control = self.get_discharge_control_setting(dongle_id)
+            if discharge_control != "SOC":
+                return f"Discharge control is set to '{discharge_control}' - SOC settings not available"
+        
+        return "Entity not available for current configuration"
 
     def get_firmware_code(self, dongle_id: str) -> str:
         """Get firmware code for a specific dongle."""
@@ -379,14 +630,300 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         except ValueError:
             return ""
     
+    def get_dongle_info(self, dongle_id: str) -> Dict[str, Any]:
+        """Get complete dongle information including bundle tracking."""
+        for dongle_info in self._dongle_data:
+            if dongle_info["dongle_id"] == dongle_id:
+                return dongle_info
+        return {}
+    
+    def is_dongle_master(self, dongle_id: str) -> bool:
+        """Check if a dongle is a master."""
+        dongle_info = self.get_dongle_info(dongle_id)
+        return dongle_info.get("is_master", False)
+    
+    def is_dongle_slave(self, dongle_id: str) -> bool:
+        """Check if a dongle is a slave."""
+        dongle_info = self.get_dongle_info(dongle_id)
+        return dongle_info.get("is_slave", False)
+    
+    def is_dongle_gridboss(self, dongle_id: str) -> bool:
+        """Check if a dongle is a GridBoss."""
+        dongle_info = self.get_dongle_info(dongle_id)
+        return dongle_info.get("is_gridboss", False)
+    
+    def is_dongle_gridboss_slave(self, dongle_id: str) -> bool:
+        """Check if a dongle is a GridBoss slave."""
+        dongle_info = self.get_dongle_info(dongle_id)
+        return dongle_info.get("is_gridboss_slave", False)
+    
+    def get_dongle_gridboss_bundle(self, dongle_id: str) -> int:
+        """Get the GridBoss bundle number for a dongle (1 or 2, or None)."""
+        dongle_info = self.get_dongle_info(dongle_id)
+        return dongle_info.get("gridboss_bundle")
+    
+    def get_dongles_by_bundle(self, bundle_number: int) -> List[str]:
+        """Get all dongle IDs that belong to a specific GridBoss bundle."""
+        dongles = []
+        for dongle_info in self._dongle_data:
+            if dongle_info.get("gridboss_bundle") == bundle_number:
+                dongles.append(dongle_info["dongle_id"])
+        return dongles
+
+    def get_dongles_by_filter(self, dongle_filter: str) -> List[str]:
+        """Get dongle IDs based on filter type."""
+        if dongle_filter == "inverters_only":
+            # All non-GridBoss dongles (masters and slaves)
+            return [d["dongle_id"] for d in self._dongle_data if not d.get("is_gridboss", False)]
+        elif dongle_filter == "gridboss_only":
+            # Only GridBoss dongles
+            return [d["dongle_id"] for d in self._dongle_data if d.get("is_gridboss", False)]
+        elif dongle_filter == "gridboss_slaves_only":
+            # Only GridBoss slave dongles
+            return [d["dongle_id"] for d in self._dongle_data if d.get("is_gridboss_slave", False)]
+        elif dongle_filter == "bundle_1":
+            # All dongles in bundle 1 (GridBoss + slaves)
+            return [d["dongle_id"] for d in self._dongle_data if d.get("gridboss_bundle") == 1]
+        elif dongle_filter == "bundle_2":
+            # All dongles in bundle 2 (GridBoss + slaves)
+            return [d["dongle_id"] for d in self._dongle_data if d.get("gridboss_bundle") == 2]
+        else:
+            # Default: return all dongles
+            return [d["dongle_id"] for d in self._dongle_data]
+    
+    def get_all_gridboss_dongles(self) -> List[str]:
+        """Get all GridBoss dongle IDs (both bundles)."""
+        dongles = []
+        for dongle_info in self._dongle_data:
+            if dongle_info.get("is_gridboss", False):
+                dongles.append(dongle_info["dongle_id"])
+        return dongles
+    
+    def get_setup_type(self) -> str:
+        """Get the setup type based on dongle data structure."""
+        gridboss_dongles = self.get_all_gridboss_dongles()
+        gridboss_slaves = [d for d in self._dongle_data if d.get("is_gridboss_slave", False)]
+        masters = [d for d in self._dongle_data if d.get("is_master", False)]
+        slaves = [d for d in self._dongle_data if d.get("is_slave", False)]
+        
+        if len(gridboss_dongles) == 2:
+            return "dual_gridboss"
+        elif len(gridboss_dongles) == 1 and len(gridboss_slaves) > 0:
+            return "single_gridboss_with_slaves"
+        elif len(gridboss_dongles) == 1 and len(gridboss_slaves) == 0:
+            return "single_gridboss_only"
+        elif len(masters) > 0 and len(slaves) > 0:
+            return "parallel"
+        else:
+            return "single"
+    
     def get_sync_settings_enabled(self) -> bool:
         """Get the current sync settings state."""
         return self._sync_settings_enabled
+
+    def get_combined_entities_for_setup_type(self, entity_type: str) -> List[Dict[str, Any]]:
+        """Get combined entity definitions based on setup type and entity type."""
+        setup_type = self.get_setup_type()
+        
+        # Only create combined entities for multi-dongle setups
+        if setup_type == "single":
+            return []
+        
+        # Get all dongle IDs for this setup
+        all_dongle_ids = [d["dongle_id"] for d in self._dongle_data]
+        
+        if entity_type == "sensor":
+            return self._get_combined_sensor_entities(setup_type, all_dongle_ids)
+        elif entity_type == "switch":
+            return self._get_combined_switch_entities(setup_type, all_dongle_ids)
+        elif entity_type == "number":
+            return self._get_combined_number_entities(setup_type, all_dongle_ids)
+        else:
+            return []
+
+    def _get_combined_sensor_entities(self, setup_type: str, dongle_ids: List[str]) -> List[Dict[str, Any]]:
+        """Get combined sensor entities based on setup type."""
+        if setup_type == "parallel":
+            # Standard parallel setup - combine all inverter values
+            return [
+                {"name": "Combined PV Power Total", "type": "sensor", "unique_id": "combined_pv_power", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "pall"}},
+                {"name": "Combined House Power Load", "type": "sensor", "unique_id": "combined_house_power_load", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "pload"}},
+                {"name": "Combined Energy To Grid Day", "type": "sensor", "unique_id": "combined_energy_to_grid_day", 
+                 "state_class": "total_increasing", "unit_of_measurement": "kWh", "device_class": "energy", 
+                 "calculation": {"operation": "addition", "source_entity": "etogrid_day"}},
+                {"name": "Combined Energy To User Day", "type": "sensor", "unique_id": "combined_energy_to_user_day", 
+                 "state_class": "total_increasing", "unit_of_measurement": "kWh", "device_class": "energy", 
+                 "calculation": {"operation": "addition", "source_entity": "etouser_day"}},
+                {"name": "Combined Energy To Grid (live)", "type": "sensor", "unique_id": "combined_energy_to_grid_live", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "ptogrid"}},
+                {"name": "Combined Energy To User (live)", "type": "sensor", "unique_id": "combined_energy_to_user_live", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "ptouser"}},
+                {"name": "Combined Discharge", "type": "sensor", "unique_id": "combined_discharge", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "pdischarge"}},
+                {"name": "Combined Charge", "type": "sensor", "unique_id": "combined_charge", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "pcharge"}},
+                {"name": "Combined SOC", "type": "sensor", "unique_id": "combined_soc", 
+                 "state_class": "measurement", "device_class": "battery", "unit_of_measurement": "%", 
+                 "calculation": {"operation": "average", "source_entity": "soc"}},
+                {"name": "Combined SOH", "type": "sensor", "unique_id": "combined_soh", 
+                 "state_class": "measurement", "device_class": "battery", "unit_of_measurement": "%", 
+                 "calculation": {"operation": "average", "source_entity": "soh"}},
+                {"name": "Combined Power EPS", "type": "sensor", "unique_id": "combined_eps", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "peps"}}
+            ]
+        
+        elif setup_type in ["single_gridboss_with_slaves", "single_gridboss_only"]:
+            # Single GridBoss + slaves - only combine if there are multiple slaves
+            gridboss_slave_dongles = [d["dongle_id"] for d in self._dongle_data if d.get("is_gridboss_slave", False)]
+            if len(gridboss_slave_dongles) <= 1:
+                return []  # No combined entities for single GridBoss with 0-1 slaves
+            
+            # Combine only the slave inverter values (not GridBoss values)
+            return [
+                {"name": "Combined PV Power Total", "type": "sensor", "unique_id": "combined_pv_power", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "pall", "dongle_filter": "gridboss_slaves_only"}},
+                {"name": "Combined House Power Load", "type": "sensor", "unique_id": "combined_house_power_load", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "pload", "dongle_filter": "gridboss_slaves_only"}},
+                {"name": "Combined SOC", "type": "sensor", "unique_id": "combined_soc", 
+                 "state_class": "measurement", "device_class": "battery", "unit_of_measurement": "%", 
+                 "calculation": {"operation": "average", "source_entity": "soc", "dongle_filter": "gridboss_slaves_only"}},
+                {"name": "Combined SOH", "type": "sensor", "unique_id": "combined_soh", 
+                 "state_class": "measurement", "device_class": "battery", "unit_of_measurement": "%", 
+                 "calculation": {"operation": "average", "source_entity": "soh", "dongle_filter": "gridboss_slaves_only"}}
+            ]
+        
+        elif setup_type == "dual_gridboss":
+            # Dual GridBoss - create NET entities and combined values
+            return [
+                # GridBoss NET Power Entities (L1 + L2)
+                {"name": "GridBoss BU Active Power NET", "type": "sensor", "unique_id": "gridboss_bu_active_power_net", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "net_power", "source_entities": ["buL1ActivePower", "buL2ActivePower"], "dongle_filter": "gridboss_only"}},
+                {"name": "GridBoss Grid Active Power NET", "type": "sensor", "unique_id": "gridboss_grid_active_power_net", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "net_power", "source_entities": ["gridL1ActivePower", "gridL2ActivePower"], "dongle_filter": "gridboss_only"}},
+                {"name": "GridBoss BU RMS Current NET", "type": "sensor", "unique_id": "gridboss_bu_rms_current_net", 
+                 "state_class": "measurement", "device_class": "current", "unit_of_measurement": "A", 
+                 "calculation": {"operation": "net_current", "source_entities": ["buL1RMSCurrent", "buL2RMSCurrent"], "dongle_filter": "gridboss_only"}},
+                {"name": "GridBoss Grid RMS Current NET", "type": "sensor", "unique_id": "gridboss_grid_rms_current_net", 
+                 "state_class": "measurement", "device_class": "current", "unit_of_measurement": "A", 
+                 "calculation": {"operation": "net_current", "source_entities": ["gridL1RMSCurrent", "gridL2RMSCurrent"], "dongle_filter": "gridboss_only"}},
+                
+                # GridBoss Voltage Averages
+                {"name": "GridBoss BU RMS Voltage Average", "type": "sensor", "unique_id": "gridboss_bu_rms_voltage_avg", 
+                 "state_class": "measurement", "device_class": "voltage", "unit_of_measurement": "V", 
+                 "calculation": {"operation": "average", "source_entities": ["buL1RMSVoltage", "buL2RMSVoltage"], "dongle_filter": "gridboss_only"}},
+                {"name": "GridBoss Grid RMS Voltage Average", "type": "sensor", "unique_id": "gridboss_grid_rms_voltage_avg", 
+                 "state_class": "measurement", "device_class": "voltage", "unit_of_measurement": "V", 
+                 "calculation": {"operation": "average", "source_entities": ["gridL1RMSVoltage", "gridL2RMSVoltage"], "dongle_filter": "gridboss_only"}},
+                
+                # FlexBoss Combined Entities (all slaves across both bundles)
+                {"name": "Combined Battery Flow Live", "type": "sensor", "unique_id": "combined_batteryflow_live", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "batteryflow_live", "dongle_filter": "gridboss_slaves_only"}},
+                {"name": "Combined PV Power Total", "type": "sensor", "unique_id": "combined_pv_power", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "pall", "dongle_filter": "gridboss_slaves_only"}},
+                {"name": "Combined PV Energy Total", "type": "sensor", "unique_id": "combined_pv_energy_total", 
+                 "state_class": "total", "device_class": "energy", "unit_of_measurement": "kWh", 
+                 "calculation": {"operation": "addition", "source_entity": "epv_all", "dongle_filter": "gridboss_slaves_only"}},
+                {"name": "Combined Battery Temperature Average", "type": "sensor", "unique_id": "combined_battery_temp_avg", 
+                 "state_class": "measurement", "device_class": "temperature", "unit_of_measurement": "°C", 
+                 "calculation": {"operation": "average", "source_entity": "tbat", "dongle_filter": "gridboss_slaves_only"}},
+                {"name": "Combined SOC Average", "type": "sensor", "unique_id": "combined_soc_avg", 
+                 "state_class": "measurement", "device_class": "battery", "unit_of_measurement": "%", 
+                 "calculation": {"operation": "average", "source_entity": "soc", "dongle_filter": "gridboss_slaves_only"}},
+                
+                # Bundle-specific combined entities
+                {"name": "GridBoss Bundle 1 PV Power", "type": "sensor", "unique_id": "gridboss_bundle1_pv_power", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "pall", "dongle_filter": "bundle_1"}},
+                {"name": "GridBoss Bundle 2 PV Power", "type": "sensor", "unique_id": "gridboss_bundle2_pv_power", 
+                 "state_class": "measurement", "device_class": "power", "unit_of_measurement": "W", 
+                 "calculation": {"operation": "addition", "source_entity": "pall", "dongle_filter": "bundle_2"}}
+            ]
+        
+        return []
+
+    def _get_combined_switch_entities(self, setup_type: str, dongle_ids: List[str]) -> List[Dict[str, Any]]:
+        """Get combined switch entities based on setup type."""
+        if setup_type == "parallel":
+            # Standard parallel setup - combine all inverter switches
+            return [
+                {"name": "Combined AC Charge", "type": "switch", "unique_id": "combined_accharge", "source_entity": "ACCharge"},
+                {"name": "Combined EPS", "type": "switch", "unique_id": "combined_eps", "source_entity": "EPS"},
+                {"name": "Combined Force Discharge", "type": "switch", "unique_id": "combined_forceddischg", "source_entity": "ForcedDischg"},
+                {"name": "Combined Charge Priority", "type": "switch", "unique_id": "combined_forcedchg", "source_entity": "ForcedChg"},
+                {"name": "Combined Export Allowed", "type": "switch", "unique_id": "combined_feedingrid", "source_entity": "FeedInGrid"},
+                {"name": "Sync Inverter Settings", "type": "switch", "unique_id": "combined_sync_settings", "icon": "mdi:sync", "is_sync_switch": True}
+            ]
+        
+        elif setup_type in ["single_gridboss_with_slaves", "single_gridboss_only"]:
+            # Single GridBoss + slaves - only combine if there are multiple slaves
+            gridboss_slave_dongles = [d["dongle_id"] for d in self._dongle_data if d.get("is_gridboss_slave", False)]
+            if len(gridboss_slave_dongles) <= 1:
+                return []  # No combined entities for single GridBoss with 0-1 slaves
+            
+            # Combine only the slave inverter switches (not GridBoss switches)
+            return [
+                {"name": "Combined AC Charge", "type": "switch", "unique_id": "combined_accharge", "source_entity": "ACCharge", "dongle_filter": "gridboss_slaves_only"},
+                {"name": "Combined EPS", "type": "switch", "unique_id": "combined_eps", "source_entity": "EPS", "dongle_filter": "gridboss_slaves_only"},
+                {"name": "Combined Force Discharge", "type": "switch", "unique_id": "combined_forceddischg", "source_entity": "ForcedDischg", "dongle_filter": "gridboss_slaves_only"},
+                {"name": "Combined Charge Priority", "type": "switch", "unique_id": "combined_forcedchg", "source_entity": "ForcedChg", "dongle_filter": "gridboss_slaves_only"},
+                {"name": "Combined Export Allowed", "type": "switch", "unique_id": "combined_feedingrid", "source_entity": "FeedInGrid", "dongle_filter": "gridboss_slaves_only"},
+                {"name": "Sync Inverter Settings", "type": "switch", "unique_id": "combined_sync_settings", "icon": "mdi:sync", "is_sync_switch": True, "dongle_filter": "gridboss_slaves_only"}
+            ]
+        
+        elif setup_type == "dual_gridboss":
+            # Dual GridBoss - no combined switches, only individual dongle switches
+            return []
+        
+        return []
+
+    def _get_combined_number_entities(self, setup_type: str, dongle_ids: List[str]) -> List[Dict[str, Any]]:
+        """Get combined number entities based on setup type."""
+        if setup_type == "parallel":
+            # Standard parallel setup - combine all inverter numbers
+            return [
+                {"name": "Combined AC Charge Rate", "type": "number", "unique_id": "combined_acchgpowercmd", "source_entity": "ACChgPowerCMD", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider"},
+                {"name": "Combined AC Charge SOC Limit", "type": "number", "unique_id": "combined_acchgsoclimit", "source_entity": "ACChgSOCLimit", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider", "class": "BATTERY"},
+                {"name": "Combined Discharge Power Rate", "type": "number", "unique_id": "combined_dischgpowerpercentcmd", "source_entity": "DischgPowerPercentCMD", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider"}
+            ]
+        
+        elif setup_type in ["single_gridboss_with_slaves", "single_gridboss_only"]:
+            # Single GridBoss + slaves - only combine if there are multiple slaves
+            gridboss_slave_dongles = [d["dongle_id"] for d in self._dongle_data if d.get("is_gridboss_slave", False)]
+            if len(gridboss_slave_dongles) <= 1:
+                return []  # No combined entities for single GridBoss with 0-1 slaves
+            
+            # Combine only the slave inverter numbers (not GridBoss numbers)
+            return [
+                {"name": "Combined AC Charge Rate", "type": "number", "unique_id": "combined_acchgpowercmd", "source_entity": "ACChgPowerCMD", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider", "dongle_filter": "gridboss_slaves_only"},
+                {"name": "Combined AC Charge SOC Limit", "type": "number", "unique_id": "combined_acchgsoclimit", "source_entity": "ACChgSOCLimit", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider", "class": "BATTERY", "dongle_filter": "gridboss_slaves_only"},
+                {"name": "Combined Discharge Power Rate", "type": "number", "unique_id": "combined_dischgpowerpercentcmd", "source_entity": "DischgPowerPercentCMD", "unit": "PERCENT", "min": 0, "max": 100, "mode": "slider", "dongle_filter": "gridboss_slaves_only"}
+            ]
+        
+        elif setup_type == "dual_gridboss":
+            # Dual GridBoss - no combined numbers, only individual dongle numbers
+            return []
+        
+        return []
     
     def set_sync_settings_enabled(self, enabled: bool) -> None:
         """Set the sync settings state."""
         self._sync_settings_enabled = enabled
-        LOGGER.debug(f"Sync settings state set to: {enabled}")
+        # LOGGER.debug(f"Sync settings state set to: {enabled}")
     
     def record_setting_change(self, dongle_id: str, unique_id: str, value: any, timestamp: float = None) -> None:
         """Record a setting change with timestamp for tracking."""
@@ -408,7 +945,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         if len(self._setting_history[setting_key]) > self._max_history_entries:
             self._setting_history[setting_key] = self._setting_history[setting_key][-self._max_history_entries:]
         
-        LOGGER.debug(f"Recorded setting change: {dongle_id}/{unique_id} = {value} at {timestamp}")
+        # LOGGER.debug(f"Recorded setting change: {dongle_id}/{unique_id} = {value} at {timestamp}")
     
     def get_latest_setting_change(self, unique_id: str) -> Dict[str, any]:
         """Get the most recent change for a setting across all dongles."""
@@ -451,6 +988,10 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # Always process firmware code responses as they're needed for setup
             if topic.endswith("/firmwarecode/response"):
                 await self._handle_firmware_code_response(dongle_id, msg)
+            # Skip debug topics - we don't need to process them
+            elif "/debug/" in topic:
+                # Ignore debug topics like debug/bits, debug/bitfield, etc.
+                return
             # Skip other message processing during startup to prevent excessive updates
             elif not self._hass_startup_complete:
                 # Just store the message for later processing if needed
@@ -466,7 +1007,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                     
                 self.async_set_updated_data(self.entities)
         except Exception as e:
-            LOGGER.error(f"Error processing MQTT message on topic {topic}: {e}")
+            LOGGER.error(f"Error processing MQTT message on topic {msg.topic}: {e}")
             # Only update data after startup is complete
             if self._hass_startup_complete:
                 self.async_set_updated_data(self.entities)
@@ -596,6 +1137,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Initial setup of coordinator."""
         # Initialize the MQTT handler and store it in the hass data under the domain
         mqtt_handler = MQTTHandler(self.hass)
+        mqtt_handler.coordinator = self  # Give MQTT handler access to coordinator
         self.mqtt_handler = mqtt_handler
 
         # Set up entities dictionary
@@ -789,7 +1331,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         try:
             data = json.loads(payload)
         except ValueError:
-            LOGGER.error(f"Invalid JSON payload received for status message from {dongle_id}")
+            LOGGER.error(f"Invalid JSON payload received for status message from {dongle_id} on topic {msg.topic}: {payload}")
             return
 
         # Check if the message follows the new structure with 'Serialnumber' and 'payload'
@@ -817,7 +1359,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             bank_name = topic.split('/')[-1]  # Gets 'inputbank1', 'holdbank2', etc.
             self.hass.bus.async_fire(f"{DOMAIN}_bank_updated", {"bank_name": bank_name, "dongle_id": dongle_id})
         except ValueError:
-            LOGGER.error(f"Invalid JSON payload received from {dongle_id}")
+            LOGGER.error(f"Invalid JSON payload received from {dongle_id} on topic {msg.topic}: {payload}")
             return
 
         formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
@@ -869,7 +1411,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 # Skip duplicate fault data
                 pass
             else:
-                LOGGER.debug(f"Processing fault data for {dongle_id}: {fault_data}")
+                # LOGGER.debug(f"Processing fault data for {dongle_id}: {fault_data}")
                 self._last_fault_warning_data[fault_key] = fault_data
                 fault_value = fault_data.get("value", 0)
                 entity_id = f"sensor.{formatted_dongle_id}_fault_status"
@@ -897,7 +1439,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 # Skip duplicate warning data
                 pass
             else:
-                LOGGER.debug(f"Processing warning data for {dongle_id}: {warning_data}")
+                # LOGGER.debug(f"Processing warning data for {dongle_id}: {warning_data}")
                 self._last_fault_warning_data[warning_key] = warning_data
                 warning_value = warning_data.get("value", 0)
                 entity_id = f"sensor.{formatted_dongle_id}_warning_status"
@@ -928,6 +1470,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 # Skip if we've already handled these keys
                 if entity_id_suffix in ("SW_VERSION", "UI_VERSION"):
                     continue
+                
+                # Process charge/discharge control settings for conditional entities
+                if entity_id_suffix == "ubBatChgcontrol":
+                    self.update_charge_control_setting(dongle_id, state)
+                elif entity_id_suffix == "ubBatDischgControl":
+                    self.update_discharge_control_setting(dongle_id, state)
+                elif entity_id_suffix == "ACChargeType":
+                    LOGGER.debug(f"Processing ACChargeType from MQTT: {state}")
+                    self.update_charge_type_setting(dongle_id, state)
                     
                 formatted_entity_id_suffix = entity_id_suffix.lower().replace("-", "_").replace(":", "_")
                 entity_type = self.determine_entity_type(formatted_entity_id_suffix)
