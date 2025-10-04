@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import asyncio
 from homeassistant.components.time import TimeEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import (
     async_track_state_change_event,
 )
@@ -25,13 +26,28 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
     for dongle_id in dongle_ids:
         firmware_code = coordinator.get_firmware_code(dongle_id)
         
+        # Only create entities if we have a firmware code
+        if not firmware_code:
+            LOGGER.debug(f"Skipping entity creation for {dongle_id} - no firmware code available yet")
+            continue
+        
         # Setup Time entities
         time_config = brand_entities.get("time", {})
         for bank_name, time_entities in time_config.items():
             for time_entity in time_entities:
                 allowed_firmware_codes = time_entity.get("allowed_firmware_codes", [])
-                if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                    entities.append(InverterTime(time_entity, hass, entry, dongle_id))
+                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
+                if coordinator.is_gridboss_dongle(dongle_id):
+                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
+                        continue
+                else:
+                    # For regular dongles, use the original logic
+                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                        pass  # Continue to entity creation
+                    else:
+                        continue  # Skip this entity
+                
+                entities.append(InverterTime(time_entity, hass, entry, dongle_id))
 
     async_add_entities(entities, True)
 
@@ -56,6 +72,22 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
         super().__init__(self.coordinator)
 
     @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Always return True - we'll use HomeAssistantError for conditional logic
+        return self.coordinator.last_update_success
+    
+    @property
+    def device_state_attributes(self) -> dict:
+        """Return device state attributes."""
+        attrs = {}
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            attrs["unavailable_reason"] = availability_info["reason"]
+        return attrs
+    
+
+    @property
     def name(self):
         return self._name
 
@@ -74,6 +106,11 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
     async def async_set_value(self, value):
         """Handle user input and send to MQTT."""
         now = datetime.now()
+
+        # Check if entity should be available based on conditional settings
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            raise HomeAssistantError(availability_info["reason"])
 
         # Check if the state has changed
         if self._state == value or self._state is None:

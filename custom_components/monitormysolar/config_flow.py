@@ -57,6 +57,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             return f"{brand_name} Inverters"
 
     async def async_step_user(self, user_input=None):
+        """Handle the initial user step - brand selection and basic setup."""
         errors = {}
 
         _LOGGER.debug("Loading the user step form")
@@ -64,88 +65,506 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             _LOGGER.debug("User input received: %s", user_input)
             
-            # Normalize the dongle ID
-            user_input["dongle_id"] = self._normalize_dongle_id(user_input["dongle_id"])
+            # Store initial data
+            self.initial_data = user_input
             
-            # If parallel inverters is selected, store the data and move to the parallel step
-            if user_input.get("parallel_inverters", False):
-                self.initial_data = user_input
-                return await self.async_step_parallel()
-            
-            # If no parallel inverters, create a single dongle entry
-            user_input["dongle_ids"] = [user_input["dongle_id"]]
-            user_input["dongle_ips"] = [user_input.get("dongle_ip", "")]
-            
-            # Once the user submits the form, create the entry
-            return self.async_create_entry(
-                title=f"{user_input['inverter_brand']} - {user_input['dongle_id']}",
-                data=user_input,
-            )
+            # Move to setup type selection step
+            return await self.async_step_setup_type()
 
         _LOGGER.debug("Displaying the form with translations")
 
-        # Create base schema with core fields
+        # Create schema with brand selection as dropdown and update interval
         schema = vol.Schema(
             {
                 vol.Required("inverter_brand", default="Solis"): vol.In(
                     ["Solis", "Lux", "Solax", "Growatt"]
                 ),
-                vol.Required("dongle_id"): str,
-                vol.Optional("dongle_ip"): str,
-                vol.Optional("parallel_inverters", default=False): bool,
                 vol.Optional("update_interval", default=60): vol.In(
                     {1: "1 second", 3: "3 seconds", 5: "5 seconds", 10: "10 seconds", 
                      30: "30 seconds", 60: "1 minute", 300: "5 minutes", 600: "10 minutes"}
                 ),
-                vol.Optional("has_gridboss", default=False): bool,
             }
         )
 
         # Show the form with the schema
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
+    async def async_step_single_inverter(self, user_input=None):
+        """Handle the single inverter setup step."""
+        errors = {}
+
+        _LOGGER.debug("Loading the single inverter step form")
+
+        if user_input is not None:
+            _LOGGER.debug("Single inverter input received: %s", user_input)
+            
+            # Normalize the dongle ID
+            user_input["dongle_id"] = self._normalize_dongle_id(user_input["dongle_id"])
+            
+            # Merge with initial data
+            data = {**self.initial_data, **user_input}
+            
+            # Create dongle data structure for single inverter
+            dongle_data = [{
+                "dongle_id": data["dongle_id"],
+                "dongle_ip": data.get("dongle_ip", ""),
+                "is_master": True,
+                "is_slave": False,
+                "is_gridboss": False,
+                "is_gridboss_slave": False,
+                "gridboss_bundle": None
+            }]
+            
+            # Update data with dongle structure
+            data.update({
+                "dongle_data": dongle_data,
+                "dongle_ids": [data["dongle_id"]],
+                "dongle_ips": [data.get("dongle_ip", "")]
+            })
+            
+            # Create the entry
+            return self.async_create_entry(
+                title=f"{data['inverter_brand']} - {data['dongle_id']}",
+                data=data,
+            )
+
+        _LOGGER.debug("Displaying the single inverter form")
+
+        # Create schema for single inverter setup
+        schema = vol.Schema(
+            {
+                vol.Required("dongle_id"): str,
+                vol.Optional("dongle_ip"): str,
+            }
+        )
+
+        # Show the form with the schema
+        return self.async_show_form(
+            step_id="single_inverter", 
+            data_schema=schema, 
+            errors=errors,
+            description_placeholders={"brand": self.initial_data.get("inverter_brand", "Inverter")}
+        )
+
+    async def async_step_setup_type(self, user_input=None):
+        """Handle the setup type selection step."""
+        errors = {}
+
+        _LOGGER.debug("Loading the setup type step form")
+
+        if user_input is not None:
+            _LOGGER.debug("Setup type input received: %s", user_input)
+            
+            # Merge with initial data
+            data = {**self.initial_data, **user_input}
+            self.initial_data = data
+            
+            # Determine next step based on selection
+            setup_type = user_input.get("setup_type")
+            if setup_type == "single":
+                return await self.async_step_single_inverter()
+            elif setup_type == "parallel":
+                return await self.async_step_parallel()
+            elif setup_type == "single_gridboss":
+                return await self.async_step_single_gridboss()
+            elif setup_type == "dual_gridboss":
+                return await self.async_step_dual_gridboss()
+
+        _LOGGER.debug("Displaying the setup type form")
+
+        # Create schema for setup type selection
+        schema = vol.Schema(
+            {
+                vol.Required("setup_type"): vol.In({
+                    "single": "Single Inverter (Standard Setup)",
+                    "parallel": "Parallel Inverters",
+                    "single_gridboss": "Single GridBoss Setup",
+                    "dual_gridboss": "Dual GridBoss Setup"
+                }),
+            }
+        )
+
+        # Show the form with the schema
+        return self.async_show_form(
+            step_id="setup_type", 
+            data_schema=schema, 
+            errors=errors,
+            description_placeholders={"brand": self.initial_data.get("inverter_brand", "Inverter")}
+        )
+
     async def async_step_parallel(self, user_input=None):
         """Handle the parallel inverters step."""
         errors = {}
 
         if user_input is not None:
-            # Process the dongle IDs and IPs
-            dongle_ids = [self.initial_data["dongle_id"]]
-            dongle_ips = [self.initial_data.get("dongle_ip", "")]
+            # Process the master dongle (from user input)
+            master_dongle = user_input.get("master_dongle_id")
+            master_ip = user_input.get("master_dongle_ip", "")
             
-            # Add additional dongle IDs and IPs
-            for i in range(1, 4):  # Check for dongle_id_2, dongle_id_3, dongle_id_4
-                additional_dongle = user_input.get(f"dongle_id_{i+1}")
-                if additional_dongle and additional_dongle.strip():
-                    # Normalize the additional dongle ID
-                    normalized_dongle = self._normalize_dongle_id(additional_dongle)
-                    dongle_ids.append(normalized_dongle)
-                    # Get corresponding IP or empty string
-                    additional_ip = user_input.get(f"dongle_ip_{i+1}", "")
-                    dongle_ips.append(additional_ip)
+            if not master_dongle or not master_dongle.strip():
+                errors["master_dongle_id"] = "Master dongle ID is required"
+            else:
+                # Normalize the master dongle ID
+                master_dongle = self._normalize_dongle_id(master_dongle)
             
-            # Combine all data
-            combined_data = {**self.initial_data, **user_input, "dongle_ids": dongle_ids, "dongle_ips": dongle_ips}
-            
-            # Create the entry with all the data
-            return self.async_create_entry(
-                title=f"{self.initial_data['inverter_brand']} - Multiple Dongles",
-                data=combined_data,
-            )
+            if not errors:
+                # Process slave dongles
+                slave_dongles = []
+                slave_ips = []
+                
+                for i in range(1, 6):  # Up to 5 slaves
+                    slave_dongle = user_input.get(f"slave_dongle_id_{i}")
+                    if slave_dongle and slave_dongle.strip():
+                        # Normalize the slave dongle ID
+                        normalized_dongle = self._normalize_dongle_id(slave_dongle)
+                        slave_dongles.append(normalized_dongle)
+                        # Get corresponding IP or empty string
+                        slave_ip = user_input.get(f"slave_dongle_ip_{i}", "")
+                        slave_ips.append(slave_ip)
+                
+                # Create dongle data with master/slave tracking
+                dongle_data = []
+                
+                # Add master dongle
+                dongle_data.append({
+                    "dongle_id": master_dongle,
+                    "dongle_ip": master_ip,
+                    "is_master": True,
+                    "is_slave": False,
+                    "is_gridboss": False,
+                    "is_gridboss_slave": False,
+                    "gridboss_bundle": None
+                })
+                
+                # Add slave dongles
+                for i, (slave_dongle, slave_ip) in enumerate(zip(slave_dongles, slave_ips)):
+                    dongle_data.append({
+                        "dongle_id": slave_dongle,
+                        "dongle_ip": slave_ip,
+                        "is_master": False,
+                        "is_slave": True,
+                        "is_gridboss": False,
+                        "is_gridboss_slave": False,
+                        "gridboss_bundle": None
+                    })
+                
+                # Update initial data
+                self.initial_data.update({
+                    "dongle_data": dongle_data,
+                    "dongle_ids": [d["dongle_id"] for d in dongle_data],
+                    "dongle_ips": [d["dongle_ip"] for d in dongle_data]
+                })
+                
+                # Create the entry
+                return self.async_create_entry(
+                    title=f"{self.initial_data['inverter_brand']} - Parallel Setup ({len(dongle_data)} inverters)",
+                    data=self.initial_data,
+                )
 
-        # Create schema for additional dongles
+        # Create schema for master dongle and slave dongles
         schema = vol.Schema(
             {
-                vol.Optional("dongle_id_2"): str,
-                vol.Optional("dongle_ip_2"): str,
-                vol.Optional("dongle_id_3"): str,
-                vol.Optional("dongle_ip_3"): str,
-                vol.Optional("dongle_id_4"): str,
-                vol.Optional("dongle_ip_4"): str,
+                vol.Required("master_dongle_id"): str,
+                vol.Optional("master_dongle_ip"): str,
+                vol.Optional("slave_dongle_id_1"): str,
+                vol.Optional("slave_dongle_ip_1"): str,
+                vol.Optional("slave_dongle_id_2"): str,
+                vol.Optional("slave_dongle_ip_2"): str,
+                vol.Optional("slave_dongle_id_3"): str,
+                vol.Optional("slave_dongle_ip_3"): str,
+                vol.Optional("slave_dongle_id_4"): str,
+                vol.Optional("slave_dongle_ip_4"): str,
+                vol.Optional("slave_dongle_id_5"): str,
+                vol.Optional("slave_dongle_ip_5"): str,
             }
         )
 
-        return self.async_show_form(step_id="parallel", data_schema=schema, errors=errors)
+        return self.async_show_form(
+            step_id="parallel", 
+            data_schema=schema, 
+            errors=errors,
+            description_placeholders={
+                "brand": self.initial_data.get("inverter_brand", "Inverter")
+            }
+        )
+
+    async def async_step_single_gridboss(self, user_input=None):
+        """Handle the single GridBoss setup step."""
+        errors = {}
+
+        if user_input is not None:
+            # Process the GridBoss dongle (from user input)
+            gridboss_dongle = user_input.get("gridboss_dongle_id")
+            gridboss_ip = user_input.get("gridboss_dongle_ip", "")
+            
+            if not gridboss_dongle or not gridboss_dongle.strip():
+                errors["gridboss_dongle_id"] = "GridBoss dongle ID is required"
+            else:
+                # Normalize the GridBoss dongle ID
+                gridboss_dongle = self._normalize_dongle_id(gridboss_dongle)
+            
+            if not errors:
+                # Process slave dongles
+                slave_dongles = []
+                slave_ips = []
+                
+                for i in range(1, 4):  # Up to 3 slaves for single GridBoss
+                    slave_dongle = user_input.get(f"slave_dongle_id_{i}")
+                    if slave_dongle and slave_dongle.strip():
+                        # Normalize the slave dongle ID
+                        normalized_dongle = self._normalize_dongle_id(slave_dongle)
+                        slave_dongles.append(normalized_dongle)
+                    # Get corresponding IP or empty string
+                        slave_ip = user_input.get(f"slave_dongle_ip_{i}", "")
+                        slave_ips.append(slave_ip)
+                
+                # Create dongle data with GridBoss tracking
+                dongle_data = []
+                
+                # Add GridBoss dongle
+                dongle_data.append({
+                    "dongle_id": gridboss_dongle,
+                    "dongle_ip": gridboss_ip,
+                    "is_master": False,
+                    "is_slave": False,
+                    "is_gridboss": True,
+                    "is_gridboss_slave": False,
+                    "gridboss_bundle": 1
+                })
+                
+                # Add slave dongles
+                for i, (slave_dongle, slave_ip) in enumerate(zip(slave_dongles, slave_ips)):
+                    dongle_data.append({
+                        "dongle_id": slave_dongle,
+                        "dongle_ip": slave_ip,
+                        "is_master": False,
+                        "is_slave": False,
+                        "is_gridboss": False,
+                        "is_gridboss_slave": True,
+                        "gridboss_bundle": 1
+                    })
+                
+                # Update initial data
+                self.initial_data.update({
+                    "dongle_data": dongle_data,
+                    "dongle_ids": [d["dongle_id"] for d in dongle_data],
+                    "dongle_ips": [d["dongle_ip"] for d in dongle_data],
+                    "has_gridboss": True,
+                    "gridboss_dongle": gridboss_dongle
+                })
+                
+                # Create the entry
+                return self.async_create_entry(
+                    title=f"{self.initial_data['inverter_brand']} - Single GridBoss Setup ({len(dongle_data)} inverters)",
+                    data=self.initial_data,
+                )
+
+        # Create schema for GridBoss dongle and slave dongles
+        schema = vol.Schema(
+            {
+                vol.Required("gridboss_dongle_id"): str,
+                vol.Optional("gridboss_dongle_ip"): str,
+                vol.Optional("slave_dongle_id_1"): str,
+                vol.Optional("slave_dongle_ip_1"): str,
+                vol.Optional("slave_dongle_id_2"): str,
+                vol.Optional("slave_dongle_ip_2"): str,
+                vol.Optional("slave_dongle_id_3"): str,
+                vol.Optional("slave_dongle_ip_3"): str,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="single_gridboss", 
+            data_schema=schema, 
+            errors=errors,
+            description_placeholders={
+                "brand": self.initial_data.get("inverter_brand", "Inverter")
+            }
+        )
+
+    async def async_step_dual_gridboss(self, user_input=None):
+        """Handle the dual GridBoss setup step."""
+        errors = {}
+
+        if user_input is not None:
+            # Process the first GridBoss dongle (from user input)
+            gridboss1_dongle = user_input.get("gridboss1_dongle_id")
+            gridboss1_ip = user_input.get("gridboss1_dongle_ip", "")
+            
+            if not gridboss1_dongle or not gridboss1_dongle.strip():
+                errors["gridboss1_dongle_id"] = "First GridBoss dongle ID is required"
+            else:
+                # Normalize the first GridBoss dongle ID
+                gridboss1_dongle = self._normalize_dongle_id(gridboss1_dongle)
+            
+            # Process the second GridBoss dongle
+            gridboss2_dongle = user_input.get("gridboss2_dongle_id")
+            gridboss2_ip = user_input.get("gridboss2_dongle_ip", "")
+            
+            if not gridboss2_dongle or not gridboss2_dongle.strip():
+                errors["gridboss2_dongle_id"] = "Second GridBoss dongle ID is required"
+            else:
+                # Normalize the second GridBoss dongle ID
+                gridboss2_dongle = self._normalize_dongle_id(gridboss2_dongle)
+            
+            if not errors:
+                # Process slave dongles for GridBoss 1
+                gridboss1_slaves = []
+                gridboss1_slave_ips = []
+                
+                for i in range(1, 4):  # Up to 3 slaves for GridBoss 1
+                    slave_dongle = user_input.get(f"gridboss1_slave_dongle_id_{i}")
+                    if slave_dongle and slave_dongle.strip():
+                        normalized_dongle = self._normalize_dongle_id(slave_dongle)
+                        gridboss1_slaves.append(normalized_dongle)
+                        slave_ip = user_input.get(f"gridboss1_slave_dongle_ip_{i}", "")
+                        gridboss1_slave_ips.append(slave_ip)
+                
+                # Process slave dongles for GridBoss 2
+                gridboss2_slaves = []
+                gridboss2_slave_ips = []
+                
+                for i in range(1, 4):  # Up to 3 slaves for GridBoss 2
+                    slave_dongle = user_input.get(f"gridboss2_slave_dongle_id_{i}")
+                    if slave_dongle and slave_dongle.strip():
+                        normalized_dongle = self._normalize_dongle_id(slave_dongle)
+                        gridboss2_slaves.append(normalized_dongle)
+                        slave_ip = user_input.get(f"gridboss2_slave_dongle_ip_{i}", "")
+                        gridboss2_slave_ips.append(slave_ip)
+                
+                # Create dongle data with dual GridBoss tracking
+                dongle_data = []
+                
+                # Add GridBoss 1
+                dongle_data.append({
+                    "dongle_id": gridboss1_dongle,
+                    "dongle_ip": gridboss1_ip,
+                    "is_master": False,
+                    "is_slave": False,
+                    "is_gridboss": True,
+                    "is_gridboss_slave": False,
+                    "gridboss_bundle": 1
+                })
+                
+                # Add GridBoss 1 slaves
+                for slave_dongle, slave_ip in zip(gridboss1_slaves, gridboss1_slave_ips):
+                    dongle_data.append({
+                        "dongle_id": slave_dongle,
+                        "dongle_ip": slave_ip,
+                        "is_master": False,
+                        "is_slave": False,
+                        "is_gridboss": False,
+                        "is_gridboss_slave": True,
+                        "gridboss_bundle": 1
+                    })
+                
+                # Add GridBoss 2
+                dongle_data.append({
+                    "dongle_id": gridboss2_dongle,
+                    "dongle_ip": gridboss2_ip,
+                    "is_master": False,
+                    "is_slave": False,
+                    "is_gridboss": True,
+                    "is_gridboss_slave": False,
+                    "gridboss_bundle": 2
+                })
+                
+                # Add GridBoss 2 slaves
+                for slave_dongle, slave_ip in zip(gridboss2_slaves, gridboss2_slave_ips):
+                    dongle_data.append({
+                        "dongle_id": slave_dongle,
+                        "dongle_ip": slave_ip,
+                        "is_master": False,
+                        "is_slave": False,
+                        "is_gridboss": False,
+                        "is_gridboss_slave": True,
+                        "gridboss_bundle": 2
+                    })
+                
+                # Update initial data
+                self.initial_data.update({
+                    "dongle_data": dongle_data,
+                    "dongle_ids": [d["dongle_id"] for d in dongle_data],
+                    "dongle_ips": [d["dongle_ip"] for d in dongle_data],
+                    "has_gridboss": True,
+                    "gridboss_dongle": gridboss1_dongle  # Keep for backward compatibility
+                })
+                
+                # Create the entry
+                return self.async_create_entry(
+                    title=f"{self.initial_data['inverter_brand']} - Dual GridBoss Setup ({len(dongle_data)} inverters)",
+                    data=self.initial_data,
+                )
+
+        # Create schema for dual GridBoss setup - ordered logically
+        schema = vol.Schema(
+            {
+                # GridBoss 1 and its slaves
+                vol.Required("gridboss1_dongle_id"): str,
+                vol.Optional("gridboss1_dongle_ip"): str,
+                vol.Optional("gridboss1_slave_dongle_id_1"): str,
+                vol.Optional("gridboss1_slave_dongle_ip_1"): str,
+                vol.Optional("gridboss1_slave_dongle_id_2"): str,
+                vol.Optional("gridboss1_slave_dongle_ip_2"): str,
+                vol.Optional("gridboss1_slave_dongle_id_3"): str,
+                vol.Optional("gridboss1_slave_dongle_ip_3"): str,
+                # GridBoss 2 and its slaves
+                vol.Required("gridboss2_dongle_id"): str,
+                vol.Optional("gridboss2_dongle_ip"): str,
+                vol.Optional("gridboss2_slave_dongle_id_1"): str,
+                vol.Optional("gridboss2_slave_dongle_ip_1"): str,
+                vol.Optional("gridboss2_slave_dongle_id_2"): str,
+                vol.Optional("gridboss2_slave_dongle_ip_2"): str,
+                vol.Optional("gridboss2_slave_dongle_id_3"): str,
+                vol.Optional("gridboss2_slave_dongle_ip_3"): str,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="dual_gridboss", 
+            data_schema=schema, 
+            errors=errors,
+            description_placeholders={
+                "brand": self.initial_data.get("inverter_brand", "Inverter")
+            }
+        )
+
+    async def async_step_gridboss(self, user_input=None):
+        """Handle the GridBoss configuration step."""
+        errors = {}
+
+        if user_input is not None:
+            # Get the GridBoss dongle selection
+            gridboss_dongle = user_input.get("gridboss_dongle", "")
+            
+            # Update initial data with GridBoss info
+            self.initial_data["gridboss_dongle"] = gridboss_dongle
+            
+            # Create the entry with all the data
+            return self.async_create_entry(
+                title=f"{self.initial_data['inverter_brand']} - GridBoss Configuration",
+                data=self.initial_data,
+            )
+
+        # Create schema for GridBoss dongle selection
+        # Build the options based on available dongles
+        dongle_options = {"": "None"}
+        
+        # Add first dongle
+        dongle_options["dongle_id"] = f"First Dongle ({self.initial_data['dongle_id']})"
+        
+        # Add additional dongles if they exist
+        dongle_ids = self.initial_data.get("dongle_ids", [])
+        for i in range(1, len(dongle_ids)):
+            dongle_options[f"dongle_id_{i+1}"] = f"Dongle {i+1} ({dongle_ids[i]})"
+
+        schema = vol.Schema(
+            {
+                vol.Required("gridboss_dongle"): vol.In(dongle_options),
+            }
+        )
+
+        return self.async_show_form(step_id="gridboss", data_schema=schema, errors=errors)
 
     async def async_setup_entry(self, hass, entry):
         _LOGGER.info("Monitor My Solar Being Setup")

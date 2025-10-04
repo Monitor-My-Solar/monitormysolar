@@ -5,7 +5,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.components.mqtt import async_publish
 from homeassistant.components import mqtt
 
-from .const import DOMAIN, LOGGER
+from .const import DOMAIN, LOGGER, ENTITIES
 
 class MQTTHandler:
     def __init__(self, hass: HomeAssistant):
@@ -51,6 +51,8 @@ class MQTTHandler:
         modified_dongle_id[1] = modified_dongle_id[1].upper()
         modified_dongle_id = "-".join(modified_dongle_id)
 
+        # All settings (including GridBoss settings) should be sent to the /update topic
+        # GridBoss bank topics are only for reading data, not for sending updates
         topic = f"{modified_dongle_id}/update"
         
         # Updated payload with setting, value, and from: homeassistant
@@ -140,7 +142,16 @@ class MQTTHandler:
                     modified_dongle_id[1] = modified_dongle_id[1].upper()
                     modified_dongle_id = "-".join(modified_dongle_id)
                     
-                    topic = f"{modified_dongle_id}/update"
+                    # Check if this is a GridBoss setting
+                    is_gridboss_setting = self._is_gridboss_setting(unique_id)
+                    
+                    if is_gridboss_setting:
+                        # For GridBoss settings, we need to determine the correct bank
+                        bank = self._get_gridboss_bank(unique_id)
+                        topic = f"{modified_dongle_id}/gridboss_{bank}"
+                    else:
+                        topic = f"{modified_dongle_id}/update"
+                    
                     payload = json.dumps({
                         "setting": unique_id,
                         "value": value,
@@ -265,8 +276,37 @@ class MQTTHandler:
             
             if response.get('status') == 'success':
                 LOGGER.info(f"Successfully updated state of entity {entity.entity_id}.")
+                
+                # Update coordinator's internal state with the new value for all entities
+                setting_name = response.get('setting')
+                if setting_name and hasattr(entity, '_state'):
+                    # Get the dongle_id from the entity
+                    dongle_id = getattr(entity, '_dongle_id', None)
+                    if dongle_id:
+                        new_value = entity._state
+                        LOGGER.info(f"Updating coordinator's internal state for {setting_name} to: {new_value}")
+                        
+                        # Update the coordinator's entities dictionary with the new value
+                        # This ensures the coordinator has the most up-to-date state
+                        # The entity_id is the same as the entity's entity_id
+                        entity_id = entity.entity_id
+                        if entity_id in self.coordinator.entities:
+                            self.coordinator.entities[entity_id] = new_value
+                        
+                        # Special handling for conditional entity settings
+                        if setting_name == "ACChargeType":
+                            self.coordinator.update_charge_type_setting(dongle_id, new_value)
+                        elif setting_name == "ubBatChgcontrol":
+                            self.coordinator.update_charge_control_setting(dongle_id, new_value)
+                        elif setting_name == "ubBatDischgControl":
+                            self.coordinator.update_discharge_control_setting(dongle_id, new_value)
+                
                 # Keep the current state as it was already optimistically updated
                 self.hass.loop.call_soon_threadsafe(entity.async_write_ha_state)
+                # Clear user-initiated flag for select entities
+                if hasattr(entity, 'clear_user_initiated_flag'):
+                    LOGGER.info(f"Clearing user_initiated flag for {entity.entity_id}")
+                    self.hass.loop.call_soon_threadsafe(entity.clear_user_initiated_flag)
             else:
                 LOGGER.error(f"Failed to update state for {entity.entity_id}, reverting state.")
                 self.hass.loop.call_soon_threadsafe(entity.revert_state)
@@ -312,6 +352,8 @@ class MQTTHandler:
         modified_dongle_id[1] = modified_dongle_id[1].upper()
         modified_dongle_id = "-".join(modified_dongle_id)
 
+        # All settings (including GridBoss settings) should be sent to the /update topic
+        # GridBoss bank topics are only for reading data, not for sending updates
         topic = f"{modified_dongle_id}/update"
         
         # Create payload with multiple settings
@@ -327,7 +369,7 @@ class MQTTHandler:
             "from": "homeassistant"
         })
         
-        LOGGER.info(f"Sending multiple MQTT updates: {topic} - {payload} at {datetime.now()}")
+        LOGGER.info(f"Sending MQTT update: {topic} - {payload} at {datetime.now()}")
         await mqtt.async_publish(self.hass, topic, payload)
 
         self.response_received_event.clear()
@@ -343,3 +385,28 @@ class MQTTHandler:
             LOGGER.error(f"No response received for {entity.entity_id} within the timeout period.")
             self.hass.loop.call_soon_threadsafe(entity.revert_state)
             return False
+    
+    def _is_gridboss_setting(self, unique_id):
+        """Check if a setting is a GridBoss setting by looking at the ENTITIES definition."""
+        # Look through all entity types and banks to find if this unique_id is in a gridboss bank
+        for entity_type, banks in ENTITIES.get("Lux", {}).items():
+            for bank_name, entities in banks.items():
+                if bank_name.startswith("gridboss_"):
+                    for entity in entities:
+                        if entity.get("unique_id") == unique_id:
+                            return True
+        return False
+    
+    def _get_gridboss_bank(self, unique_id):
+        """Get the GridBoss bank name for a given unique_id."""
+        # Look through all entity types and banks to find which gridboss bank this unique_id belongs to
+        for entity_type, banks in ENTITIES.get("Lux", {}).items():
+            for bank_name, entities in banks.items():
+                if bank_name.startswith("gridboss_"):
+                    for entity in entities:
+                        if entity.get("unique_id") == unique_id:
+                            # Extract the bank part (e.g., "holdbank1" from "gridboss_holdbank1")
+                            return bank_name.replace("gridboss_", "")
+        
+        # Default fallback
+        return "holdbank1"

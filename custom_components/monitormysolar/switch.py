@@ -2,6 +2,7 @@ import logging
 import asyncio
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     Event,
@@ -30,6 +31,11 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
     for dongle_id in dongle_ids:
         firmware_code = coordinator.get_firmware_code(dongle_id)
         
+        # Only create entities if we have a firmware code
+        if not firmware_code:
+            _LOGGER.debug(f"Skipping entity creation for {dongle_id} - no firmware code available yet")
+            continue
+        
         # Process switches for this dongle
         for bank_name, switches in switch_config.items():
             # Skip combined switches for individual dongles
@@ -38,28 +44,48 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                 
             for switch in switches:
                 allowed_firmware_codes = switch.get("allowed_firmware_codes", [])
-                if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                    try:
-                        entities.append(
-                            InverterSwitch(switch, hass, entry, bank_name, dongle_id)
-                        )
-                    except Exception as e:
-                        _LOGGER.error(f"Error setting up switch {switch} for dongle {dongle_id}: {e}")
+                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
+                if coordinator.is_gridboss_dongle(dongle_id):
+                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
+                        continue
+                else:
+                    # For regular dongles, use the original logic
+                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                        pass  # Continue to entity creation
+                    else:
+                        continue  # Skip this entity
+                
+                try:
+                    entities.append(
+                        InverterSwitch(switch, hass, entry, bank_name, dongle_id)
+                    )
+                except Exception as e:
+                    _LOGGER.error(f"Error setting up switch {switch} for dongle {dongle_id}: {e}")
                         
     # Create combined switches if we have multiple dongles
-    if len(dongle_ids) > 1 and "combined" in switch_config:
+    if len(dongle_ids) > 1:
         _LOGGER.info(f"Creating combined switches for {len(dongle_ids)} dongles")
-        combined_switches = switch_config.get("combined", [])
+        combined_switches = coordinator.get_combined_entities_for_setup_type("switch")
         for switch in combined_switches:
             try:
+                # Get the appropriate dongle IDs based on the dongle_filter
+                dongle_filter = switch.get("dongle_filter")
+                if dongle_filter:
+                    filtered_dongle_ids = coordinator.get_dongles_by_filter(dongle_filter)
+                    if not filtered_dongle_ids:
+                        _LOGGER.debug(f"Skipping combined switch {switch['name']} - no dongles match filter {dongle_filter}")
+                        continue
+                else:
+                    filtered_dongle_ids = dongle_ids
+                
                 # Check if this is the sync settings switch
                 if switch.get("is_sync_switch", False):
                     entities.append(
-                        CombinedSyncSwitch(switch, hass, entry, dongle_ids)
+                        CombinedSyncSwitch(switch, hass, entry, filtered_dongle_ids)
                     )
                 else:
                     entities.append(
-                        CombinedSwitch(switch, hass, entry, dongle_ids)
+                        CombinedSwitch(switch, hass, entry, filtered_dongle_ids)
                     )
             except Exception as e:
                 _LOGGER.error(f"Error setting up combined switch {switch}: {e}")
@@ -102,8 +128,28 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
     def device_info(self):
         return self.get_device_info(self._dongle_id, self._manufacturer)
 
+    @property
+    def available(self) -> bool:
+        """Check if the switch is available based on coordinator state and conditional logic."""
+        # Always return True - we'll use HomeAssistantError for conditional logic
+        return self.coordinator.last_update_success
+    
+    @property
+    def device_state_attributes(self) -> dict:
+        """Return device state attributes."""
+        attrs = {}
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            attrs["unavailable_reason"] = availability_info["reason"]
+        return attrs
+
     async def async_turn_on(self, **kwargs):
         """Turn the switch on."""
+        # Check if entity should be available based on conditional settings
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            raise HomeAssistantError(availability_info["reason"])
+        
         mqtt_handler = self.coordinator.mqtt_handler
         if mqtt_handler is not None:
             self._previous_state = self._state
@@ -120,6 +166,11 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs):
         """Turn the switch off."""
+        # Check if entity should be available based on conditional settings
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            raise HomeAssistantError(availability_info["reason"])
+        
         mqtt_handler = self.coordinator.mqtt_handler
         if mqtt_handler is not None:
             self._previous_state = self._state  # Save the current state before changing
@@ -139,6 +190,7 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
         if self._previous_state is not None:
             self._state = self._previous_state
             self.throttled_async_write_ha_state()
+    
 
     @callback
     def _handle_coordinator_update(self) -> None:
