@@ -54,8 +54,8 @@ A powerful Home Assistant integration for solar inverter monitoring and control 
 5. Restart Home Assistant
 
 <p align="center">
-  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/hacs.png" target="_blank">
-    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/hacs.png" alt="HACS Search Results" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/hacs.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/hacs.png?raw=true" alt="HACS Search Results" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
@@ -70,8 +70,8 @@ A powerful Home Assistant integration for solar inverter monitoring and control 
 4. Click **Save** and wait for "Connected" status
 
 <p align="center">
-  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/donglemqtt.png" target="_blank">
-    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/donglemqtt.png" alt="Dongle MQTT Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/donglemqtt.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/donglemqtt.png?raw=true" alt="Dongle MQTT Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
@@ -83,8 +83,8 @@ A powerful Home Assistant integration for solar inverter monitoring and control 
 4. Complete the setup:
 
 <p align="center">
-  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/integration.png" target="_blank">
-    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/integration.png" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/integration.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/integration.png?raw=true" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
@@ -98,13 +98,13 @@ A powerful Home Assistant integration for solar inverter monitoring and control 
 5. Click **Submit**
 
 <p align="center">
-  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/setup.png" target="_blank">
-    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/setup.png" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/setup.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/setup.png?raw=true" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 <p align="center">
-  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/multiinverters.png" target="_blank">
-    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/multiinverters.png" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/multiinverters.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/multiinverters.png?raw=true" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
@@ -160,8 +160,8 @@ Access via **Configure** button on the integration:
 - Monitor entity counts
 
 <p align="center">
-  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/healthcheck.png" target="_blank">
-    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/healthcheck.png" alt="Integration Helth check" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/healthcheck.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/healthcheck.png?raw=true" alt="Integration Helth check" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
@@ -174,8 +174,8 @@ Access via **Configure** button on the integration:
 5. Monitor real-time progress
 
 <p align="center">
-  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/firmware.png" target="_blank">
-    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/firmware.png" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/firmware.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/firmware.png?raw=true" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
@@ -191,8 +191,8 @@ sensor.combined_sync_status    # Monitor sync status
 ```
 
 <p align="center">
-  <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/multipledongles.png" target="_blank">
-    <img src="https://github.com/Monitor-My-Solar/monitormysolar/images/multipledongles.png" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/multipledongles.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/multipledongles.png?raw=true" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
