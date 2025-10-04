@@ -16,6 +16,7 @@ A powerful Home Assistant integration for solar inverter monitoring and control 
 - **Full control** over inverter settings
 - **Multi-inverter support** with automatic synchronization
 - **GridBoss support** (NEW in v3.0.0) for advanced distribution monitoring
+- **Conditional Entity System** - Smart entity availability based on configuration
 - **Firmware updates** with progress tracking
 - **No cloud dependency** - fully local control
 
@@ -80,7 +81,7 @@ A powerful Home Assistant integration for solar inverter monitoring and control 
 1. Go to **Settings** → **Devices & Services**
 2. Click **"+ Add Integration"**
 3. Search for **"Monitor My Solar"**
-4. Complete the setup:
+4. Complete the 3-step setup:
 
 <p align="center">
   <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/integration.png?raw=true" target="_blank">
@@ -88,23 +89,46 @@ A powerful Home Assistant integration for solar inverter monitoring and control 
   </a>
 </p>
 
+#### Step 1: Basic Configuration
 | Field | Description | Example |
 |-------|-------------|---------|
 | Inverter Brand | Select your inverter manufacturer | LuxPower |
-| Dongle ID | From dongle web interface (lowercase!) | dongle-12:34:56:78:90:ab |
-| Dongle IP | For firmware updates | 192.168.1.150 |
-| GridBoss Connected | Check if using GridBoss (v3.0.0+) | ☑️ |
+| Update Interval | How often to update data | 1 minute |
 
-5. Click **Submit**
+#### Step 2: Setup Type Selection
+Choose your configuration:
+- **Single Inverter** - Standard single inverter setup
+- **Parallel Inverters** - Multiple inverters working together
+- **Single GridBoss** - One inverter with GridBoss distribution
+- **Dual GridBoss** - Two GridBoss units for larger systems
+
+#### Step 3: Dongle Configuration
+Configure your dongle(s) based on setup type:
+
+**Single Inverter:**
+| Field | Description | Example |
+|-------|-------------|---------|
+| Dongle ID | From dongle web interface | dongle-12:34:56:78:90:ab |
+| Dongle IP | For firmware updates (optional) | 192.168.1.150 |
+
+**Parallel Inverters:**
+- Master dongle ID (required)
+- Up to 5 slave dongle IDs (optional)
+- IP addresses for each dongle (optional)
+
+**GridBoss Setup:**
+- GridBoss dongle ID (required)
+- Up to 3 slave dongle IDs (optional)
+- IP addresses for each dongle (optional)
 
 <p align="center">
-  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/setup.png?raw=true" target="_blank">
-    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/setup.png?raw=true" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/page1.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/page1.png?raw=true" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 <p align="center">
-  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/multiinverters.png?raw=true" target="_blank">
-    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/multiinverters.png?raw=true" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/setup_type.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/setup_type.png?raw=true" alt="Integration Setup" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
@@ -112,12 +136,20 @@ A powerful Home Assistant integration for solar inverter monitoring and control 
 
 GridBoss support is available for LuxPower inverters with firmware code **IAAB**.
 
-### Enabling GridBoss
+### GridBoss Setup Types
 
-**For New Installations:**
-- Check "GridBoss Connected" during initial setup
+**Single GridBoss Setup:**
+- One GridBoss unit with up to 3 slave inverters
+- Perfect for residential installations
+- Provides 4 SmartLoads and 4 AC Coupling ports
 
-**For Existing Installations:**
+**Dual GridBoss Setup:**
+- Two GridBoss units with up to 3 slaves each
+- Ideal for larger commercial installations
+- Provides 8 SmartLoads and 8 AC Coupling ports total
+
+### Enabling GridBoss for Existing Installations
+
 1. Go to integration → **Configure**
 2. Select **Update Settings**
 3. Check **"GridBoss Connected"**
@@ -128,10 +160,18 @@ GridBoss support is available for LuxPower inverters with firmware code **IAAB**
 ### GridBoss Features
 
 - **Easy House Backup**: Easily backup your house loads
-- **Smart Load Control**: Manage up to 8 loads
+- **Smart Load Control**: Manage up to 4 configurable SmartLoads
 - **Generator Integration**: Auto start/stop control
-- **AC Coupling**: External solar monitoring
-- **Advanced Scheduling**: Time-based automation
+- **AC Coupling**: Monitor up to 4 external solar systems
+- **Split-Phase Monitoring**: Individual L1, L2 tracking (USA standard)
+- **Advanced Scheduling**: Time-based automation with multiple schedules
+- **Port Exclusivity**: Each port can be SmartLoad OR AC Coupling (not both)
+
+<p align="center">
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/gridboss-overview.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/gridboss-overview.png?raw=true" alt="GridBoss Overview" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  </a>
+</p>
 
 
 
@@ -153,6 +193,12 @@ Access via **Configure** button on the integration:
 ### 2. Update Settings
 - Database write intervals
 - GridBoss enable/disable
+
+<p align="center">
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/update-settings.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/update-settings.png?raw=true" alt="Update Settings" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  </a>
+</p>
 
 ### 3. Check Status
 - View connection status
@@ -206,6 +252,9 @@ sensor.combined_sync_status    # Monitor sync status
 | Firmware timeout | Verify dongle ID is lowercase |
 | Time settings not saving | Switch to 24-hour format |
 | GridBoss entities missing | Verify firmware code IAAB |
+| Entities grayed out | Check conditional entity configuration |
+| Port settings unavailable | Set port mode first, then configure settings |
+
 
 ### Debug Tools
 
@@ -234,12 +283,22 @@ sensor.combined_sync_status    # Monitor sync status
 | Binary Sensors | 5+ | Status indicators |
 | Update | 1 per dongle | Firmware updates |
 
+
 ## 🔗 Resources
 
 - **Hardware**: [monitormy.solar](https://monitormy.solar)
 - **Documentation**: [GitHub Wiki](https://github.com/Monitor-My-Solar/monitormysolar/wiki)
 - **Support**: [GitHub Issues](https://github.com/Monitor-My-Solar/monitormysolar/issues)
 - **Community**: [Home Assistant Forum](https://community.home-assistant.io/)
+
+### Key Documentation Links
+
+- [Initial Setup Guide](https://github.com/Monitor-My-Solar/monitormysolar/wiki/Initial-Setup)
+- [GridBoss Configuration](https://github.com/Monitor-My-Solar/monitormysolar/wiki/GridBoss-Configuration)
+- [Supported Entities](https://github.com/Monitor-My-Solar/monitormysolar/wiki/Supported-Entities)
+- [Conditional Entity System](https://github.com/Monitor-My-Solar/monitormysolar/wiki/Conditional-Entity-System)
+- [Multi-Inverter Setup](https://github.com/Monitor-My-Solar/monitormysolar/wiki/Multi-Inverter-Setup)
+- [Common Issues](https://github.com/Monitor-My-Solar/monitormysolar/wiki/Common-Issues)
 
 ## 📄 License
 
