@@ -714,8 +714,8 @@ ENTITIES = {
                     # Add more selects as needed
                 ],
                 "holdbank5": [
-                    {"name": "Charge Control", "type": "select", "unique_id": "ubBatChgcontrol", "options": ["Voltage", "SOC"]},
-                    {"name": "Discharge Control", "type": "select", "unique_id": "ubBatDischgControl", "options": ["Voltage", "SOC"]},
+                    {"name": "Charge Control", "type": "select", "unique_id": "ubBatChgcontrol", "options": ["SOC", "Voltage"]},
+                    {"name": "Discharge Control", "type": "select", "unique_id": "ubBatDischgControl", "options": ["SOC", "Voltage"]},
                 ],
                 "holdbank6": [
                     {"name": "Quick Charge Duration", "type": "select", "unique_id": "quickchgtime", "options": ["0", "15", "30", "45", "60", "90", "120"], "additional_payload": {"key": "ubquickchgstarten","value_map": {"0": "0","default": "1"}}},

@@ -195,8 +195,8 @@ Access via **Configure** button on the integration:
 - GridBoss enable/disable
 
 <p align="center">
-  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/update-settings.png?raw=true" target="_blank">
-    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/update-settings.png?raw=true" alt="Update Settings" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
+  <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/updateSettings.png?raw=true" target="_blank">
+    <img src="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/updateSettings.png?raw=true" alt="Update Settings" width="600" style="cursor:pointer; border: 1px solid #ddd; border-radius: 4px; padding: 5px;" title="Click to view full size" />
   </a>
 </p>
 
