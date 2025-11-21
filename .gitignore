@@ -1,0 +1,13 @@
+
+custom_components/monitormysolar/__pycache__
+custom_components/monitormysolar/.claude
+custom_components/monitormysolar/docs/
+custom_components/monitormysolar/registers
+custom_components/monitormysolar/CONDITIONAL_ENTITIES.md
+TODO.md
+monitormysolar-card/
+monitormysolar-schedule-card/
+./claude
+*.claude
+claude.md
+docs/

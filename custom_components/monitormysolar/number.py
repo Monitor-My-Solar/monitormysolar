@@ -1,101 +1,367 @@
-import logging
 from homeassistant.components.number import NumberEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 import json
-from .const import DOMAIN, ENTITIES
+import asyncio
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    Event,
+)
+from homeassistant.const import (
+    STATE_UNKNOWN,
+)
+from typing import Dict, List, Optional
+from .const import DOMAIN, ENTITIES, LOGGER
+from .coordinator import MonitorMySolarEntry
+from .entity import MonitorMySolarEntity
 
-_LOGGER = logging.getLogger(__name__)
-
-async def async_setup_entry(hass, entry, async_add_entities):
-    inverter_brand = entry.data.get("inverter_brand")
-    dongle_id = entry.data.get("dongle_id").lower().replace("-", "_")
+async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities):
+    coordinator = entry.runtime_data
+    inverter_brand = coordinator.inverter_brand
+    dongle_ids = coordinator._dongle_ids
+    
     brand_entities = ENTITIES.get(inverter_brand, {})
     number_config = brand_entities.get("number", {})
 
     entities = []
-    for bank_name, numbers in number_config.items():
-        for number in numbers:
+    
+    # Loop through each dongle ID
+    for dongle_id in dongle_ids:
+        firmware_code = coordinator.get_firmware_code(dongle_id)
+        
+        # Only create entities if we have a firmware code
+        if not firmware_code:
+            LOGGER.debug(f"Skipping entity creation for {dongle_id} - no firmware code available yet")
+            continue
+        
+        # Process numbers for this dongle
+        for bank_name, numbers in number_config.items():
+            # Skip combined numbers for individual dongles
+            if bank_name == "combined":
+                continue
+                
+            for number in numbers:
+                allowed_firmware_codes = number.get("allowed_firmware_codes", [])
+                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
+                if coordinator.is_gridboss_dongle(dongle_id):
+                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
+                        continue
+                else:
+                    # For regular dongles, use the original logic
+                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                        pass  # Continue to entity creation
+                    else:
+                        continue  # Skip this entity
+                
+                try:
+                    entities.append(
+                        InverterNumber(number, hass, entry, bank_name, dongle_id)
+                    )
+                except Exception as e:
+                    LOGGER.error(f"Error setting up number {number} for dongle {dongle_id}: {e}")
+                    
+    # Create combined numbers if we have multiple dongles
+    if len(dongle_ids) > 1:
+        LOGGER.info(f"Creating combined number entities for {len(dongle_ids)} dongles")
+        combined_numbers = coordinator.get_combined_entities_for_setup_type("number")
+        for number in combined_numbers:
             try:
+                # Get the appropriate dongle IDs based on the dongle_filter
+                dongle_filter = number.get("dongle_filter")
+                if dongle_filter:
+                    filtered_dongle_ids = coordinator.get_dongles_by_filter(dongle_filter)
+                    if not filtered_dongle_ids:
+                        LOGGER.debug(f"Skipping combined number {number['name']} - no dongles match filter {dongle_filter}")
+                        continue
+                else:
+                    filtered_dongle_ids = dongle_ids
+                
                 entities.append(
-                    InverterNumber(number, hass, entry, dongle_id, bank_name)
+                    CombinedNumber(number, hass, entry, filtered_dongle_ids)
                 )
             except Exception as e:
-                _LOGGER.error(f"Error setting up number {number}: {e}")
+                LOGGER.error(f"Error setting up combined number {number}: {e}")
 
     async_add_entities(entities, True)
 
-class InverterNumber(NumberEntity):
-    def __init__(self, entity_info, hass, entry, dongle_id, bank_name):
+class InverterNumber(MonitorMySolarEntity, NumberEntity):
+    def __init__(self, entity_info, hass, entry: MonitorMySolarEntry, bank_name, dongle_id):
         """Initialize the number."""
+        self.coordinator = entry.runtime_data
         self.entity_info = entity_info
         self._attr_name = entity_info["name"]
-        self._attr_unique_id = f"{entry.entry_id}_{entity_info['unique_id']}".lower()
+        self._attr_unique_id = f"{entry.entry_id}_{dongle_id}_{entity_info['unique_id']}".lower()
         self._attr_native_value = 0
-        self._dongle_id = dongle_id.lower().replace("-", "_")
-        self._device_id = dongle_id.lower().replace("-", "_")
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"number.{self._device_id}_{self._entity_type.lower()}"
+        self.entity_id = f"number.{self._formatted_dongle_id}_{self._entity_type.lower()}"
         self.hass = hass
         self._attr_native_min_value = entity_info.get("min", None)
         self._attr_native_max_value = entity_info.get("max", None)
         self._attr_mode = entity_info.get("mode", "auto")
-        self._attr_native_unit_of_measurement = entity_info.get("native_unit_of_measurement", None)
-        self._attr_device_class = entity_info.get("device_class", None)
+        self._attr_native_unit_of_measurement = entity_info.get("unit", None)
+        self._attr_device_class = entity_info.get("class", None)
         self._manufacturer = entry.data.get("inverter_brand")
         self._previous_value = self._attr_native_value  # Track the previous value for revert
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+
+        super().__init__(self.coordinator)
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Always return True - we'll use HomeAssistantError for conditional logic
+        return self.coordinator.last_update_success
+    
+    @property
+    def device_state_attributes(self) -> dict:
+        """Return device state attributes."""
+        attrs = {}
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            attrs["unavailable_reason"] = availability_info["reason"]
+        return attrs
+    
+
+    @property
+    def name(self):
+        return self._attr_name
 
     async def async_set_native_value(self, value):
         """Set the number value."""
-        _LOGGER.debug(f"Setting value of number {self.entity_id} to {value}")
-        mqtt_handler = self.hass.data[DOMAIN].get("mqtt_handler")
+        LOGGER.debug(f"Setting value of number {self.entity_id} to {value}")
+        
+        # Check if entity should be available based on conditional settings
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            raise HomeAssistantError(availability_info["reason"])
+        
+        mqtt_handler = self.coordinator.mqtt_handler
         if mqtt_handler is not None:
             # Save the current value before changing
             self._previous_value = self._attr_native_value
             # Set the new value
             self._attr_native_value = value
-            self.async_write_ha_state()
+            self.throttled_async_write_ha_state()
 
             # Send the update via MQTT
-            await mqtt_handler.send_update(
-                self._dongle_id.replace("_", "-"),
+            success = await mqtt_handler.send_update(
+                self._dongle_id,
                 self.entity_info["unique_id"],
                 value,
                 self,
             )
+            if not success:
+                self.revert_state()
         else:
-            _LOGGER.error("MQTT Handler is not initialized")
+            LOGGER.error("MQTT Handler is not initialized")
 
     def revert_state(self):
         """Revert to the previous state."""
-        _LOGGER.info(f"Reverting state for {self.entity_id} to {self._previous_value}")
+        LOGGER.info(f"Reverting state for {self.entity_id} to {self._previous_value}")
         self._attr_native_value = self._previous_value
-        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+        self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
     @callback
-    def _handle_event(self, event):
-        """Handle the event."""
-        event_entity_id = event.data.get("entity").lower().replace("-", "_")
-        if event_entity_id == self.entity_id:
-            value = event.data.get("value")
+    def _handle_coordinator_update(self) -> None:
+        """Update sensor with latest data from coordinator."""
+
+
+        if self.entity_id in self.coordinator.entities:
+            value = self.coordinator.entities[self.entity_id]
             if value is not None:
                 self._attr_native_value = value
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+                self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
-    async def async_added_to_hass(self):
-        """Call when entity is added to hass."""
-        #_LOGGER.debug(f"Number {self.entity_id} added to hass")
-        self.hass.bus.async_listen(f"{DOMAIN}_number_updated", self._handle_event)
-       # _LOGGER.debug(f"Number {self.entity_id} subscribed to event")
+    @property
+    def device_info(self):
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
-    async def async_will_remove_from_hass(self):
-        """Unsubscribe from events when removed."""
-       # _LOGGER.debug(f"Number {self.entity_id} will be removed from hass")
-        self.hass.bus._async_remove_listener(
-            f"{DOMAIN}_number_updated", self._handle_event
+class CombinedNumber(MonitorMySolarEntity, NumberEntity):
+    """Number entity that controls multiple dongles at once."""
+    
+    def __init__(self, entity_info, hass, entry: MonitorMySolarEntry, dongle_ids):
+        """Initialize the combined number."""
+        self.coordinator = entry.runtime_data
+        self.entity_info = entity_info
+        self._name = entity_info["name"]
+        self._unique_id = f"{entry.entry_id}_{entity_info['unique_id']}".lower()
+        self._attr_native_value = 0
+        self._dongle_ids = dongle_ids
+        self._virtual_id = "combined_parallel"
+        self._formatted_dongle_id = "combined"
+        self._entity_type = entity_info["unique_id"]
+        self._source_entity = entity_info.get("source_entity", "")
+        # Remove 'combined_' prefix from unique_id for entity_id
+        entity_suffix = self._entity_type.lower().replace("combined_", "", 1)
+        self.entity_id = f"number.{self._formatted_dongle_id}_{entity_suffix}"
+        self.hass = hass
+        self._attr_native_min_value = entity_info.get("min", None)
+        self._attr_native_max_value = entity_info.get("max", None)
+        self._attr_mode = entity_info.get("mode", "auto")
+        self._attr_native_unit_of_measurement = entity_info.get("unit", None)
+        self._attr_device_class = entity_info.get("class", None)
+        self._manufacturer = entry.data.get("inverter_brand")
+        self._previous_value = self._attr_native_value  # Track the previous value for revert
+        
+        # Track source entities that we need to monitor
+        self._tracked_entities = []
+        self._source_values = {}
+        for dongle_id in dongle_ids:
+            formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+            source_entity_id = f"number.{formatted_id}_{self._source_entity.lower()}"
+            self._tracked_entities.append(source_entity_id)
+            self._source_values[source_entity_id] = None
+            
+        # Set up state tracking
+        for entity_id in self._tracked_entities:
+            self._async_add_entity_listener(entity_id)
+        
+        super().__init__(self.coordinator)
+        
+        # Initialize the state based on current source values
+        self.hass.async_create_task(self._initialize_state())
+        
+    def _async_add_entity_listener(self, entity_id):
+        """Set up a listener for a source entity."""
+        @callback
+        def async_state_changed_listener(event: Event) -> None:
+            """Handle entity state changes."""
+            # Handle generic Event data structure
+            if not hasattr(event, 'data'):
+                return
+                
+            new_state = event.data.get("new_state")
+            if new_state is None:
+                return
+                
+            try:
+                value = float(new_state.state)
+                self._source_values[entity_id] = value
+                # Use create_task to run the async method from a sync callback
+                self.hass.async_create_task(self._update_combined_state())
+            except (ValueError, TypeError):
+                LOGGER.warning(f"Invalid state value for {entity_id}: {new_state.state}")
+                
+        self.async_on_remove(
+            async_track_state_change_event(
+                self.hass, entity_id, async_state_changed_listener
+            )
         )
+    
+    async def _update_combined_state(self):
+        """Update the combined state based on source entities.
+        
+        Takes the average of all current values.
+        """
+        # Filter out None values
+        values = [v for v in self._source_values.values() if v is not None]
+        
+        if not values:
+            LOGGER.debug(f"No values available for combined number {self._name}")
+            return
+            
+        # Take the average for the display state
+        avg_value = sum(values) / len(values)
+        
+        if avg_value != self._attr_native_value:
+            self._attr_native_value = avg_value
+            self.throttled_async_write_ha_state()
+        
+    @property
+    def name(self):
+        return self._name
+        
+    @property
+    def unique_id(self):
+        return self._unique_id
+        
+    @property
+    def available(self):
+        # At least one source value should be available
+        return any(v is not None for v in self._source_values.values())
+        
+    @property
+    def extra_state_attributes(self):
+        """Return extra attributes about the number."""
+        return {
+            "source_entities": self._tracked_entities,
+            "source_values": {k: v for k, v in self._source_values.items() if v is not None}
+        }
+        
+    @property
+    def device_info(self):
+        # Create a custom device info for the virtual combined device
+        device_info = {
+            "identifiers": {(DOMAIN, self._virtual_id)},
+            "name": "Combined Parallel Inverters",
+            "manufacturer": f"{self._manufacturer}",
+            "model": f"Virtual Combined Device ({len(self._dongle_ids)} inverters)"
+        }
+        return device_info
+        
+    async def async_set_native_value(self, value):
+        """Set the value on all dongles."""
+        mqtt_handler = self.coordinator.mqtt_handler
+        if mqtt_handler is not None:
+            # Save the current value before changing
+            self._previous_value = self._attr_native_value
+            # Set the new value
+            self._attr_native_value = value
+            self.throttled_async_write_ha_state()
+            
+            LOGGER.info(f"Setting Combined Number value for {self.entity_id} to {value} across {len(self._dongle_ids)} dongles")
+            success = await mqtt_handler.send_update_to_multiple_dongles(
+                self._dongle_ids, self._source_entity, value, self
+            )
+            if not success:
+                self.revert_state()
+        else:
+            LOGGER.error("MQTT Handler is not initialized")
+            
+    def revert_state(self):
+        """Revert to the previous state."""
+        LOGGER.info(f"Reverting state for {self.entity_id} to {self._previous_value}")
+        self._attr_native_value = self._previous_value
+        self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
+    
+    @property
+    def extra_state_attributes(self):
+        """Return extra attributes about the combined number."""
+        # Format the dongle values for display
+        dongle_values = {}
+        for entity_id, value in self._source_values.items():
+            # Extract dongle ID from entity_id
+            parts = entity_id.split('.')[-1].split('_')
+            if len(parts) >= 6:  # dongle_XX_XX_XX_XX_XX + setting name
+                dongle_id = '_'.join(parts[:6]).replace('_', ':')
+                dongle_values[f"{dongle_id}"] = str(value) if value is not None else "unknown"
+        
+        return {
+            **dongle_values,
+            "source_entities": self._tracked_entities,
+            "operation": "average"
+        }
+    
+    async def _initialize_state(self):
+        """Initialize the state based on current source entity states."""
+        await asyncio.sleep(2)  # Give entities time to load
+        
+        for entity_id in self._tracked_entities:
+            state = self.hass.states.get(entity_id)
+            if state:
+                try:
+                    value = float(state.state)
+                    self._source_values[entity_id] = value
+                except (ValueError, TypeError):
+                    LOGGER.debug(f"Could not parse state for {entity_id}: {state.state}")
+        
+        await self._update_combined_state()
+    
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Override to prevent looking for combined entity in coordinator."""
+        # Combined entities don't receive direct MQTT updates
+        # They only update based on their source entities
+        pass

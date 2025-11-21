@@ -1,46 +1,84 @@
 """Battery status binary sensors."""
 from homeassistant.components.binary_sensor import BinarySensorEntity
-from homeassistant.core import callback
-from .const import DOMAIN, BATTERY_STATUS_MAP, ENTITIES
+from homeassistant.core import callback, HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_time_interval,
+)
+from homeassistant.const import (
+    STATE_UNKNOWN,
+)
+from homeassistant.helpers.reload import async_setup_reload_service
+from .const import DOMAIN, BATTERY_STATUS_MAP, ENTITIES, PLATFORMS, LOGGER
+from .coordinator import MonitorMySolarEntry
+from .entity import MonitorMySolarEntity
 
-
-import logging
-_LOGGER = logging.getLogger(__name__)
-async def async_setup_entry(hass, entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: MonitorMySolarEntry,
+    async_add_entities: AddEntitiesCallback
+) -> None:
     """Set up binary sensors based on a config entry."""
-    inverter_brand = entry.data.get("inverter_brand")
-    dongle_id = entry.data.get("dongle_id").lower().replace("-", "_")
-    
+    coordinator = entry.runtime_data
+    inverter_brand = coordinator.inverter_brand
+    dongle_ids = coordinator._dongle_ids
     brand_entities = ENTITIES.get(inverter_brand, {})
     sensors_config = brand_entities.get("binary_sensor", {})  # We're still using the sensor config
     
     entities = []
     
-    for bank_name, sensors in sensors_config.items():
-        for sensor in sensors:
-            if bank_name == "battery":
-                entities.append(
-                    BatteryStatusBinarySensor(sensor, hass, entry, dongle_id)
-                )
+    # Loop through each dongle ID
+    for dongle_id in dongle_ids:
+        firmware_code = coordinator.get_firmware_code(dongle_id)
+        
+        # Only create entities if we have a firmware code
+        if not firmware_code:
+            LOGGER.debug(f"Skipping entity creation for {dongle_id} - no firmware code available yet")
+            continue
+        
+        # Loop through the sensors in the configuration for this dongle
+        for bank_name, sensors in sensors_config.items():
+            for sensor in sensors:
+                allowed_firmware_codes = sensor.get("allowed_firmware_codes", [])
+                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
+                if coordinator.is_gridboss_dongle(dongle_id):
+                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
+                        continue
+                else:
+                    # For regular dongles, use the original logic
+                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                        pass  # Continue to entity creation
+                    else:
+                        continue  # Skip this entity
+                
+                if bank_name == "battery":
+                    entities.append(
+                        BatteryStatusBinarySensor(sensor, hass, entry, dongle_id)
+                    )
     
     async_add_entities(entities, True)
 
 
-class BatteryStatusBinarySensor(BinarySensorEntity):
+class BatteryStatusBinarySensor(MonitorMySolarEntity, BinarySensorEntity):
     """Binary sensor for battery charge/discharge status."""
 
     def __init__(self, sensor_info, hass, entry, dongle_id):
         """Initialize the binary sensor."""
+        self.coordinator = entry.runtime_data
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
-        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
         self._state = None
-        self._dongle_id = dongle_id.lower().replace("-", "_")
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._status_type = sensor_info.get("status_type")
-        self.entity_id = f"binary_sensor.{self._dongle_id}_{sensor_info['unique_id']}"
+        self.entity_id = f"binary_sensor.{self._formatted_dongle_id}_{sensor_info['unique_id'].lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._parent_sensor = sensor_info.get("parent_sensor")
+
+        super().__init__(self.coordinator)
 
     @property
     def name(self):
@@ -61,35 +99,22 @@ class BatteryStatusBinarySensor(BinarySensorEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     @callback
-    def _handle_event(self, event):
-        """Handle the event."""
-        event_entity_id = event.data.get("entity").lower().replace("-", "_")
-        value = event.data.get("value")
-        _LOGGER.debug(f"Binary sensor {self.entity_id} received event: {event_entity_id} with value {value}")
-
-        # Check if this update is for our parent sensor (BatStatusINV)
-        if event_entity_id.endswith(self._parent_sensor.lower()):
-            try:
-                status_value = str(int(value)).zfill(2)
-                if status_value in BATTERY_STATUS_MAP:
-                    self._state = BATTERY_STATUS_MAP[status_value][self._status_type]
-                    self.async_write_ha_state()
-            except ValueError:
-                _LOGGER.debug(f"Invalid battery status value: {value}")
-
-    async def async_added_to_hass(self):
-        """Subscribe to events when added to hass."""
-        self.hass.bus.async_listen(f"{DOMAIN}_sensor_updated", self._handle_event)
-        _LOGGER.debug(f"Binary sensor {self.entity_id} subscribed to event")
-
-    async def async_will_remove_from_hass(self):
-        """Unsubscribe from events when removed."""
-        _LOGGER.debug(f"Binary sensor {self.entity_id} will be removed from hass")
-        self.hass.bus._async_remove_listener(f"{DOMAIN}_sensor_updated", self._handle_event)
+    def _handle_coordinator_update(self) -> None:
+        """Update sensor with latest data from coordinator."""
+        # Look for the parent sensor entity ID
+        parent_entity_id = f"sensor.{self._formatted_dongle_id}_{self._parent_sensor.lower()}"
+        
+        if parent_entity_id in self.coordinator.entities:
+            value = self.coordinator.entities[parent_entity_id]
+            if value is not None:
+                try:
+                    # Convert the value to a string and pad with zeros if needed
+                    status_value = str(int(value)).zfill(2)
+                    if status_value in BATTERY_STATUS_MAP:
+                        self._state = BATTERY_STATUS_MAP[status_value][self._status_type]
+                        self.throttled_async_write_ha_state()
+                except (ValueError, TypeError):
+                    LOGGER.debug(f"Invalid battery status value: {value} for {parent_entity_id}")

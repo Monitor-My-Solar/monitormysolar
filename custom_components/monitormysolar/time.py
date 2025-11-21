@@ -1,43 +1,91 @@
-import logging
 from datetime import datetime, timedelta
 import asyncio
 from homeassistant.components.time import TimeEntity
 from homeassistant.core import callback
-from .const import DOMAIN, ENTITIES
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+)
+from homeassistant.const import (
+    STATE_UNKNOWN,
+)
+from .const import DOMAIN, ENTITIES, LOGGER
+from .coordinator import MonitorMySolarEntry
+from .entity import MonitorMySolarEntity
 
-_LOGGER = logging.getLogger(__name__)
-
-async def async_setup_entry(hass, entry, async_add_entities):
-    inverter_brand = entry.data.get("inverter_brand")
-    dongle_id = entry.data.get("dongle_id").lower().replace("-", "_")
+async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities):
+    coordinator = entry.runtime_data
+    inverter_brand = coordinator.inverter_brand
+    dongle_ids = coordinator._dongle_ids
+    
     brand_entities = ENTITIES.get(inverter_brand, {})
 
     entities = []
 
-    # Setup Time entities
-    time_config = brand_entities.get("time", {})
-    for bank_name, time_entities in time_config.items():
-        for time_entity in time_entities:
-            entities.append(InverterTime(time_entity, hass, entry, dongle_id))
+    # Loop through each dongle ID
+    for dongle_id in dongle_ids:
+        firmware_code = coordinator.get_firmware_code(dongle_id)
+        
+        # Only create entities if we have a firmware code
+        if not firmware_code:
+            LOGGER.debug(f"Skipping entity creation for {dongle_id} - no firmware code available yet")
+            continue
+        
+        # Setup Time entities
+        time_config = brand_entities.get("time", {})
+        for bank_name, time_entities in time_config.items():
+            for time_entity in time_entities:
+                allowed_firmware_codes = time_entity.get("allowed_firmware_codes", [])
+                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
+                if coordinator.is_gridboss_dongle(dongle_id):
+                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
+                        continue
+                else:
+                    # For regular dongles, use the original logic
+                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                        pass  # Continue to entity creation
+                    else:
+                        continue  # Skip this entity
+                
+                entities.append(InverterTime(time_entity, hass, entry, dongle_id))
 
     async_add_entities(entities, True)
 
-class InverterTime(TimeEntity):
-    def __init__(self, entity_info, hass, entry, dongle_id):
+class InverterTime(MonitorMySolarEntity, TimeEntity):
+    def __init__(self, entity_info, hass, entry: MonitorMySolarEntry, dongle_id):
         """Initialize the Time entity."""
-        _LOGGER.debug(f"Initializing Time entity with info: {entity_info}")
+        LOGGER.debug(f"Initializing Time entity with info: {entity_info} for dongle {dongle_id}")
+        self.coordinator = entry.runtime_data
         self.entity_info = entity_info
         self._name = entity_info["name"]
-        self._unique_id = f"{entry.entry_id}_{entity_info['unique_id']}".lower()
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{entity_info['unique_id']}".lower()
         self._state = None
-        self._dongle_id = dongle_id.lower().replace("-", "_")
-        self._device_id = dongle_id.lower().replace("-", "_")
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
-        self.entity_id = f"time.{self._device_id}_{self._entity_type.lower()}"
+        self.entity_id = f"time.{self._formatted_dongle_id}_{self._entity_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._last_mqtt_update = None
         self._debounce_task = None
+
+        super().__init__(self.coordinator)
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Always return True - we'll use HomeAssistantError for conditional logic
+        return self.coordinator.last_update_success
+    
+    @property
+    def device_state_attributes(self) -> dict:
+        """Return device state attributes."""
+        attrs = {}
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            attrs["unavailable_reason"] = availability_info["reason"]
+        return attrs
+    
 
     @property
     def name(self):
@@ -53,19 +101,20 @@ class InverterTime(TimeEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     async def async_set_value(self, value):
         """Handle user input and send to MQTT."""
         now = datetime.now()
 
+        # Check if entity should be available based on conditional settings
+        availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
+        if not availability_info["available"] and availability_info["reason"]:
+            raise HomeAssistantError(availability_info["reason"])
+
         # Check if the state has changed
         if self._state == value or self._state is None:
-            _LOGGER.debug(f"No change in state for {self.entity_id}. Skipping MQTT update.")
+            LOGGER.debug(f"No change in state for {self.entity_id}. Skipping MQTT update.")
             return
 
         # Debounce logic to delay the MQTT update and prevent multiple messages
@@ -75,13 +124,13 @@ class InverterTime(TimeEntity):
         async def debounce():
             await asyncio.sleep(1)
             if self._last_mqtt_update and (now - self._last_mqtt_update).total_seconds() < 1:
-                _LOGGER.debug(f"Skipping MQTT update for {self.entity_id} due to rate limiting")
+                LOGGER.debug(f"Skipping MQTT update for {self.entity_id} due to rate limiting")
                 return
 
-            _LOGGER.info(f"Setting time value for {self.entity_id} to {value}")
+            LOGGER.info(f"Setting time value for {self.entity_id} to {value}")
             self.update_state(value)
-            await self.hass.data[DOMAIN]["mqtt_handler"].send_update(
-                self._dongle_id.replace("_", "-"),
+            await self.coordinator.mqtt_handler.send_update(
+                self._dongle_id,
                 self.entity_info["unique_id"],
                 value.isoformat(),
                 self,
@@ -95,33 +144,22 @@ class InverterTime(TimeEntity):
         if self._state != value:
             self._state = value
             self._last_mqtt_update = datetime.now()
-            _LOGGER.debug(f"Time {self.entity_id} state updated to {value}")
+            LOGGER.debug(f"Time {self.entity_id} state updated to {value}")
             # Schedule state update on the main thread
-            self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+            self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
     def revert_state(self):
         """Revert to the previous state."""
         # Schedule state revert on the main thread
-        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
+        self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
     @callback
-    def _handle_event(self, event):
-        """Handle the event."""
-        # _LOGGER.debug(f"Handling event for time {self.entity_id}: {event.data}")  # Ensure comments are well-formed
-        event_entity_id = event.data.get("entity").lower().replace("-", "_")
-        if event_entity_id == self.entity_id:
-            value = event.data.get("value")
-            # _LOGGER.debug(f"Received event for time {self.entity_id}: {value}")  # Ensure comments are well-formed
+    def _handle_coordinator_update(self) -> None:
+        """Update sensor with latest data from coordinator."""
+
+        # This method is called by your DataUpdateCoordinator when a successful update runs.
+        if self.entity_id in self.coordinator.entities:
+            value = self.coordinator.entities[self.entity_id]
             if value is not None:
                 self.update_state(value)
-
-    async def async_will_remove_from_hass(self):
-        """Unsubscribe from events when removed."""
-        _LOGGER.debug(f"Time {self.entity_id} will be removed from hass")
-        self.hass.bus._async_remove_listener(f"{DOMAIN}_time_updated", self._handle_event)
-
-    async def async_added_to_hass(self):
-        """Call when entity is added to hass."""
-        #_LOGGER.debug(f"Time {self.entity_id} added to hass")
-        self.hass.bus.async_listen(f"{DOMAIN}_time_updated", self._handle_event)
-        #_LOGGER.debug(f"Time {self.entity_id} subscribed to event")
+                self.throttled_async_write_ha_state()

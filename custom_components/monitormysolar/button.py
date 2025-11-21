@@ -1,56 +1,79 @@
-import logging
 from homeassistant.components.button import ButtonEntity
 from homeassistant.components.mqtt import async_publish
 from homeassistant.core import callback
-from .const import DOMAIN, ENTITIES, FIRMWARE_CODES
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+)
+from .const import DOMAIN, ENTITIES, FIRMWARE_CODES, LOGGER
+from .coordinator import MonitorMySolarEntry
+from .entity import MonitorMySolarEntity
 
-_LOGGER = logging.getLogger(__name__)
-
-async def async_setup_entry(hass, entry, async_add_entities):
-    inverter_brand = entry.data.get("inverter_brand")
-    dongle_id = entry.data.get("dongle_id").lower().replace("-", "_")
-    firmware_code = entry.data.get("firmware_code")
-    device_type = FIRMWARE_CODES.get(firmware_code, {}).get("Device_Type", "")
-    entity_info = entry.data.get("entity_info", {})
+async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities):
+    coordinator = entry.runtime_data
+    inverter_brand = coordinator.inverter_brand
+    dongle_ids = coordinator._dongle_ids
 
     brand_entities = ENTITIES.get(inverter_brand, {})
     buttons_config = brand_entities.get("button", {})
 
-    mqtt_handler = hass.data[DOMAIN]["mqtt_handler"]
-
     entities = []
-    for bank_name, buttons in buttons_config.items():
-        for button in buttons:
-            try:
-                if bank_name == "inputbank1": 
-                    entities.append(
-                        FirmwareUpdateButton(button, hass, entry, dongle_id, bank_name, mqtt_handler)
-                    )
-                elif bank_name == "restart":
-                    entities.append(
-                        RestartButton(button, hass, entry, dongle_id, bank_name, mqtt_handler)
-                    )
-
+    
+    # Loop through each dongle ID
+    for dongle_id in dongle_ids:
+        firmware_code = coordinator.get_firmware_code(dongle_id)
+        device_type = FIRMWARE_CODES.get(firmware_code, {}).get("Device_Type", "")
+        
+        # Only create entities if we have a firmware code
+        if not firmware_code:
+            LOGGER.debug(f"Skipping entity creation for {dongle_id} - no firmware code available yet")
+            continue
+        
+        # Process buttons for this dongle
+        for bank_name, buttons in buttons_config.items():
+            for button in buttons:
+                allowed_firmware_codes = button.get("allowed_firmware_codes", [])
+                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
+                if coordinator.is_gridboss_dongle(dongle_id):
+                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
+                        continue
+                else:
+                    # For regular dongles, use the original logic
+                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
+                        pass  # Continue to entity creation
+                    else:
+                        continue  # Skip this entity
                 
-            except Exception as e:
-                _LOGGER.error(f"Error setting up button {button}: {e}")
+                try:
+                    if bank_name == "inputbank1": 
+                        entities.append(
+                            FirmwareUpdateButton(button, hass, entry, bank_name, dongle_id)
+                        )
+                    elif bank_name == "restart":
+                        entities.append(
+                            RestartButton(button, hass, entry, bank_name, dongle_id)
+                        )
+                except Exception as e:
+                    LOGGER.error(f"Error setting up button {button} for dongle {dongle_id}: {e}")
 
     async_add_entities(entities, True)
-class FirmwareUpdateButton(ButtonEntity):
-    def __init__(self, button_info, hass, entry, dongle_id, bank_name, mqtt_handler):
+
+class FirmwareUpdateButton(MonitorMySolarEntity, ButtonEntity):
+    def __init__(self, button_info, hass, entry: MonitorMySolarEntry, bank_name, dongle_id):
         """Initialize the button."""
-        _LOGGER.debug(f"Initializing button with info: {button_info}")
+        LOGGER.debug(f"Initializing button with info: {button_info} for dongle {dongle_id}")
+        self.coordinator = entry.runtime_data
         self.button_info = button_info
         self._name = button_info["name"]
-        self._unique_id = f"{entry.entry_id}_{button_info['unique_id']}".lower()
-        self._dongle_id = dongle_id.lower().replace("-", "_")
-        self._device_id = dongle_id.lower().replace("-", "_")
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{button_info['unique_id']}".lower()
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._button_type = button_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"button.{self._device_id}_{self._button_type.lower()}"
+        self.entity_id = f"button.{self._formatted_dongle_id}_{self._button_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
-        self._mqtt_handler = mqtt_handler
+
+        super().__init__(self.coordinator)
 
     @property
     def name(self):
@@ -62,15 +85,11 @@ class FirmwareUpdateButton(ButtonEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     async def async_press(self):
         """Handle the button press."""
-        formatted_dongle_id = self._dongle_id.replace(":", "_")
+        formatted_dongle_id = self._formatted_dongle_id
 
         sw_version_entity_id = f"sensor.{formatted_dongle_id}_sw_version"
         latest_firmware_entity_id = f"sensor.{formatted_dongle_id}_latestfirmwareversion"
@@ -79,7 +98,7 @@ class FirmwareUpdateButton(ButtonEntity):
         latest_firmware_version = self.hass.states.get(latest_firmware_entity_id)
 
         if sw_version is None or latest_firmware_version is None:
-            _LOGGER.error(f"Could not retrieve version information for {formatted_dongle_id}.")
+            LOGGER.error(f"Could not retrieve version information for {formatted_dongle_id}.")
             return
 
         sw_version = sw_version.state
@@ -87,35 +106,32 @@ class FirmwareUpdateButton(ButtonEntity):
 
         if sw_version < latest_firmware_version:
             # Firmware update is needed
-            _LOGGER.info(f"Firmware update button pressed for {formatted_dongle_id}")
-            await self.hass.data[DOMAIN]["mqtt_handler"].send_update(self._dongle_id, "firmware_update", "updatedongle", self)
+            LOGGER.info(f"Firmware update button pressed for {formatted_dongle_id}")
+            await self.coordinator.mqtt_handler.send_update(self._dongle_id, "firmware_update", "updatedongle", self)
         else:
             # No update needed
-            _LOGGER.info(f"No firmware update needed for {formatted_dongle_id}. SW_VERSION: {sw_version}, LatestFirmwareVersion: {latest_firmware_version}")
+            LOGGER.info(f"No firmware update needed for {formatted_dongle_id}. SW_VERSION: {sw_version}, LatestFirmwareVersion: {latest_firmware_version}")
             self.hass.bus.async_fire(f"{DOMAIN}_notification", {
                 "title": "Firmware Update",
                 "message": "No update available for the dongle."
             })
-    async def async_will_remove_from_hass(self):
-        """Unsubscribe from events when removed."""
-        _LOGGER.debug(f"Button {self.entity_id} will be removed from hass")
-        self.hass.bus.async_remove_listener(f"{DOMAIN}_button_updated", self._handle_event)
 
-
-class RestartButton(ButtonEntity):
-    def __init__(self, button_info, hass, entry, dongle_id, bank_name, mqtt_handler):
+class RestartButton(MonitorMySolarEntity, ButtonEntity):
+    def __init__(self, button_info, hass, entry, bank_name, dongle_id):
         """Initialize the button."""
+        self.coordinator = entry.runtime_data
         self.button_info = button_info
         self._name = button_info["name"]
-        self._unique_id = f"{entry.entry_id}_{button_info['unique_id']}".lower()
-        self._dongle_id = dongle_id.lower().replace("-", "_")
-        self._device_id = dongle_id.lower().replace("-", "_")
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{button_info['unique_id']}".lower()
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._button_type = button_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"button.{self._device_id}_{self._button_type.lower()}"
+        self.entity_id = f"button.{self._formatted_dongle_id}_{self._button_type.lower()}"
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
-        self._mqtt_handler = mqtt_handler
+
+        super().__init__(self.coordinator)
 
     @property
     def name(self):
@@ -127,23 +143,15 @@ class RestartButton(ButtonEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._dongle_id)},
-            "name": f"Inverter {self._dongle_id}",
-            "manufacturer": f"{self._manufacturer}",
-        }
+        return self.get_device_info(self._dongle_id, self._manufacturer)
 
     async def async_press(self):
-
+        """Handle button press."""
+        LOGGER.info(f"Restart button pressed for {self._dongle_id}")
         value = "1"
-        await self.hass.data[DOMAIN]["mqtt_handler"].send_update(
-                self._dongle_id.replace("_", "-"),
-                self._button_type["unique_id"],
+        await self.coordinator.mqtt_handler.send_update(
+                self._dongle_id,
+                self._button_type,
                 value,
                 self,
             )
-
-    async def async_will_remove_from_hass(self):
-        """Unsubscribe from events when removed."""
-        _LOGGER.debug(f"Button {self.entity_id} will be removed from hass")
-        self.hass.bus.async_remove_listener(f"{DOMAIN}_button_updated", self._handle_event)
