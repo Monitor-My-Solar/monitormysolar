@@ -619,8 +619,8 @@ ENTITIES = {
                 "holdbank3": [
                     {"name": "Force Discharge Power Rate", "type": "number", "unique_id": "ForcedDischgPowerCMD", "unit": "PERCENT", "min": 0, "max": 100 , "mode": "slider"},
                     {"name": "Force Discharge SOC Limit", "type": "number", "unique_id": "ForcedDischgSOCLimit", "unit": "PERCENT", "min": 0, "max": 100 , "mode": "slider"},
-                    {"name": "Discharge Current DC(A)", "type": "number", "unique_id": "DischgCurr", "unit": "A", "min": 0, "max": 140, "mode": "slider"},
-                    {"name": "Charge Current DC(A)", "type": "number", "unique_id": "ChargeCurr", "unit": "A", "min": 0, "max": 140, "mode": "slider"},
+                    {"name": "Discharge Current DC(A)", "type": "number", "unique_id": "DischgCurr", "unit": "A", "min": 0, "max": 300, "mode": "slider"},
+                    {"name": "Charge Current DC(A)", "type": "number", "unique_id": "ChargeCurr", "unit": "A", "min": 0, "max": 300, "mode": "slider"},
                     {"name": "Lead acid Charge Rate (A)", "type": "number", "unique_id": "ChargeRate", "unit": "A", "min": 0, "max": 140 , "mode": "slider", "native_unit": "A", "class": "CURRENT"},
                     {"name": "Lead Acid Discharge Rate (A)", "type": "number", "unique_id": "DischgRate", "unit": "A", "min": 0, "max": 140 , "mode": "slider", "native_unit": "A", "class": "CURRENT"},
                     {"name": "Battery Discharge Start Point (W)", "type": "number", "unique_id": "PtoUserStartdischg", "unit": "W", "min": 1, "max": 50 , "mode": "slider", "native_unit": "W", "class": "POWER"},
@@ -628,8 +628,6 @@ ENTITIES = {
                     {"name": "CT Offset (W)", "type": "number", "unique_id": "wCT_PowerOffset", "unit": "W", "min": 0, "max": 1000 , "mode": "slider", "native_unit": "W", "class": "POWER"},
                     {"name": "Export Power (%)", "type": "number", "unique_id": "MaxBackFlow", "unit": "W", "min": 0, "max": 200 , "mode": "slider", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": PERCENTAGE},
                     {"name": "On-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "EOD", "unit": "PERCENT", "min": 0, "max": 90, "mode": "slider"},
-                    {"name": "Battery Charge Current Limit (A)", "type": "number", "unique_id": "ChargeCurr", "unit": "A", "min": 0, "max": 400 , "mode": "slider", "native_unit": "A", "class": "CURRENT"},
-                    {"name": "Battery Discharge Current Limit (A)", "type": "number", "unique_id": "DischgCurr", "unit": "A", "min": 0, "max": 400 , "mode": "slider", "native_unit": "A", "class": "CURRENT"},
                 ],
                 "holdbank4": [
                     {"name": "Off-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "SOCLowLimitForESPSDischg", "unit": "PERCENT", "min": 0, "max": 90, "mode": "slider"},
