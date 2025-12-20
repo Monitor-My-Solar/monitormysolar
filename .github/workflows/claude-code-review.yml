@@ -3,25 +3,13 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       issues: read
       id-token: write
 
@@ -29,29 +17,59 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0 # Get full history to see what changed
 
       - name: Run Claude Code Review
         id: claude-review
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@beta
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
 
-            Please review this pull request and provide feedback on:
+          # Use sticky comments so Claude updates the same comment
+          use_sticky_comment: false
+
+          # Enhanced prompt that makes Claude track and verify fixes
+          direct_prompt: |
+            You are reviewing a pull request for a home assistant integration, this integration is running locally on users machines and not generally exposed to the internet unless a user has configured this security,
+            is of a concern but as this is running in home assistant you should understand generally this will be running locally. Check your previous comment to see the previous issues and make sure these have been fixed before highlighting new ones .
+
+            IMPORTANT INSTRUCTIONS:
+            1. If this is a subsequent review (synchronize event), check what changed since your last review
+            2. Track each issue with a unique identifier like [ISSUE-001], [ISSUE-002], etc.
+            3. Mark issues that have been fixed as ✅ FIXED
+            4. Mark unresolved issues as ⚠️ STILL OPEN
+            5. Mark new issues as 🔍 NEW
+
+            Review this pull request and provide feedback on:
             - Code quality and best practices
             - Potential bugs or issues
             - Performance considerations
             - Security concerns
             - Test coverage
 
-            Use the repository's CLAUDE.md for guidance on style and conventions. Be constructive and helpful in your feedback.
+            Format your response like this:
 
-            Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+            ## Code Review Status
 
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'
+            ### Issues Found:
 
+            [ISSUE-001] ⚠️ STILL OPEN - Service mode confusion
+            - File: custom_components/button.py
+            - Problem: this.mode is undefined
+            - Suggestion: Remove the check since only writer mode runs this
+
+            [ISSUE-002] ✅ FIXED - Missing error handling
+            - File: button.py:234
+            - Status: Fixed in latest commit
+
+            [ISSUE-003] 🔍 NEW - Unused variable
+            - File: someFile.js:123
+            - Problem: Variable declared but never used
+
+            ### Summary:
+            - Total Issues: 3
+            - Fixed: 1
+            - Still Open: 1
+            - New: 1
+
+            Be constructive and helpful. When an issue is fixed, acknowledge it positively!
