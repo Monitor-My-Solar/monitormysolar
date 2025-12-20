@@ -826,9 +826,14 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
             capacity_ah = self._sensor_values.get("batcapacity", 0)
             voltage = self._sensor_values.get("vbat", 0)
             load_watts = self._sensor_values.get("pload", 0)
+            eps_watts = self._sensor_values.get("peps", 0)
             battery_flow = self._sensor_values.get("batteryflow_live", 0)
             soc = self._sensor_values.get("soc", 0)
             pv_power = self._sensor_values.get("pall", 0)
+
+            # Use peps if pload is 0 (grid is down, load is on EPS)
+            if load_watts == 0 and eps_watts > 0:
+                load_watts = eps_watts
 
             if capacity_ah > 0 and voltage > 0 and soc > 0:
                 usable_energy_wh = (capacity_ah * voltage) * (soc / 100)
