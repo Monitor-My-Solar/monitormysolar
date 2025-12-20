@@ -98,8 +98,13 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         self._bank_name = bank_name
         self.entity_id = f"number.{self._formatted_dongle_id}_{self._entity_type.lower()}"
         self.hass = hass
+
+        # Get firmware-specific max value if available
+        firmware_code = self.coordinator.get_firmware_code(dongle_id)
+        firmware_max_values = entity_info.get("firmware_max_values", {})
+
         self._attr_native_min_value = entity_info.get("min", None)
-        self._attr_native_max_value = entity_info.get("max", None)
+        self._attr_native_max_value = firmware_max_values.get(firmware_code, entity_info.get("max", None))
         self._attr_mode = entity_info.get("mode", "auto")
         self._attr_native_unit_of_measurement = entity_info.get("unit", None)
         self._attr_device_class = entity_info.get("class", None)
