@@ -448,34 +448,39 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     
     def is_entity_available_for_standard_units(self, dongle_id: str, entity_unique_id: str) -> bool:
         """Check if an entity should be available for standard units based on charge/discharge control settings."""
-        # Check charge control entities (independent of ACChargeType)
+        # Check charge voltage entities - must check BOTH ubBatChgcontrol AND ACChargeType
         if self._is_charge_voltage_entity(entity_unique_id):
             charge_control = self.get_charge_control_setting(dongle_id)
-            # ubBatChgcontrol: 0="Voltage", 1="SOC"
-            return charge_control == 0  # 0 = "Voltage"
-        
+            charge_type = self.get_charge_type_setting(dongle_id)
+            # ubBatChgcontrol: "Voltage" or "SOC"
+            # ACChargeType: "Time According To", "SOC/Volt According To", or "Time and SOC/Volt According To"
+            return charge_control == "Voltage" and charge_type in ["SOC/Volt According To", "Time and SOC/Volt According To"]
+
+        # Check charge SOC entities - must check BOTH ubBatChgcontrol AND ACChargeType
         if self._is_charge_soc_entity(entity_unique_id):
             charge_control = self.get_charge_control_setting(dongle_id)
-            # ubBatChgcontrol: 0="Voltage", 1="SOC"
-            return charge_control == 1  # 1 = "SOC"
-        
+            charge_type = self.get_charge_type_setting(dongle_id)
+            # ubBatChgcontrol: "Voltage" or "SOC"
+            # ACChargeType: "Time According To", "SOC/Volt According To", or "Time and SOC/Volt According To"
+            return charge_control == "SOC" and charge_type in ["SOC/Volt According To", "Time and SOC/Volt According To"]
+
         # Check charge time entities
         if self._is_charge_time_entity(entity_unique_id):
             charge_type = self.get_charge_type_setting(dongle_id)
-            # ACChargeType: 0="Time According To", 1="SOC/Volt According To", 2="Time and SOC/Volt According To"
-            return charge_type == 0  # 0 = "Time According To"
-        
+            # ACChargeType: "Time According To", "SOC/Volt According To", or "Time and SOC/Volt According To"
+            return charge_type in ["Time According To", "Time and SOC/Volt According To"]
+
         # Check discharge control entities
         if self._is_discharge_voltage_entity(entity_unique_id):
             discharge_control = self.get_discharge_control_setting(dongle_id)
-            # ubBatDischgControl: 0="Voltage", 1="SOC"
-            return discharge_control == 0  # 0 = "Voltage"
-        
+            # ubBatDischgControl: "Voltage" or "SOC"
+            return discharge_control == "Voltage"
+
         if self._is_discharge_soc_entity(entity_unique_id):
             discharge_control = self.get_discharge_control_setting(dongle_id)
-            # ubBatDischgControl: 0="Voltage", 1="SOC"
-            return discharge_control == 1  # 1 = "SOC"
-        
+            # ubBatDischgControl: "Voltage" or "SOC"
+            return discharge_control == "SOC"
+
         # For all other entities, they are always available
         return True
     
