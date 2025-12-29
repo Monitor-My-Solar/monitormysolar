@@ -260,8 +260,14 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         key = f"SmartLoad{smartload_number}_PortMode"  # The payload uses "SmartLoad1_PortMode", "SmartLoad2_PortMode", etc.
         return port_modes.get(key, 0)  # Default to "Does Not Operate"
     
-    def update_charge_control_setting(self, dongle_id: str, charge_control: str):
+    def update_charge_control_setting(self, dongle_id: str, charge_control):
         """Update the charge control setting for a dongle."""
+        # Convert integer to string option if needed
+        # ubBatChgcontrol options: ["SOC", "Voltage"]
+        if isinstance(charge_control, int):
+            options = ["SOC", "Voltage"]
+            charge_control = options[charge_control] if charge_control < len(options) else charge_control
+
         if dongle_id not in self._charge_control_settings:
             self._charge_control_settings[dongle_id] = {}
         self._charge_control_settings[dongle_id] = charge_control
@@ -272,8 +278,14 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Get the charge control setting for a dongle."""
         return self._charge_control_settings.get(dongle_id, "SOC")  # Default to SOC
     
-    def update_discharge_control_setting(self, dongle_id: str, discharge_control: str):
+    def update_discharge_control_setting(self, dongle_id: str, discharge_control):
         """Update the discharge control setting for a dongle."""
+        # Convert integer to string option if needed
+        # ubBatDischgControl options: ["SOC", "Voltage"]
+        if isinstance(discharge_control, int):
+            options = ["SOC", "Voltage"]
+            discharge_control = options[discharge_control] if discharge_control < len(options) else discharge_control
+
         if dongle_id not in self._discharge_control_settings:
             self._discharge_control_settings[dongle_id] = {}
         self._discharge_control_settings[dongle_id] = discharge_control
@@ -284,8 +296,17 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Get the discharge control setting for a dongle."""
         return self._discharge_control_settings.get(dongle_id, "SOC")  # Default to SOC
     
-    def update_charge_type_setting(self, dongle_id: str, charge_type: str):
+    def update_charge_type_setting(self, dongle_id: str, charge_type):
         """Update the charge type setting for a dongle."""
+        # Convert integer to string option if needed
+        # ACChargeType options vary by firmware, but generally:
+        # ["Time According To", "SOC/Volt According To"] or
+        # ["Time According To", "SOC/Volt According To", "Time and SOC/Volt According To"]
+        if isinstance(charge_type, int):
+            # Use the full option list to cover all firmware codes
+            options = ["Time According To", "SOC/Volt According To", "Time and SOC/Volt According To"]
+            charge_type = options[charge_type] if charge_type < len(options) else charge_type
+
         if dongle_id not in self._charge_type_settings:
             self._charge_type_settings[dongle_id] = {}
         self._charge_type_settings[dongle_id] = charge_type
