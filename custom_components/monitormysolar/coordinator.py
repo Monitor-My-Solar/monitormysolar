@@ -275,8 +275,8 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._trigger_entity_availability_update(dongle_id)
     
     def get_charge_control_setting(self, dongle_id: str) -> str:
-        """Get the charge control setting for a dongle."""
-        return self._charge_control_settings.get(dongle_id, "SOC")  # Default to SOC
+        """Get the charge control setting for a dongle. Returns None if not available for this firmware."""
+        return self._charge_control_settings.get(dongle_id, None)  # Return None if not available
     
     def update_discharge_control_setting(self, dongle_id: str, discharge_control):
         """Update the discharge control setting for a dongle."""
@@ -299,12 +299,22 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     def update_charge_type_setting(self, dongle_id: str, charge_type):
         """Update the charge type setting for a dongle."""
         # Convert integer to string option if needed
-        # ACChargeType options vary by firmware, but generally:
-        # ["Time According To", "SOC/Volt According To"] or
-        # ["Time According To", "SOC/Volt According To", "Time and SOC/Volt According To"]
+        # ACChargeType options vary by firmware (0-based indexing):
+        # AAAA/AAAB/BAAA/BAAB/ccaa/EAAA/EAAB/HAAA/ceaa: 0="Disabled", 1="Time According To", 2="According To Voltage", 3="According To SOC", 4="According To Time and Voltage", 5="According To Time and SOC"
+        # FAAB/FAAA: 0="According To Time", 1="According To SOC/VOLT", 2="According To Time and SOC/VOLT"
         if isinstance(charge_type, int):
-            # Use the full option list to cover all firmware codes
-            options = ["Time According To", "SOC/Volt According To", "Time and SOC/Volt According To"]
+            firmware_code = self.get_firmware_code(dongle_id)
+
+            # Determine which option list to use based on firmware code
+            if firmware_code in ["AAAA", "AAAB", "BAAA", "BAAB", "ccaa", "EAAA", "EAAB", "HAAA", "ceaa"]:
+                options = ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"]
+            elif firmware_code in ["FAAB", "FAAA"]:
+                options = ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
+            else:
+                # Default fallback for unknown firmware codes
+                LOGGER.warning(f"Unknown firmware code {firmware_code} for ACChargeType, using default option list")
+                options = ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"]
+
             charge_type = options[charge_type] if charge_type < len(options) else charge_type
 
         if dongle_id not in self._charge_type_settings:
@@ -447,7 +457,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     
     def _is_discharge_voltage_entity(self, entity_unique_id: str) -> bool:
         """Check if an entity is discharge voltage related."""
-        discharge_voltage_entities = ["ForceDichgEndVolt"]
+        discharge_voltage_entities = ["ForceDichgEndVolt", "OngridEOD_Voltage", "CutVoltForDischg"]
         return any(entity in entity_unique_id for entity in discharge_voltage_entities)
     
     def _is_discharge_soc_entity(self, entity_unique_id: str) -> bool:
@@ -473,23 +483,36 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         if self._is_charge_voltage_entity(entity_unique_id):
             charge_control = self.get_charge_control_setting(dongle_id)
             charge_type = self.get_charge_type_setting(dongle_id)
+            # If ubBatChgcontrol doesn't exist (returns None), these entities should be unavailable
+            if charge_control is None:
+                return False
             # ubBatChgcontrol: "Voltage" or "SOC"
-            # ACChargeType: "Time According To", "SOC/Volt According To", or "Time and SOC/Volt According To"
-            return charge_control == "Voltage" and charge_type in ["SOC/Volt According To", "Time and SOC/Volt According To"]
+            # ACChargeType consolidated options:
+            # AAAA/BAAA/ccaa/EAAA/HAAA/ceaa: "According To Voltage", "According To Time and Voltage"
+            # FAAB/FAAA: "According To SOC/VOLT", "According To Time and SOC/VOLT"
+            return charge_control == "Voltage" and charge_type in ["According To Voltage", "According To Time and Voltage", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
 
         # Check charge SOC entities - must check BOTH ubBatChgcontrol AND ACChargeType
         if self._is_charge_soc_entity(entity_unique_id):
             charge_control = self.get_charge_control_setting(dongle_id)
             charge_type = self.get_charge_type_setting(dongle_id)
+            # If ubBatChgcontrol doesn't exist (returns None), these entities should be unavailable
+            if charge_control is None:
+                return False
             # ubBatChgcontrol: "Voltage" or "SOC"
-            # ACChargeType: "Time According To", "SOC/Volt According To", or "Time and SOC/Volt According To"
-            return charge_control == "SOC" and charge_type in ["SOC/Volt According To", "Time and SOC/Volt According To"]
+            # ACChargeType consolidated options:
+            # AAAA/BAAA/ccaa/EAAA/HAAA/ceaa: "According To SOC", "According To Time and SOC"
+            # FAAB/FAAA: "According To SOC/VOLT", "According To Time and SOC/VOLT"
+            return charge_control == "SOC" and charge_type in ["According To SOC", "According To Time and SOC", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
 
         # Check charge time entities
         if self._is_charge_time_entity(entity_unique_id):
             charge_type = self.get_charge_type_setting(dongle_id)
-            # ACChargeType: "Time According To", "SOC/Volt According To", or "Time and SOC/Volt According To"
-            return charge_type in ["Time According To", "Time and SOC/Volt According To"]
+            # ACChargeType consolidated options:
+            # AAAA/BAAA/ccaa/EAAA/HAAA/ceaa: "Time According To", "According To Time and Voltage", "According To Time and SOC"
+            # FAAB/FAAA: "According To Time", "According To Time and SOC/VOLT"
+            # Disabled state should make time entities unavailable
+            return charge_type in ["Time According To", "According To Time", "According To Time and Voltage", "According To Time and SOC", "According To Time and SOC/VOLT"]
 
         # Check discharge control entities
         if self._is_discharge_voltage_entity(entity_unique_id):

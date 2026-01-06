@@ -622,6 +622,7 @@ ENTITIES = {
                     {"name": "CT Offset (W)", "type": "number", "unique_id": "wCT_PowerOffset", "unit": "W", "min": 0, "max": 1000 , "mode": "slider", "native_unit": "W", "class": "POWER"},
                     {"name": "Export Power (%)", "type": "number", "unique_id": "MaxBackFlow", "unit": "W", "min": 0, "max": 200 , "mode": "slider", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": PERCENTAGE},
                     {"name": "On-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "EOD", "unit": "PERCENT", "min": 0, "max": 90, "mode": "slider"},
+                    {"name": "Off-grid Battery Voltage Cut off", "type": "number", "unique_id": "CutVoltForDischg", "unit": "V", "min": 40, "max": 56, "mode": "slider"},
                 ],
                 "holdbank4": [
                     {"name": "Off-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "SOCLowLimitForESPSDischg", "unit": "PERCENT", "min": 0, "max": 90, "mode": "slider"},
@@ -639,6 +640,9 @@ ENTITIES = {
                     {"name": "Generator Charge Start Current", "type": "number", "unique_id": "GenChgStartCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "HAAA": 195, "ccaa": 250, "ceaa": 250}, "mode": "slider", "step": 1, "allowed_firmware_codes": ["HAAA", "FAAA", "FAAB", "ccaa", "ceaa"]}
                     
                 ],
+                "holdbank5": [
+                    {"name": "On Grid Battery Voltage Cut off", "type": "number", "unique_id": "OngridEOD_Voltage", "unit": "V", "min": 40, "max": 56, "mode": "slider"}
+                ],
                 "holdbank6": [
                     {"name": "System Charge SOC Limit %", "type": "number", "unique_id": "BatStopChgSOC", "unit": "PERCENT", "min": 0, "max": 101, "mode": "slider", "allowed_firmware_codes": ["HAAA", "FAAA", "FAAB", "ccaa", "ceaa"]},
                     {"name": "System Charge Volt limit (v)", "type": "number", "unique_id": "BatStopChgVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "allowed_firmware_codes": ["HAAA", "FAAA", "FAAB", "ccaa", "ceaa"]},
@@ -653,8 +657,8 @@ ENTITIES = {
 
                 ],
                 "holdbank4": [
-                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["Time According To", "SOC/Volt According To"], "allowed_firmware_codes": ["AAAA", "AAAB", "BAAA", "BAAB"]},
-                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["Time According To", "SOC/Volt According To", "Time and SOC/Volt According To"], "allowed_firmware_codes": ["ccaa","FAAB","FAAA","EAAA", "EAAB","HAAA","ceaa"]},
+                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"], "allowed_firmware_codes": ["AAAA", "AAAB", "BAAA", "BAAB","ccaa","EAAA", "EAAB","HAAA","ceaa"]},
+                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"], "allowed_firmware_codes": ["FAAB","FAAA"]},
                     {"name": "00:00 -- 00:30", "type": "select", "unique_id": "Time0", "options": ["Does Not Operate", "AC Charge", "PV Charge", "Discharge"]},
                     {"name": "00:30 -- 01:00", "type": "select", "unique_id": "Time1", "options": ["Does Not Operate", "AC Charge", "PV Charge", "Discharge"]},
                     {"name": "01:00 -- 01:30", "type": "select", "unique_id": "Time2", "options": ["Does Not Operate", "AC Charge", "PV Charge", "Discharge"]},
@@ -708,7 +712,7 @@ ENTITIES = {
                     # Add more selects as needed
                 ],
                 "holdbank5": [
-                    {"name": "Charge Control", "type": "select", "unique_id": "ubBatChgcontrol", "options": ["SOC", "Voltage"]},
+                    {"name": "Charge Control", "type": "select", "unique_id": "ubBatChgcontrol", "options": ["SOC", "Voltage"], "allowed_firmware_codes": ["AAAA", "AAAB", "BAAA", "BAAB","EAAA", "EAAB","HAAA","FAAB","FAAA"]},
                     {"name": "Discharge Control", "type": "select", "unique_id": "ubBatDischgControl", "options": ["SOC", "Voltage"]},
                 ],
                 "holdbank6": [
