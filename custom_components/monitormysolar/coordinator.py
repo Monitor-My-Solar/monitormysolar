@@ -1066,13 +1066,28 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         LOGGER.debug(f"Received firmware code response for dongle {dongle_id}")
         try:
             data = json.loads(msg.payload)
+
+            # Handle both dict and list response formats
+            if isinstance(data, list):
+                LOGGER.warning(f"Firmware code response for {dongle_id} is a list format: {data}. Expected dict format with 'FWCode' key.")
+                # Try to extract firmware code from list if it's a single-element list with a dict
+                if len(data) == 1 and isinstance(data[0], dict):
+                    data = data[0]
+                else:
+                    LOGGER.error(f"Cannot parse firmware code from list format for {dongle_id}: {data}")
+                    return
+
+            if not isinstance(data, dict):
+                LOGGER.error(f"Firmware code response for {dongle_id} is not a dict or parseable list: {type(data)}")
+                return
+
             firmware_code = data.get("FWCode")
-            
+
             # Validate the dongle ID is one we're expecting
             if dongle_id not in self._dongle_ids:
                 LOGGER.warning(f"Received firmware code response from unexpected dongle ID: {dongle_id}")
                 return
-                
+
             if firmware_code:
                 self._firmware_codes[dongle_id] = firmware_code
                 LOGGER.debug(f"Firmware code received for {dongle_id}: {firmware_code}")
