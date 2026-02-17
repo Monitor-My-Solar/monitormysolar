@@ -99,7 +99,7 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, "Inverter")
 
     @property
     def name(self):

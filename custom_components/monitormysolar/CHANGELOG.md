@@ -1,5 +1,64 @@
 # Changelog
 
+## Version 3.2.0
+
+### Will require Donlge Firmware 3.2.5 to get the full effect 
+As some of the items relate to units and scaling you will need to update the dongle or setting volatage based values will not work
+if you are on dongle version 3.1.70 > 3.1.85 you cannot update via the normal methods please contact us for a solution depending on your mobile phone you can update via the android app (on the play store) iOS you will need the public test flight link i think there are only a small number of you affected but i can only see
+the firmware versions of users that send data to us. IF YOU DO NOT HEED THIS WARNING AND BLIDLY UPDATE THE DONGLE WITHOUT CHECKING YOUR CURRENT FIRMWARE VERSION YOU WILL BE STUCK AND NEED TO SEND THE DONGLE TO US FOR A REFLASH IM BEING DEADLY SERIOUS WITH THIS.
+
+### Abandonded entities
+You might find after updating some entities are no longer provided this is because they have no relevance to your unit (unless you tell me otherwise). Just delete them or contact us if they have been removed by mistake
+
+### New Features
+
+#### Extended Battery Data
+- **Dynamic battery device creation**: A separate "Batteries" device is now created automatically when extended battery register data is received on the `dongleid/batteries` MQTT topic
+- Not all inverters support this - the device is only created at runtime if battery data is present
+- Each battery in the payload gets its own set of sensors including:
+  - SOC, SOH, Voltage, Current
+  - Remaining Capacity, Full Capacity
+  - Max/Min Cell Voltage and Cell Number
+  - Max/Min Cell Temperature and Cell Number
+  - Charge Voltage Reference, Max Charge Current
+  - Cycle Count, Serial Number, Firmware Version
+- Battery device is linked to the main dongle device via `via_device`
+- Supports multiple batteries per dongle (Battery 1, Battery 2, etc.)
+
+#### Number Input Mode
+- Added option to display number entities as text input boxes instead of sliders
+- Configurable in Options > Update Settings via the "Use input box for numbers" toggle
+- Applies to all 91 number entities across standard and GridBoss configurations
+- Defaults to sliders (off) for existing users - no breaking change
+
+#### Device Grouping (Optional)
+- Added optional sub-device grouping for entity organisation in the HA UI
+- When enabled, entities are grouped into sub-devices: PV, Battery, Grid, EPS, Energy, Temperature, Inverter, Controls, Calculated, GridBoss, GridBoss Controls
+- Each sub-device is linked to the main dongle device via `via_device`
+- Configurable in Options > Update Settings via the "Enable device grouping" toggle
+- Defaults to off - all entities remain on the main device by default
+
+### Entity Organisation
+- Reorganised entity definitions in `const.py` into logical banks: `pv`, `battery`, `grid`, `eps`, `energy_daily`, `energy_total`, `temperature_sensors`, `inverter_info`, `calculated`, `powerflow`, `status`, `timestamp`, `fault`, `warning`
+- Added `device_group` field to all entity definitions for sub-device grouping support
+- Removed duplicated sensor definitions
+
+### Configuration Flow
+- Added "Use input box for numbers" toggle to Options > Update Settings
+- Added "Enable device grouping" toggle to Options > Update Settings
+- Integration reloads automatically when settings are changed
+
+### Fixes
+- Added extra support for volatage values to be presented as 40.X but send as 40X
+- Fixed scaling on some values
+- Fixed units on some values
+- **Fixed optimistic update revert issue**: Switch, number, and time entities now retain their user-set values immediately after changing, instead of reverting to the old value for ~30 seconds until the next hold poll. Added `_user_initiated_change` flag (matching the existing select entity pattern) to prevent stale coordinator data from overwriting pending changes.
+- **Fixed time entity revert_state**: Time entity `revert_state()` was a no-op that didn't actually restore the previous value. Now properly saves and restores `_previous_state`.
+- **Fixed charge type conditional logic**: The error reason messages for charge voltage, SOC, and time entities were checking against option strings that don't exist in any firmware select (`"SOC/Volt According To"`, `"Time and SOC/Volt According To"`). Updated to use the correct consolidated option lists matching both firmware groups.
+- **Fixed HAAA firmware code group**: `HAAA` was incorrectly mapped to the 6-option ACChargeType group instead of the 3-option group (`"According To Time"`, `"According To SOC/VOLT"`, `"According To Time and SOC/VOLT"`), matching the const.py entity definition.
+
+---
+
 ## Version 3.1.0 - GridBoss Enhancements & Performance Improvements
 
 ### 🔄 **Important: GridBoss Upgrade Instructions**

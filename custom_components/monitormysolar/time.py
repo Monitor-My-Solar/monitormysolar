@@ -68,6 +68,8 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
         self._manufacturer = entry.data.get("inverter_brand")
         self._last_mqtt_update = None
         self._debounce_task = None
+        self._user_initiated_change = False
+        self._previous_state = None
 
         super().__init__(self.coordinator)
 
@@ -101,7 +103,7 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.entity_info.get("device_group"))
 
     async def async_set_value(self, value):
         """Handle user input and send to MQTT."""
@@ -128,13 +130,17 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
                 return
 
             LOGGER.info(f"Setting time value for {self.entity_id} to {value}")
+            self._previous_state = self._state
+            self._user_initiated_change = True
             self.update_state(value)
-            await self.coordinator.mqtt_handler.send_update(
+            success = await self.coordinator.mqtt_handler.send_update(
                 self._dongle_id,
                 self.entity_info["unique_id"],
                 value.isoformat(),
                 self,
             )
+            if not success:
+                self.revert_state()
 
         self._debounce_task = asyncio.create_task(debounce())
 
@@ -150,16 +156,29 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
 
     def revert_state(self):
         """Revert to the previous state."""
-        # Schedule state revert on the main thread
+        self._user_initiated_change = False
+        if self._previous_state is not None:
+            self._state = self._previous_state
         self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
+
+    def clear_user_initiated_flag(self):
+        """Clear the user-initiated change flag when MQTT response is successful."""
+        LOGGER.debug(f"Time {self.entity_id}: Clearing user_initiated flag after successful MQTT response")
+        self._user_initiated_change = False
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-
-        # This method is called by your DataUpdateCoordinator when a successful update runs.
         if self.entity_id in self.coordinator.entities:
             value = self.coordinator.entities[self.entity_id]
             if value is not None:
+                # If this is a user-initiated change, don't override with stale coordinator data
+                if self._user_initiated_change:
+                    if value == self._state:
+                        LOGGER.debug(f"Time {self.entity_id}: Coordinator data matches user selection, clearing user_initiated flag")
+                        self._user_initiated_change = False
+                    else:
+                        LOGGER.debug(f"Time {self.entity_id}: Ignoring coordinator update during user-initiated change (coordinator: {value}, user: {self._state})")
+                        return
                 self.update_state(value)
                 self.throttled_async_write_ha_state()

@@ -94,7 +94,9 @@
                 "description": "Update general integration settings",
                 "data": {
                     "update_interval": "Update Interval (how often to save to database)",
-                    "has_gridboss": "GridBoss Connected (for GridBoss distribution units)"
+                    "has_gridboss": "GridBoss Connected (for GridBoss distribution units)",
+                    "enable_device_grouping": "Enable Device Grouping (organise entities into sub-devices)",
+                    "use_input_box": "Use Input Box (use text input instead of slider for number entities)"
                 }
             },
             "check_status": {

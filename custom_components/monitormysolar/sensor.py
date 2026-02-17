@@ -100,32 +100,32 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                         continue  # Skip this entity
                 
                 try:
-                    # Check if the sensor is of type 'status' to create the StatusSensor class
-                    if bank_name == "status":
+                    sensor_class_key = sensor.get("sensor_class", bank_name)
+                    if sensor_class_key == "status":
                         entities.append(
                             StatusSensor(sensor, hass, entry, bank_name, dongle_id),
                         )
-                    elif bank_name == "powerflow":
+                    elif sensor_class_key == "powerflow":
                         entities.append(
                             PowerFlowSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "timestamp":
+                    elif sensor_class_key == "timestamp":
                         entities.append(
                             BankUpdateSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "warning":
+                    elif sensor_class_key == "warning":
                         entities.append(
                             FaultWarningSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "fault":
+                    elif sensor_class_key == "fault":
                         entities.append(
                             FaultWarningSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "calculated":
+                    elif sensor_class_key == "calculated":
                         entities.append(
                             CalculatedSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "temperature":
+                    elif sensor_class_key == "temperature":
                         entities.append(
                             TemperatureSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
@@ -168,6 +168,85 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
         entities.append(SyncStatusSensor(hass, entry, dongle_ids))
 
     async_add_entities(entities)
+
+    # Set up dynamic battery entity creation
+    _setup_battery_entity_listener(hass, entry, async_add_entities)
+
+    # Check if battery data already exists (from retained MQTT messages)
+    for dongle_id in dongle_ids:
+        battery_data = coordinator.get_battery_data(dongle_id)
+        if battery_data and battery_data.get("batteries"):
+            _create_battery_entities(hass, entry, async_add_entities, dongle_id, battery_data)
+
+
+def _setup_battery_entity_listener(hass, entry, async_add_entities):
+    """Set up listener for dynamic battery entity creation."""
+    coordinator = entry.runtime_data
+
+    @callback
+    def _on_battery_data_received(event):
+        """Handle battery data received event."""
+        dongle_id = event.data.get("dongle_id")
+        if not dongle_id:
+            return
+        battery_data = coordinator.get_battery_data(dongle_id)
+        if battery_data and battery_data.get("batteries"):
+            _create_battery_entities(hass, entry, async_add_entities, dongle_id, battery_data)
+
+    entry.async_on_unload(
+        hass.bus.async_listen(f"{DOMAIN}_battery_data_received", _on_battery_data_received)
+    )
+
+
+def _create_battery_entities(hass, entry, async_add_entities, dongle_id, battery_data):
+    """Create battery sensor entities for a dongle."""
+    coordinator = entry.runtime_data
+    batteries = battery_data.get("batteries", [])
+
+    if not batteries:
+        return
+
+    LOGGER.info(f"Creating battery detail sensors for {dongle_id}: {len(batteries)} batteries")
+
+    # Define which battery fields to create sensors for
+    battery_sensor_defs = [
+        {"key": "soc", "name": "SOC", "unit": "%", "device_class": "battery", "state_class": "measurement"},
+        {"key": "soh", "name": "SOH", "unit": "%", "state_class": "measurement"},
+        {"key": "totalVoltage", "name": "Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+        {"key": "current", "name": "Current", "unit": "A", "device_class": "current", "state_class": "measurement"},
+        {"key": "currentRemainCapacity", "name": "Remaining Capacity", "unit": "Ah", "state_class": "measurement"},
+        {"key": "currentFullCapacity", "name": "Full Capacity", "unit": "Ah", "state_class": "measurement"},
+        {"key": "batMaxCellVoltage", "name": "Max Cell Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+        {"key": "batMinCellVoltage", "name": "Min Cell Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+        {"key": "batMaxCellNumVolt", "name": "Max Cell Voltage Number", "state_class": "measurement"},
+        {"key": "batMinCellNumVolt", "name": "Min Cell Voltage Number", "state_class": "measurement"},
+        {"key": "batMaxCellTemp", "name": "Max Cell Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
+        {"key": "batMinCellTemp", "name": "Min Cell Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
+        {"key": "batMaxCellNumTemp", "name": "Max Cell Temp Number", "state_class": "measurement"},
+        {"key": "batMinCellNumTemp", "name": "Min Cell Temp Number", "state_class": "measurement"},
+        {"key": "batChargeVoltRef", "name": "Charge Voltage Reference", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+        {"key": "batChargeMaxCur", "name": "Max Charge Current", "unit": "A", "device_class": "current", "state_class": "measurement"},
+        {"key": "cycleCnt", "name": "Cycle Count", "state_class": "total_increasing"},
+        {"key": "batterySn", "name": "Serial Number"},
+        {"key": "fwVersionText", "name": "Firmware Version"},
+    ]
+
+    entities = []
+    for battery in batteries:
+        bat_index = battery.get("batIndex", 0)
+        for sensor_def in battery_sensor_defs:
+            key = sensor_def["key"]
+            if key not in battery:
+                continue
+            entities.append(
+                BatteryDetailSensor(
+                    hass, entry, dongle_id, bat_index, key, sensor_def, battery.get(key)
+                )
+            )
+
+    if entities:
+        async_add_entities(entities)
+        LOGGER.info(f"Created {len(entities)} battery detail sensors for {dongle_id}")
 
 
 class InverterSensor(MonitorMySolarEntity, SensorEntity):
@@ -239,7 +318,7 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -380,7 +459,7 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -469,7 +548,7 @@ class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -627,7 +706,7 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     @callback
     def _handle_bank_update(self, event):
@@ -708,7 +787,7 @@ class FaultWarningSensor(MonitorMySolarEntity, SensorEntity):
         return attrs
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
 
     @callback
@@ -810,7 +889,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     def _calculate_state(self):
         """Calculate the state based on the operation and sensor values."""
@@ -826,9 +905,14 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
             capacity_ah = self._sensor_values.get("batcapacity", 0)
             voltage = self._sensor_values.get("vbat", 0)
             load_watts = self._sensor_values.get("pload", 0)
+            eps_watts = self._sensor_values.get("peps", 0)
             battery_flow = self._sensor_values.get("batteryflow_live", 0)
             soc = self._sensor_values.get("soc", 0)
             pv_power = self._sensor_values.get("pall", 0)
+
+            # Use peps if pload is 0 (grid is down, load is on EPS)
+            if load_watts == 0 and eps_watts > 0:
+                load_watts = eps_watts
 
             if capacity_ah > 0 and voltage > 0 and soc > 0:
                 usable_energy_wh = (capacity_ah * voltage) * (soc / 100)
@@ -953,7 +1037,7 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -1405,3 +1489,70 @@ class SyncStatusSensor(MonitorMySolarEntity, SensorEntity):
         """Override to prevent looking for entity in coordinator."""
         # This sensor doesn't receive direct MQTT updates
         pass
+
+
+class BatteryDetailSensor(MonitorMySolarEntity, SensorEntity):
+    """Sensor for extended battery data received on dongleid/batteries topic."""
+
+    def __init__(self, hass, entry, dongle_id, bat_index, key, sensor_def, initial_value):
+        """Initialize the battery detail sensor."""
+        self.coordinator = entry.runtime_data
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+        self._bat_index = bat_index
+        self._key = key
+        self._sensor_def = sensor_def
+        self._name = f"Battery {bat_index + 1} {sensor_def['name']}"
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_battery_{bat_index}_{key}".lower()
+        self._state = initial_value
+        self.entity_id = f"sensor.{self._formatted_dongle_id}_battery_{bat_index}_{key.lower()}"
+        self.hass = hass
+        self._manufacturer = entry.data.get("inverter_brand")
+
+        super().__init__(self.coordinator)
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def unique_id(self):
+        return self._unique_id
+
+    @property
+    def state(self):
+        return self._state
+
+    @property
+    def state_class(self):
+        return self._sensor_def.get("state_class")
+
+    @property
+    def unit_of_measurement(self):
+        return self._sensor_def.get("unit")
+
+    @property
+    def device_class(self):
+        return self._sensor_def.get("device_class")
+
+    @property
+    def device_info(self):
+        """Return device info linking to a single battery device per dongle."""
+        return {
+            "identifiers": {(DOMAIN, f"{self._dongle_id}_batteries")},
+            "name": f"{self._dongle_id} - Batteries",
+            "manufacturer": self._manufacturer,
+            "model": "Extended Battery Data",
+            "via_device": (DOMAIN, self._dongle_id),
+        }
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Update sensor with latest data from coordinator."""
+        if self.entity_id in self.coordinator.entities:
+            value = self.coordinator.entities[self.entity_id]
+            if value is not None:
+                self._state = (
+                    round(value, 2) if isinstance(value, (float, int)) else value
+                )
+                self.throttled_async_write_ha_state()

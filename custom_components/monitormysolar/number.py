@@ -11,7 +11,7 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from typing import Dict, List, Optional
-from .const import DOMAIN, ENTITIES, LOGGER
+from .const import DOMAIN, ENTITIES, LOGGER, CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
 
@@ -98,13 +98,25 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         self._bank_name = bank_name
         self.entity_id = f"number.{self._formatted_dongle_id}_{self._entity_type.lower()}"
         self.hass = hass
+
+        # Get firmware-specific max value if available
+        firmware_code = self.coordinator.get_firmware_code(dongle_id)
+        firmware_max_values = entity_info.get("firmware_max_values", {})
+
         self._attr_native_min_value = entity_info.get("min", None)
-        self._attr_native_max_value = entity_info.get("max", None)
-        self._attr_mode = entity_info.get("mode", "auto")
+        self._attr_native_max_value = firmware_max_values.get(firmware_code, entity_info.get("max", None))
+        # Check if user prefers input box over slider
+        use_input_box = entry.data.get(CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX)
+        if use_input_box:
+            self._attr_mode = "box"
+        else:
+            self._attr_mode = entity_info.get("mode", "auto")
+        self._attr_native_step = entity_info.get("step", None)
         self._attr_native_unit_of_measurement = entity_info.get("unit", None)
         self._attr_device_class = entity_info.get("class", None)
         self._manufacturer = entry.data.get("inverter_brand")
-        self._previous_value = self._attr_native_value  # Track the previous value for revert
+        self._mqtt_multiplier = entity_info.get("mqtt_multiplier", 1)
+        self._user_initiated_change = False
 
         super().__init__(self.coordinator)
 
@@ -113,7 +125,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         """Return if entity is available."""
         # Always return True - we'll use HomeAssistantError for conditional logic
         return self.coordinator.last_update_success
-    
+
     @property
     def device_state_attributes(self) -> dict:
         """Return device state attributes."""
@@ -122,7 +134,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         if not availability_info["available"] and availability_info["reason"]:
             attrs["unavailable_reason"] = availability_info["reason"]
         return attrs
-    
+
 
     @property
     def name(self):
@@ -131,52 +143,71 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
     async def async_set_native_value(self, value):
         """Set the number value."""
         LOGGER.debug(f"Setting value of number {self.entity_id} to {value}")
-        
+
         # Check if entity should be available based on conditional settings
         availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
         if not availability_info["available"] and availability_info["reason"]:
             raise HomeAssistantError(availability_info["reason"])
-        
+
         mqtt_handler = self.coordinator.mqtt_handler
-        if mqtt_handler is not None:
-            # Save the current value before changing
-            self._previous_value = self._attr_native_value
-            # Set the new value
-            self._attr_native_value = value
+        if mqtt_handler is None:
+            raise HomeAssistantError("MQTT Handler is not initialized")
+
+        # Save old value in case we need to revert
+        old_value = self._attr_native_value
+
+        # Set the new value optimistically for immediate UI feedback
+        self._attr_native_value = value
+        self._user_initiated_change = True
+        # Update coordinator's stored value so it doesn't overwrite us
+        self.coordinator.entities[self.entity_id] = value
+        self.throttled_async_write_ha_state()
+
+        # Apply multiplier for registers that need integer values (e.g. 46.1V -> 461)
+        mqtt_value = int(value * self._mqtt_multiplier) if self._mqtt_multiplier > 1 else value
+
+        # Send the update via MQTT and wait for response
+        success = await mqtt_handler.send_update(
+            self._dongle_id,
+            self.entity_info["unique_id"],
+            mqtt_value,
+            self,
+        )
+
+        # If MQTT update failed, revert both UI and coordinator
+        if not success:
+            LOGGER.error(f"Failed to update {self.entity_id} to {value}, reverting to {old_value}")
+            self._user_initiated_change = False
+            self._attr_native_value = old_value
+            self.coordinator.entities[self.entity_id] = old_value
             self.throttled_async_write_ha_state()
+            raise HomeAssistantError(f"Failed to update {self.entity_id} - no response from inverter")
 
-            # Send the update via MQTT
-            success = await mqtt_handler.send_update(
-                self._dongle_id,
-                self.entity_info["unique_id"],
-                value,
-                self,
-            )
-            if not success:
-                self.revert_state()
-        else:
-            LOGGER.error("MQTT Handler is not initialized")
-
-    def revert_state(self):
-        """Revert to the previous state."""
-        LOGGER.info(f"Reverting state for {self.entity_id} to {self._previous_value}")
-        self._attr_native_value = self._previous_value
-        self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
+    def clear_user_initiated_flag(self):
+        """Clear the user-initiated change flag when MQTT response is successful."""
+        LOGGER.debug(f"Number {self.entity_id}: Clearing user_initiated flag after successful MQTT response")
+        self._user_initiated_change = False
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-
-
         if self.entity_id in self.coordinator.entities:
             value = self.coordinator.entities[self.entity_id]
             if value is not None:
+                # If this is a user-initiated change, don't override with stale coordinator data
+                if self._user_initiated_change:
+                    if value == self._attr_native_value:
+                        LOGGER.debug(f"Number {self.entity_id}: Coordinator data matches user selection, clearing user_initiated flag")
+                        self._user_initiated_change = False
+                    else:
+                        LOGGER.debug(f"Number {self.entity_id}: Ignoring coordinator update during user-initiated change (coordinator: {value}, user: {self._attr_native_value})")
+                        return
                 self._attr_native_value = value
                 self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.entity_info.get("device_group"))
 
 class CombinedNumber(MonitorMySolarEntity, NumberEntity):
     """Number entity that controls multiple dongles at once."""
@@ -199,12 +230,17 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
         self.hass = hass
         self._attr_native_min_value = entity_info.get("min", None)
         self._attr_native_max_value = entity_info.get("max", None)
-        self._attr_mode = entity_info.get("mode", "auto")
+        # Check if user prefers input box over slider
+        use_input_box = entry.data.get(CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX)
+        if use_input_box:
+            self._attr_mode = "box"
+        else:
+            self._attr_mode = entity_info.get("mode", "auto")
         self._attr_native_unit_of_measurement = entity_info.get("unit", None)
         self._attr_device_class = entity_info.get("class", None)
         self._manufacturer = entry.data.get("inverter_brand")
         self._previous_value = self._attr_native_value  # Track the previous value for revert
-        
+
         # Track source entities that we need to monitor
         self._tracked_entities = []
         self._source_values = {}
@@ -252,19 +288,19 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
     
     async def _update_combined_state(self):
         """Update the combined state based on source entities.
-        
+
         Takes the average of all current values.
         """
         # Filter out None values
         values = [v for v in self._source_values.values() if v is not None]
-        
+
         if not values:
             LOGGER.debug(f"No values available for combined number {self._name}")
             return
-            
+
         # Take the average for the display state
         avg_value = sum(values) / len(values)
-        
+
         if avg_value != self._attr_native_value:
             self._attr_native_value = avg_value
             self.throttled_async_write_ha_state()
@@ -304,27 +340,38 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
     async def async_set_native_value(self, value):
         """Set the value on all dongles."""
         mqtt_handler = self.coordinator.mqtt_handler
-        if mqtt_handler is not None:
-            # Save the current value before changing
-            self._previous_value = self._attr_native_value
-            # Set the new value
-            self._attr_native_value = value
+        if mqtt_handler is None:
+            raise HomeAssistantError("MQTT Handler is not initialized")
+
+        # Save old value in case we need to revert
+        old_value = self._attr_native_value
+
+        # Set the new value optimistically for immediate UI feedback
+        self._attr_native_value = value
+        # Update all source values to prevent them from overwriting us
+        for entity_id in self._source_values.keys():
+            self._source_values[entity_id] = value
+        self.throttled_async_write_ha_state()
+
+        LOGGER.info(f"Setting Combined Number value for {self.entity_id} to {value} across {len(self._dongle_ids)} dongles")
+        success = await mqtt_handler.send_update_to_multiple_dongles(
+            self._dongle_ids, self._source_entity, value, self
+        )
+
+        # If MQTT update failed, revert and raise error
+        if not success:
+            LOGGER.error(f"Failed to update {self.entity_id} to {value}, reverting to {old_value}")
+            self._attr_native_value = old_value
+            # Revert source values - they'll update from coordinator naturally
+            for entity_id in self._source_values.keys():
+                state = self.hass.states.get(entity_id)
+                if state:
+                    try:
+                        self._source_values[entity_id] = float(state.state)
+                    except (ValueError, TypeError):
+                        pass
             self.throttled_async_write_ha_state()
-            
-            LOGGER.info(f"Setting Combined Number value for {self.entity_id} to {value} across {len(self._dongle_ids)} dongles")
-            success = await mqtt_handler.send_update_to_multiple_dongles(
-                self._dongle_ids, self._source_entity, value, self
-            )
-            if not success:
-                self.revert_state()
-        else:
-            LOGGER.error("MQTT Handler is not initialized")
-            
-    def revert_state(self):
-        """Revert to the previous state."""
-        LOGGER.info(f"Reverting state for {self.entity_id} to {self._previous_value}")
-        self._attr_native_value = self._previous_value
-        self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
+            raise HomeAssistantError(f"Failed to update {self.entity_id} - no response from inverter")
     
     @property
     def extra_state_attributes(self):

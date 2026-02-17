@@ -5,7 +5,7 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.components import mqtt
 import asyncio
-from .const import DOMAIN
+from .const import DOMAIN, CONF_ENABLE_DEVICE_GROUPING, DEFAULT_ENABLE_DEVICE_GROUPING, CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -806,32 +806,51 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
         """Update general settings."""
         if user_input is not None:
             new_data = dict(self.config_entry.data)
-            
+
             # Update update_interval if provided
             if "update_interval" in user_input:
                 new_data["update_interval"] = user_input["update_interval"]
-            
+
             # Update has_gridboss if provided
             if "has_gridboss" in user_input:
                 new_data["has_gridboss"] = user_input["has_gridboss"]
-            
+
+            # Update device grouping if provided
+            if CONF_ENABLE_DEVICE_GROUPING in user_input:
+                new_data[CONF_ENABLE_DEVICE_GROUPING] = user_input[CONF_ENABLE_DEVICE_GROUPING]
+
+            # Update number input mode if provided
+            if CONF_USE_INPUT_BOX in user_input:
+                new_data[CONF_USE_INPUT_BOX] = user_input[CONF_USE_INPUT_BOX]
+
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data
             )
+
+            # Reload the integration so device grouping takes effect
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+
             return self.async_create_entry(title="", data={})
-        
+
         current_update_interval = self.config_entry.data.get("update_interval", 60)
-        
         current_has_gridboss = self.config_entry.data.get("has_gridboss", False)
-        
+        current_device_grouping = self.config_entry.data.get(
+            CONF_ENABLE_DEVICE_GROUPING, DEFAULT_ENABLE_DEVICE_GROUPING
+        )
+        current_use_input_box = self.config_entry.data.get(
+            CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX
+        )
+
         schema = vol.Schema({
             vol.Optional("update_interval", default=current_update_interval): vol.In(
-                {1: "1 second", 3: "3 seconds", 5: "5 seconds", 10: "10 seconds", 
+                {1: "1 second", 3: "3 seconds", 5: "5 seconds", 10: "10 seconds",
                  30: "30 seconds", 60: "1 minute", 300: "5 minutes", 600: "10 minutes"}
             ),
-            vol.Optional("has_gridboss", default=current_has_gridboss): bool
+            vol.Optional("has_gridboss", default=current_has_gridboss): bool,
+            vol.Optional(CONF_ENABLE_DEVICE_GROUPING, default=current_device_grouping): bool,
+            vol.Optional(CONF_USE_INPUT_BOX, default=current_use_input_box): bool,
         })
-        
+
         return self.async_show_form(
             step_id="update_settings",
             data_schema=schema

@@ -391,22 +391,26 @@ class MQTTHandler:
         # Look through all entity types and banks to find if this unique_id is in a gridboss bank
         for entity_type, banks in ENTITIES.get("Lux", {}).items():
             for bank_name, entities in banks.items():
-                if bank_name.startswith("gridboss_"):
-                    for entity in entities:
-                        if entity.get("unique_id") == unique_id:
+                for entity in entities:
+                    if entity.get("unique_id") == unique_id:
+                        # Check the source field first, then fall back to bank_name
+                        source = entity.get("source", bank_name)
+                        if source.startswith("gridboss_"):
                             return True
         return False
-    
+
     def _get_gridboss_bank(self, unique_id):
         """Get the GridBoss bank name for a given unique_id."""
         # Look through all entity types and banks to find which gridboss bank this unique_id belongs to
         for entity_type, banks in ENTITIES.get("Lux", {}).items():
             for bank_name, entities in banks.items():
-                if bank_name.startswith("gridboss_"):
-                    for entity in entities:
-                        if entity.get("unique_id") == unique_id:
+                for entity in entities:
+                    if entity.get("unique_id") == unique_id:
+                        # Check the source field first, then fall back to bank_name
+                        source = entity.get("source", bank_name)
+                        if source.startswith("gridboss_"):
                             # Extract the bank part (e.g., "holdbank1" from "gridboss_holdbank1")
-                            return bank_name.replace("gridboss_", "")
-        
+                            return source.replace("gridboss_", "")
+
         # Default fallback
         return "holdbank1"

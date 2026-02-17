@@ -46,7 +46,8 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                         continue  # Skip this entity
                 
                 try:
-                    if bank_name == "holdbank6":
+                    sensor_class_key = select.get("sensor_class", bank_name)
+                    if sensor_class_key == "holdbank6":
                         entities.append(QuickChargeDurationSelect(select, hass, entry, bank_name, dongle_id))
                     else:
                         entities.append(InverterSelect(select, hass, entry, dongle_id))
@@ -92,14 +93,14 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
-    
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.entity_info.get("device_group"))
+
     @property
     def available(self) -> bool:
         """Return if entity is available."""
         # Always return True - we'll use HomeAssistantError for conditional logic
         return self.coordinator.last_update_success
-    
+
     @property
     def device_state_attributes(self) -> dict:
         """Return device state attributes."""
@@ -304,7 +305,7 @@ class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.entity_info.get("device_group"))
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""

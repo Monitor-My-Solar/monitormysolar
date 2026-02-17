@@ -109,6 +109,7 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._previous_state = None
+        self._user_initiated_change = False
 
         super().__init__(self.coordinator)
 
@@ -126,7 +127,7 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.entity_info.get("device_group"))
 
     @property
     def available(self) -> bool:
@@ -154,6 +155,7 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
         if mqtt_handler is not None:
             self._previous_state = self._state
             self._state = True  # Optimistically update the state
+            self._user_initiated_change = True
             self.throttled_async_write_ha_state()
             _LOGGER.info(f"Setting Switch on value for {self.entity_id}")
             success = await mqtt_handler.send_update(
@@ -170,11 +172,12 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
         availability_info = self.coordinator.get_entity_availability_info(self._dongle_id, self._entity_type)
         if not availability_info["available"] and availability_info["reason"]:
             raise HomeAssistantError(availability_info["reason"])
-        
+
         mqtt_handler = self.coordinator.mqtt_handler
         if mqtt_handler is not None:
             self._previous_state = self._state  # Save the current state before changing
             self._state = False  # Optimistically update the state in HA
+            self._user_initiated_change = True
             self.throttled_async_write_ha_state()  # Update HA state immediately
             _LOGGER.info(f"Setting Switch off value for {self.entity_id}")
             success = await mqtt_handler.send_update(
@@ -187,20 +190,32 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
 
     def revert_state(self):
         """Revert to the previous state."""
+        self._user_initiated_change = False
         if self._previous_state is not None:
             self._state = self._previous_state
             self.throttled_async_write_ha_state()
-    
+
+    def clear_user_initiated_flag(self):
+        """Clear the user-initiated change flag when MQTT response is successful."""
+        _LOGGER.debug(f"Switch {self.entity_id}: Clearing user_initiated flag after successful MQTT response")
+        self._user_initiated_change = False
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-
-        # This method is called by your DataUpdateCoordinator when a successful update runs.
         if self.entity_id in self.coordinator.entities:
             value = self.coordinator.entities[self.entity_id]
             if value is not None:
-                self._state = bool(value)
+                new_state = bool(value)
+                # If this is a user-initiated change, don't override with stale coordinator data
+                if self._user_initiated_change:
+                    if new_state == self._state:
+                        _LOGGER.debug(f"Switch {self.entity_id}: Coordinator data matches user selection, clearing user_initiated flag")
+                        self._user_initiated_change = False
+                    else:
+                        _LOGGER.debug(f"Switch {self.entity_id}: Ignoring coordinator update during user-initiated change (coordinator: {new_state}, user: {self._state})")
+                        return
+                self._state = new_state
                 # Schedule state update on the main thread
                 self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
