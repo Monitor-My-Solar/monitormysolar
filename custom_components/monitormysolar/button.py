@@ -44,11 +44,12 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                         continue  # Skip this entity
                 
                 try:
-                    if bank_name == "inputbank1": 
+                    sensor_class_key = button.get("sensor_class", bank_name)
+                    if sensor_class_key == "firmware_update":
                         entities.append(
                             FirmwareUpdateButton(button, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "restart":
+                    elif sensor_class_key == "restart":
                         entities.append(
                             RestartButton(button, hass, entry, bank_name, dongle_id)
                         )
@@ -85,7 +86,7 @@ class FirmwareUpdateButton(MonitorMySolarEntity, ButtonEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.button_info.get("device_group"))
 
     async def async_press(self):
         """Handle the button press."""
@@ -143,7 +144,7 @@ class RestartButton(MonitorMySolarEntity, ButtonEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.button_info.get("device_group"))
 
     async def async_press(self):
         """Handle button press."""

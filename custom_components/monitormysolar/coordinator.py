@@ -89,6 +89,11 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._smart_soc_volt_bits = {}  # Track SmartSOCVoltBits for each dongle
         self._smartload_bits = {}  # Track SmartLoad Bits for each dongle
         self._port_modes = {}  # Track Port Mode settings for each dongle
+
+        # Battery extended data tracking
+        self._battery_data: Dict[str, Dict] = {}  # {dongle_id: battery payload data}
+        self._battery_entities_created: Set[str] = set()  # Track which dongles have battery entities
+        self._battery_async_add_entities = None  # Callback for adding battery sensor entities
         
         # Track charge/discharge control settings for standard units
         self._charge_control_settings = {}  # Track ubBatChgcontrol for each dongle
@@ -300,15 +305,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Update the charge type setting for a dongle."""
         # Convert integer to string option if needed
         # ACChargeType options vary by firmware (0-based indexing):
-        # AAAA/AAAB/BAAA/BAAB/ccaa/EAAA/EAAB/HAAA/ceaa: 0="Disabled", 1="Time According To", 2="According To Voltage", 3="According To SOC", 4="According To Time and Voltage", 5="According To Time and SOC"
-        # FAAB/FAAA: 0="According To Time", 1="According To SOC/VOLT", 2="According To Time and SOC/VOLT"
+        # AAAA/AAAB/BAAA/BAAB/ccaa/EAAA/EAAB/ceaa: 0="Disabled", 1="Time According To", 2="According To Voltage", 3="According To SOC", 4="According To Time and Voltage", 5="According To Time and SOC"
+        # FAAB/FAAA/HAAA: 0="According To Time", 1="According To SOC/VOLT", 2="According To Time and SOC/VOLT"
         if isinstance(charge_type, int):
             firmware_code = self.get_firmware_code(dongle_id)
 
             # Determine which option list to use based on firmware code
-            if firmware_code in ["AAAA", "AAAB", "BAAA", "BAAB", "ccaa", "EAAA", "EAAB", "HAAA", "ceaa"]:
+            if firmware_code in ["AAAA", "AAAB", "BAAA", "BAAB", "ccaa", "EAAA", "EAAB", "ceaa"]:
                 options = ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"]
-            elif firmware_code in ["FAAB", "FAAA"]:
+            elif firmware_code in ["FAAB", "FAAA", "HAAA"]:
                 options = ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
             else:
                 # Default fallback for unknown firmware codes
@@ -623,20 +628,20 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             charge_type = self.get_charge_type_setting(dongle_id)
             if charge_control != "Voltage":
                 return f"Charge control is set to '{charge_control}' - Voltage settings not available"
-            elif charge_type not in ["SOC/Volt According To", "Time and SOC/Volt According To"]:
+            elif charge_type not in ["According To Voltage", "According To Time and Voltage", "According To SOC/VOLT", "According To Time and SOC/VOLT"]:
                 return f"Charge type is set to '{charge_type}' - Voltage settings not available"
-        
+
         elif self._is_charge_soc_entity(entity_unique_id):
             charge_control = self.get_charge_control_setting(dongle_id)
             charge_type = self.get_charge_type_setting(dongle_id)
             if charge_control != "SOC":
                 return f"Charge control is set to '{charge_control}' - SOC settings not available"
-            elif charge_type not in ["SOC/Volt According To", "Time and SOC/Volt According To"]:
+            elif charge_type not in ["According To SOC", "According To Time and SOC", "According To SOC/VOLT", "According To Time and SOC/VOLT"]:
                 return f"Charge type is set to '{charge_type}' - SOC settings not available"
-        
+
         elif self._is_charge_time_entity(entity_unique_id):
             charge_type = self.get_charge_type_setting(dongle_id)
-            if charge_type != "Time According To":
+            if charge_type not in ["Time According To", "According To Time", "According To Time and Voltage", "According To Time and SOC", "According To Time and SOC/VOLT"]:
                 return f"Charge type is set to '{charge_type}' - Time settings not available"
         
         # Check discharge control settings
@@ -1041,6 +1046,9 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             elif "/debug/" in topic:
                 # Ignore debug topics like debug/bits, debug/bitfield, etc.
                 return
+            # Handle battery extended data topic
+            elif topic.endswith("/batteries"):
+                await self._handle_battery_data(dongle_id, msg.payload)
             # Skip other message processing during startup to prevent excessive updates
             elif not self._hass_startup_complete:
                 # Just store the message for later processing if needed
@@ -1119,6 +1127,57 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # Update coordinator data to trigger any listeners
         self.async_set_updated_data(self.entities)
     
+    async def _handle_battery_data(self, dongle_id: str, payload) -> None:
+        """Handle battery extended data from dongleid/batteries topic."""
+        if payload is None or len(payload.strip()) == 0:
+            return
+
+        try:
+            data = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            LOGGER.error(f"Invalid JSON in battery data from {dongle_id}")
+            return
+
+        # Handle both wrapped and direct payload formats
+        if "payload" in data:
+            battery_payload = data["payload"]
+        else:
+            battery_payload = data
+
+        batteries = battery_payload.get("batteries", [])
+        if not batteries:
+            return
+
+        LOGGER.debug(f"Received battery data for {dongle_id}: {len(batteries)} batteries")
+
+        # Store battery data
+        self._battery_data[dongle_id] = battery_payload
+
+        # Update entity states for existing battery sensors
+        formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
+        for battery in batteries:
+            bat_index = battery.get("batIndex", 0)
+            for key, value in battery.items():
+                if key in ("batIndex",):
+                    continue
+                entity_id = f"sensor.{formatted_dongle_id}_battery_{bat_index}_{key.lower()}"
+                self.entities[entity_id] = value
+
+        # If we haven't created battery entities for this dongle yet, fire an event
+        if dongle_id not in self._battery_entities_created:
+            self._battery_entities_created.add(dongle_id)
+            LOGGER.info(f"First battery data received for {dongle_id} - triggering entity creation")
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_battery_data_received",
+                {"dongle_id": dongle_id, "battery_count": len(batteries)}
+            )
+
+        self.async_set_updated_data(self.entities)
+
+    def get_battery_data(self, dongle_id: str) -> Dict:
+        """Get battery extended data for a dongle."""
+        return self._battery_data.get(dongle_id, {})
+
     def _process_gridboss_nested_data(self, dongle_id: str, payload_data):
         """Process GridBoss nested payload structure - now simplified since payload has correct entity names."""
         formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
@@ -1180,11 +1239,13 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         for entityTypeName, entityTypes in brand_entities.items():
             for typeName, entities in entityTypes.items():
                 for entity in entities:
+                    # Use the source field if present, otherwise fall back to the bank name (typeName)
+                    source = entity.get("source", typeName)
                     # For GridBoss dongles, only create GridBoss-specific entities
-                    if is_gridboss and not typeName.startswith("gridboss_"):
+                    if is_gridboss and not source.startswith("gridboss_"):
                         continue
                     # For non-GridBoss dongles, skip GridBoss-specific entities
-                    elif not is_gridboss and typeName.startswith("gridboss_"):
+                    elif not is_gridboss and source.startswith("gridboss_"):
                         continue
                         
                     entity_id: str = f"{entityTypeName}.{formatted_dongle_id}_{entity['unique_id'].lower()}"
@@ -1233,6 +1294,10 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         async_call_later(self.hass, 30, mark_startup_complete)
         
         return True
+
+    def set_battery_async_add_entities(self, async_add_entities) -> None:
+        """Store the async_add_entities callback for battery sensors."""
+        self._battery_async_add_entities = async_add_entities
 
     async def request_firmware_codes(self):
         """Request firmware codes for dongles that don't have them saved."""

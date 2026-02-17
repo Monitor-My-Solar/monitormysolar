@@ -52,7 +52,8 @@ async def async_setup_entry(
                     else:
                         continue  # Skip this entity
                 
-                if bank_name == "battery":
+                sensor_class_key = sensor.get("sensor_class", bank_name)
+                if sensor_class_key == "battery":
                     entities.append(
                         BatteryStatusBinarySensor(sensor, hass, entry, dongle_id)
                     )
@@ -99,7 +100,7 @@ class BatteryStatusBinarySensor(MonitorMySolarEntity, BinarySensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     @callback
     def _handle_coordinator_update(self) -> None:
