@@ -1505,13 +1505,37 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Process incoming MQTT message and update entity states."""
         if payload is None or len(payload.strip()) == 0:
             return
-        
+
         try:
             data = json.loads(payload)
             bank_name = topic.split('/')[-1]  # Gets 'inputbank1', 'holdbank2', etc.
             self.hass.bus.async_fire(f"{DOMAIN}_bank_updated", {"bank_name": bank_name, "dongle_id": dongle_id})
         except ValueError:
-            LOGGER.error(f"Invalid JSON payload received from {dongle_id} on topic {msg.topic}: {payload}")
+            LOGGER.error(f"Invalid JSON payload received from {dongle_id} on topic {topic}: {payload}")
+            return
+
+        # Durable write-confirmation channel (dongle FW >= 4.3.0):
+        # <dongle>/setting/updated arrives on every successful write
+        # regardless of who initiated it (HA itself, MMS, Lux server, HA
+        # TCP, the local web UI). Envelope: {setting, value, reg, from, ts}.
+        # We mirror the new value to the matching entity so HA's state
+        # converges within ~1 ms instead of waiting for the next /hold
+        # cycle. `from` lets us self-dedup if we just wrote it ourselves
+        # (avoids overwriting an optimistic in-flight write).
+        if topic.endswith("/setting/updated") and isinstance(data, dict):
+            setting = data.get("setting")
+            value = data.get("value")
+            from_who = data.get("from") or ""
+            if setting and value is not None:
+                formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
+                formatted_suffix = setting.lower().replace("-", "_").replace(":", "_")
+                entity_type = self.determine_entity_type(formatted_suffix)
+                entity_id = f"{entity_type}.{formatted_dongle_id}_{formatted_suffix}"
+                self.entities[entity_id] = value
+                self.async_set_updated_data(self.entities)
+                LOGGER.debug(
+                    f"setting/updated routed: {entity_id}={value} (from={from_who})"
+                )
             return
 
         formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
