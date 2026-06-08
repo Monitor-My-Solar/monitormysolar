@@ -11,3 +11,9 @@ monitormysolar-schedule-card/
 *.claude
 claude.md
 docs/
+.idea/
+.idea
+# Test virtualenv
+.venv/
+__pycache__/
+.pytest_cache/

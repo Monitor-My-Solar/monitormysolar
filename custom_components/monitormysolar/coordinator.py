@@ -1418,9 +1418,32 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         
         if not subscription_success:
             LOGGER.warning("One or more MQTT subscriptions failed, some functionality may be limited")
-        
+
         # Log all active subscriptions
         LOGGER.debug(f"Active MQTT subscriptions after setup: {list(self._mqtt_unsubscribe_callbacks.keys())}")
+
+        # Unified-topic bootstrap (dongle FW ≥ 4.3.0): ask each dongle for a
+        # fresh full /input + /hold snapshot. This populates entities even
+        # when the broker's retained data is stale (e.g. dongle rebooted
+        # without a clean MQTT disconnect, so retained = pre-reboot state).
+        #
+        # Old firmware (< 4.3.0) ignores this topic — the per-bank
+        # subscriptions above still drive entity updates. Fully backward
+        # compatible: there's no harm in publishing the request on either
+        # firmware version.
+        for dongle_id in self._dongle_ids:
+            try:
+                snapshot_topic = f"{dongle_id}/snapshot/request"
+                await mqtt.async_publish(
+                    self.hass,
+                    snapshot_topic,
+                    '{"what":"all"}',
+                    qos=1,
+                    retain=False,
+                )
+                LOGGER.debug(f"Snapshot bootstrap requested for {dongle_id}")
+            except Exception as e:
+                LOGGER.debug(f"Snapshot bootstrap publish failed for {dongle_id} (non-fatal): {e}")
         
         # Schedule a one-time log of ignored entity counts after 2 minutes
         async def log_ignored_entities(_):
