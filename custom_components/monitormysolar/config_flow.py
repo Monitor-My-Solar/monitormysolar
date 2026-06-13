@@ -45,7 +45,8 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             "Lux": "LuxPower",
             "Solis": "Solis",
             "Solax": "Solax",
-            "Growatt": "Growatt"
+            "Growatt": "Growatt",
+            "Deye": "Deye / SunSynk / SolArk / NeoVolta"
         }
         
         brand_name = brand_names.get(brand, brand)
@@ -77,7 +78,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required("inverter_brand", default="Solis"): vol.In(
-                    ["Solis", "Lux", "Solax", "Growatt"]
+                    ["Solis", "Lux", "Solax", "Growatt", "Deye"]
                 ),
                 vol.Optional("update_interval", default=60): vol.In(
                     {1: "1 second", 3: "3 seconds", 5: "5 seconds", 10: "10 seconds", 
@@ -620,7 +621,8 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             "Lux": "LuxPower",
             "Solis": "Solis",
             "Solax": "Solax",
-            "Growatt": "Growatt"
+            "Growatt": "Growatt",
+            "Deye": "Deye / SunSynk / SolArk / NeoVolta"
         }
         
         brand_name = brand_names.get(brand, brand)

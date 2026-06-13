@@ -30,7 +30,6 @@ from homeassistant.helpers.event import (
     async_track_time_change,
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util.unit_system import METRIC_SYSTEM, US_CUSTOMARY_SYSTEM
 
 from .const import DOMAIN, ENTITIES, FIRMWARE_CODES, LOGGER
 from .coordinator import MonitorMySolarEntry
@@ -1003,7 +1002,7 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
         return self._unique_id
 
     @property
-    def state(self):
+    def native_value(self):
         return self._state
 
     @property
@@ -1011,22 +1010,17 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
         return self.sensor_info.get("state_class")
 
     @property
-    def unit_of_measurement(self):
-        if self.hass.config.units is US_CUSTOMARY_SYSTEM:
-            return UnitOfTemperature.FAHRENHEIT
-        else:
-            return UnitOfTemperature.CELSIUS
+    def native_unit_of_measurement(self):
+        return UnitOfTemperature.CELSIUS
 
     @property
     def device_class(self):
         return self.sensor_info.get("device_class")
-    
+
     @property
     def suggested_display_precision(self):
-        """Return the suggested display precision for energy sensors."""
-        if self.device_class == SensorDeviceClass.ENERGY:
-            return 2
-        return None
+        """Return the suggested display precision."""
+        return 1
 
     @property
     def last_reset(self):
@@ -1045,23 +1039,9 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
         if self.entity_id in self.coordinator.entities:
             value = self.coordinator.entities[self.entity_id]
             if value is not None:
-                # Default state to value sent in.
                 self._state = (
                     round(value, 2) if isinstance(value, (float, int)) else value
                 )
-                # Check for HA config values and convert if neccessary.
-                if self.hass.config.units is US_CUSTOMARY_SYSTEM:
-                    # Const defines Celsius but HA should show Fahrenheit.
-                    if UnitOfTemperature.FAHRENHEIT != self.sensor_info.get("unit_of_measurement"):
-                        self._state = (
-                            round( (((value)*9/5)+32), 2 ) if isinstance(value, (float, int)) else value
-                        )
-                else:
-                    # Const defines Fahrenheit but HA should show Celsius.
-                    if UnitOfTemperature.CELSIUS != self.sensor_info.get("unit_of_measurement"):
-                        self._state = (
-                            round( ((value)-32/(9/5)), 2 ) if isinstance(value, (float, int)) else value
-                        )
                 LOGGER.debug(f"Sensor {self.entity_id} state updated to {self._state}")
                 self.throttled_async_write_ha_state()
 

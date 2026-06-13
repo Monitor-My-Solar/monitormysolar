@@ -1237,6 +1237,18 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         
         entities_created = 0
         for entityTypeName, entityTypes in brand_entities.items():
+            # Defensive: some brand registries have legacy flat-list
+            # entries (e.g. ENTITIES["Lux"]["calculated"] is a list, not
+            # a dict-of-lists like ENTITIES["Lux"]["sensor"]). Skip those
+            # — they're either dead code or get created via a different
+            # path. Without this guard `.items()` below crashes the
+            # entire firmware-code-response handler with
+            # "'list' object has no attribute 'items'".
+            if not isinstance(entityTypes, dict):
+                LOGGER.debug(
+                    f"Skipping legacy flat-list entry {self.inverter_brand}.{entityTypeName}"
+                )
+                continue
             for typeName, entities in entityTypes.items():
                 for entity in entities:
                     # Use the source field if present, otherwise fall back to the bank name (typeName)
@@ -1506,6 +1518,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         if payload is None or len(payload.strip()) == 0:
             return
 
+        # LWT/birth on <dongle>/availability is a plain "online"/"offline"
+        # string, not JSON. Track it and skip the JSON decoder.
+        if topic.endswith("/availability"):
+            state = payload.strip().lower()
+            self._dongle_availability = getattr(self, "_dongle_availability", {})
+            self._dongle_availability[dongle_id] = (state == "online")
+            LOGGER.debug(f"availability {dongle_id}={state}")
+            return
+
         try:
             data = json.loads(payload)
             bank_name = topic.split('/')[-1]  # Gets 'inputbank1', 'holdbank2', etc.
@@ -1569,6 +1590,30 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # Set entity value
             entity_id = f"update.{formatted_dongle_id}_firmware_update"
             self.entities[entity_id] = fw_version
+
+        # Inverter FWCode fallback path. v4.3+ dongles no longer publish
+        # `holdbank1` so the legacy /firmwarecode/request → /response
+        # handshake can race the dongle boot and time out at HA's 15s
+        # firmware_timeout. The unified /hold topic carries FWCode in
+        # every payload (it's part of the standard hold superset), so
+        # scrape it here and feed it through save_firmware_code which
+        # also persists it to the config entry.
+        if "FWCode" in payload_data:
+            fw_code = payload_data["FWCode"]
+            if fw_code and self._firmware_codes.get(dongle_id) != fw_code:
+                # Fire-and-forget — save_firmware_code is async but we're
+                # already inside an async handler so schedule it.
+                self.hass.async_create_task(
+                    self.save_firmware_code(dongle_id, fw_code)
+                )
+                # If this dongle was waiting for the legacy handshake,
+                # clear it from the pending set so the 15s timeout
+                # doesn't fire the "default entities" warning.
+                if hasattr(self, "_pending_dongles") and dongle_id in self._pending_dongles:
+                    self._pending_dongles.discard(dongle_id)
+                    LOGGER.debug(
+                        f"FWCode {fw_code!r} resolved for {dongle_id} via /hold payload — pending cleared"
+                    )
 
         # Update UI version - commented out as UI update entity has been removed
         # if "UI_VERSION" in payload_data:

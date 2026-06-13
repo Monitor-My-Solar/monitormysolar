@@ -845,6 +845,193 @@ ENTITIES = {
              }
         },
 
+        # =====================================================================
+        # Deye / SunSynk / SolArk / NeoVolta family.
+        #
+        # The dongle emits this family's data via the generated Deye register
+        # catalog (deye_catalog_GENERATED.h -> build_deye_input_payload /
+        # build_deye_hold_payload in unified_emit.c). Every `unique_id` below
+        # MATCHES THE CATALOG KEY EXACTLY (case-sensitive on the wire; the
+        # coordinator lowercases both sides when matching, so case is
+        # cosmetic for routing but kept identical to the catalog for clarity).
+        #
+        # `source` values use the standard "inputbank1"/"holdbank1" labels so
+        # the GridBoss gating in _create_entities_for_dongle (source.startswith
+        # "gridboss_") treats every Deye entity as a normal inverter entity.
+        # Under unified /input + /hold topics the source string is otherwise
+        # cosmetic — routing is purely by unique_id.
+        #
+        # TimeSlots[] (nested time-of-use array, regs 250-279) is emitted as a
+        # JSON array of objects {time, power, voltage, soc, chargeEnable}.
+        # flatten_nested_data() only recurses dicts, not lists, so it lands as
+        # a single opaque value on sensor.<dongle>_timeslots. Per-slot entities
+        # are NOT created here — the dongle does not emit flat per-slot keys.
+        # TODO: if per-slot controls are wanted, the firmware should emit flat
+        # keys (e.g. TimeSlot0_power) or the coordinator needs a Deye-specific
+        # nested flatten (mirroring _process_gridboss_nested_data).
+        # =====================================================================
+        "Deye": {
+            "sensor": {
+                "inputbank1": [
+                    # Identity / status
+                    {"name": "State", "type": "sensor", "unique_id": "State", "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Firmware Code", "type": "sensor", "unique_id": "FWCode", "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Inverter Date Time", "type": "sensor", "unique_id": "DateTime", "source": "inputbank1", "device_group": "Inverter"},
+
+                    # Energy — daily (TOTAL_INCREASING, resets each day)
+                    {"name": "Energy Inverter Day", "type": "sensor", "unique_id": "EinvDay", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy PV Day", "type": "sensor", "unique_id": "EpvDay", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy Charge Day", "type": "sensor", "unique_id": "EchgDay", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy Discharge Day", "type": "sensor", "unique_id": "EdischgDay", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy to User Day", "type": "sensor", "unique_id": "EtouserDay", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy to Grid Day", "type": "sensor", "unique_id": "EtogridDay", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy Load Day", "type": "sensor", "unique_id": "EloadDay", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy Generator Day", "type": "sensor", "unique_id": "EgenDay", "state_class": SensorStateClass.TOTAL_INCREASING, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+
+                    # Energy — totals (TOTAL, lifetime counters)
+                    {"name": "Energy Inverter All", "type": "sensor", "unique_id": "EinvAll", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy PV All", "type": "sensor", "unique_id": "EpvAll", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy Charge All", "type": "sensor", "unique_id": "EchgAll", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy Discharge All", "type": "sensor", "unique_id": "EdischgAll", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy to User All", "type": "sensor", "unique_id": "EtouserAll", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy to Grid All", "type": "sensor", "unique_id": "EtogridAll", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy Load All", "type": "sensor", "unique_id": "EloadAll", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+                    {"name": "Energy Generator All", "type": "sensor", "unique_id": "EgenAll", "state_class": SensorStateClass.TOTAL, "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR, "device_class": SensorDeviceClass.ENERGY, "source": "inputbank1", "device_group": "Energy"},
+
+                    # Grid
+                    {"name": "Grid Frequency", "type": "sensor", "unique_id": "Fac", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfFrequency.HERTZ, "device_class": SensorDeviceClass.FREQUENCY, "source": "inputbank1", "device_group": "Grid"},
+                    {"name": "Grid Voltage L1", "type": "sensor", "unique_id": "VacR", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "inputbank1", "device_group": "Grid"},
+                    {"name": "Grid Voltage L2", "type": "sensor", "unique_id": "VacS", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "inputbank1", "device_group": "Grid"},
+                    {"name": "Grid Voltage L1-L2", "type": "sensor", "unique_id": "Vac", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "inputbank1", "device_group": "Grid"},
+                    {"name": "Grid Current L1", "type": "sensor", "unique_id": "IacR", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricCurrent.AMPERE, "device_class": SensorDeviceClass.CURRENT, "source": "inputbank1", "device_group": "Grid"},
+                    {"name": "Grid Current L2", "type": "sensor", "unique_id": "IacS", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricCurrent.AMPERE, "device_class": SensorDeviceClass.CURRENT, "source": "inputbank1", "device_group": "Grid"},
+                    {"name": "Grid Power L1", "type": "sensor", "unique_id": "PgridL1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Grid"},
+                    {"name": "Grid Power L2", "type": "sensor", "unique_id": "PgridL2", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Grid"},
+                    {"name": "Grid Power", "type": "sensor", "unique_id": "Pgrid", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Grid"},
+
+                    # PV
+                    {"name": "Voltage PV1", "type": "sensor", "unique_id": "Vpv1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Voltage PV2", "type": "sensor", "unique_id": "Vpv2", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Voltage PV3", "type": "sensor", "unique_id": "Vpv3", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Voltage PV4", "type": "sensor", "unique_id": "Vpv4", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Current PV1", "type": "sensor", "unique_id": "Ipv1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricCurrent.AMPERE, "device_class": SensorDeviceClass.CURRENT, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Current PV2", "type": "sensor", "unique_id": "Ipv2", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricCurrent.AMPERE, "device_class": SensorDeviceClass.CURRENT, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Current PV3", "type": "sensor", "unique_id": "Ipv3", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricCurrent.AMPERE, "device_class": SensorDeviceClass.CURRENT, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Current PV4", "type": "sensor", "unique_id": "Ipv4", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricCurrent.AMPERE, "device_class": SensorDeviceClass.CURRENT, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Power PV1", "type": "sensor", "unique_id": "Ppv1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Power PV2", "type": "sensor", "unique_id": "Ppv2", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Power PV3", "type": "sensor", "unique_id": "Ppv3", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Power PV4", "type": "sensor", "unique_id": "Ppv4", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "PV"},
+                    {"name": "Power PV All", "type": "sensor", "unique_id": "Pall", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "PV"},
+
+                    # Inverter output / EPS
+                    {"name": "EPS Voltage L1-N", "type": "sensor", "unique_id": "EPSVoltL1N", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "inputbank1", "device_group": "EPS"},
+                    {"name": "EPS Voltage L2-N", "type": "sensor", "unique_id": "EPSVoltL2N", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "inputbank1", "device_group": "EPS"},
+                    {"name": "Inverter Power L1", "type": "sensor", "unique_id": "PinvL1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Inverter Power L2", "type": "sensor", "unique_id": "PinvL2", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Inverter Power", "type": "sensor", "unique_id": "Pinv", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Inverter"},
+
+                    # Load
+                    {"name": "Load Power L1", "type": "sensor", "unique_id": "PloadL1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Load Power L2", "type": "sensor", "unique_id": "PloadL2", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "House Consumption (Live)", "type": "sensor", "unique_id": "Pload", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Load Active Power", "type": "sensor", "unique_id": "PloadActive", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Meter Power", "type": "sensor", "unique_id": "Pmeter", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Grid"},
+                    {"name": "Load Frequency", "type": "sensor", "unique_id": "Fload", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfFrequency.HERTZ, "device_class": SensorDeviceClass.FREQUENCY, "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Inverter Frequency", "type": "sensor", "unique_id": "Finv", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfFrequency.HERTZ, "device_class": SensorDeviceClass.FREQUENCY, "source": "inputbank1", "device_group": "Inverter"},
+
+                    # Battery
+                    {"name": "Battery Voltage", "type": "sensor", "unique_id": "Vbat", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "inputbank1", "device_group": "Battery"},
+                    {"name": "Battery Temperature", "type": "sensor", "unique_id": "Tbat", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE, "source": "inputbank1", "device_group": "Battery"},
+                    {"name": "State of Charge", "type": "sensor", "unique_id": "SOC", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": PERCENTAGE, "device_class": SensorDeviceClass.BATTERY, "source": "inputbank1", "device_group": "Battery"},
+                    {"name": "Battery Power", "type": "sensor", "unique_id": "Pbat", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfPower.WATT, "device_class": SensorDeviceClass.POWER, "source": "inputbank1", "device_group": "Battery"},
+                    {"name": "Battery Current", "type": "sensor", "unique_id": "Ibat", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricCurrent.AMPERE, "device_class": SensorDeviceClass.CURRENT, "source": "inputbank1", "device_group": "Battery"},
+
+                    # Temperatures
+                    {"name": "Radiator Temperature 1", "type": "sensor", "unique_id": "Tradiator1", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE, "source": "inputbank1", "device_group": "Temperature"},
+                    {"name": "Internal Temperature", "type": "sensor", "unique_id": "Tinner", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfTemperature.CELSIUS, "device_class": SensorDeviceClass.TEMPERATURE, "source": "inputbank1", "device_group": "Temperature"},
+
+                    # Codes / relays (raw words)
+                    {"name": "Warning Word 1", "type": "sensor", "unique_id": "WarningWord1", "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Warning Word 2", "type": "sensor", "unique_id": "WarningWord2", "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Fault Word 1", "type": "sensor", "unique_id": "FaultWord1", "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Fault Word 2", "type": "sensor", "unique_id": "FaultWord2", "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Fault Word 3", "type": "sensor", "unique_id": "FaultWord3", "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Fault Word 4", "type": "sensor", "unique_id": "FaultWord4", "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Grid Relay Status", "type": "sensor", "unique_id": "GridRelayStatus", "source": "inputbank1", "device_group": "Inverter"},
+                    {"name": "Generator Relay Status", "type": "sensor", "unique_id": "GenRelayStatus", "source": "inputbank1", "device_group": "Inverter"},
+                ],
+                # Read-only BMS realtime telemetry that arrives on the hold bank.
+                "holdbank1": [
+                    {"name": "BMS Charge Voltage", "type": "sensor", "unique_id": "BMSChargeVoltage", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "holdbank1", "device_group": "Battery"},
+                    {"name": "BMS Discharge Voltage", "type": "sensor", "unique_id": "BMSDischargeVoltage", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricPotential.VOLT, "device_class": SensorDeviceClass.VOLTAGE, "source": "holdbank1", "device_group": "Battery"},
+                    {"name": "BMS Charge Current Limit", "type": "sensor", "unique_id": "BMSChargeCurrLimit", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricCurrent.AMPERE, "device_class": SensorDeviceClass.CURRENT, "source": "holdbank1", "device_group": "Battery"},
+                    {"name": "BMS Discharge Current Limit", "type": "sensor", "unique_id": "BMSDischargeCurrLimit", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": UnitOfElectricCurrent.AMPERE, "device_class": SensorDeviceClass.CURRENT, "source": "holdbank1", "device_group": "Battery"},
+                    {"name": "BMS Realtime SOC", "type": "sensor", "unique_id": "BMSRealtimeSOC", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": PERCENTAGE, "device_class": SensorDeviceClass.BATTERY, "source": "holdbank1", "device_group": "Battery"},
+                    # Nested time-of-use array — lands here as an opaque value.
+                    # See header note: per-slot entities are a documented TODO.
+                    {"name": "Time Of Use Slots", "type": "sensor", "unique_id": "TimeSlots", "source": "holdbank1", "device_group": "Controls", "entity_registry_enabled_default": False},
+                ],
+            },
+            "switch": {
+                "holdbank1": [
+                    {"name": "AC (Grid) Charge", "type": "switch", "unique_id": "ACCharge", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Export to Grid (Solar Sell)", "type": "switch", "unique_id": "FeedInGrid", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Time Of Use Enable", "type": "switch", "unique_id": "TimeOfUse", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Charge Last", "type": "switch", "unique_id": "ubChgLastEn", "source": "holdbank1", "device_group": "Controls"},
+                ],
+            },
+            "select": {
+                "holdbank1": [
+                    {"name": "Battery Charge Type", "type": "select", "unique_id": "BatChargeType", "options": ["Lithium", "Lead Acid", "No Battery"], "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Battery Control Mode", "type": "select", "unique_id": "ubBatChgcontrol", "options": ["SOC", "Voltage"], "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Working Mode", "type": "select", "unique_id": "ubWorkingMode", "options": ["Selling First", "Zero Export To Load", "Zero Export To CT"], "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Grid Regulation", "type": "select", "unique_id": "GridRegulation", "options": ["General Standard", "UL1741 & IEEE1547", "CPUC RULE21", "SRD-UL-1741", "CEI 0-21", "EN50549", "Custom"], "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Grid Type", "type": "select", "unique_id": "GridType", "options": ["Split Phase (240V)", "Single Phase (230V)", "Three Phase (400V)"], "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Lithium Battery Type", "type": "select", "unique_id": "LithiumBatteryType", "options": ["No Battery", "Pylon CAN", "Pylon RS485", "Dyness CAN", "Generic"], "source": "holdbank1", "device_group": "Controls"},
+                ],
+            },
+            "number": {
+                "holdbank1": [
+                    # Battery config
+                    {"name": "Battery Capacity (Ah)", "type": "number", "unique_id": "BatCapacity", "unit": "Ah", "min": 0, "max": 2000, "mode": "box", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Max Charge Current", "type": "number", "unique_id": "ChargeCurr", "unit": "A", "min": 0, "max": 250, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Max Discharge Current", "type": "number", "unique_id": "DischgCurr", "unit": "A", "min": 0, "max": 250, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "On-grid Discharge Cut-off SOC", "type": "number", "unique_id": "EOD", "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Battery Restart SOC", "type": "number", "unique_id": "BatLowBackSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Battery Low SOC", "type": "number", "unique_id": "BatLowSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Battery Shutdown Voltage", "type": "number", "unique_id": "BatLowVoltage", "step": 0.01, "unit": "V", "min": 40, "max": 60, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Battery Restart Voltage", "type": "number", "unique_id": "BatLowBackVoltage", "step": 0.01, "unit": "V", "min": 40, "max": 60, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Battery Low to Utility Voltage", "type": "number", "unique_id": "BatLowtoUtilityVoltage", "step": 0.01, "unit": "V", "min": 40, "max": 60, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Battery Charge Efficiency", "type": "number", "unique_id": "BatChargeEfficiency", "step": 0.1, "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    # Generator
+                    {"name": "Generator Charge Start SOC", "type": "number", "unique_id": "GenChgStartSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Max Generator Charge Battery Current", "type": "number", "unique_id": "MaxGenChgBatCurr", "unit": "A", "min": 0, "max": 250, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Generator Max Operating Time", "type": "number", "unique_id": "GenMaxOperatingTime", "step": 0.1, "unit": "h", "min": 0, "max": 24, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Generator Cool Down Time", "type": "number", "unique_id": "GenCoolDownTime", "step": 0.1, "unit": "h", "min": 0, "max": 24, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Generator Charge Start Voltage", "type": "number", "unique_id": "GenChgStartVolt", "step": 0.01, "unit": "V", "min": 40, "max": 60, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Generator Peak Shaving Power", "type": "number", "unique_id": "GenPeakShavingPower", "unit": "W", "min": 0, "max": 20000, "mode": "box", "source": "holdbank1", "device_group": "Controls"},
+                    # AC (grid) charge
+                    {"name": "AC Charge Start SOC", "type": "number", "unique_id": "ACChgStartSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "AC Charge Battery Current", "type": "number", "unique_id": "ACChargeBatCurrent", "unit": "A", "min": 0, "max": 250, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "AC Charge Start Voltage", "type": "number", "unique_id": "ACChgStartVolt", "step": 0.01, "unit": "V", "min": 40, "max": 60, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Grid Peak Shaving Power", "type": "number", "unique_id": "GridPeakShavingPower", "unit": "W", "min": 0, "max": 20000, "mode": "box", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Max Grid Export Power", "type": "number", "unique_id": "MaxBackFlow", "unit": "W", "min": 0, "max": 20000, "mode": "box", "source": "holdbank1", "device_group": "Controls"},
+                    # Smart load
+                    {"name": "Smart Load Off SOC", "type": "number", "unique_id": "SmartLoadOffSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Smart Load On SOC", "type": "number", "unique_id": "SmartLoadOnSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Smart Load Off Voltage", "type": "number", "unique_id": "SmartLoadOffVolt", "step": 0.01, "unit": "V", "min": 40, "max": 60, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Smart Load On Voltage", "type": "number", "unique_id": "SmartLoadOnVolt", "step": 0.01, "unit": "V", "min": 40, "max": 60, "mode": "slider", "source": "holdbank1", "device_group": "Controls"},
+                    # Grid settings
+                    {"name": "Grid Frequency Setting", "type": "number", "unique_id": "GridFreq", "unit": "Hz", "min": 50, "max": 60, "mode": "box", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Grid Connect Voltage High", "type": "number", "unique_id": "GridVoltConnHigh", "step": 0.1, "unit": "V", "min": 0, "max": 300, "mode": "box", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Grid Connect Voltage Low", "type": "number", "unique_id": "GridVoltConnLow", "step": 0.1, "unit": "V", "min": 0, "max": 300, "mode": "box", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Grid Connect Frequency High", "type": "number", "unique_id": "GridFreqConnHigh", "step": 0.01, "unit": "Hz", "min": 45, "max": 65, "mode": "box", "source": "holdbank1", "device_group": "Controls"},
+                    {"name": "Grid Connect Frequency Low", "type": "number", "unique_id": "GridFreqConnLow", "step": 0.01, "unit": "Hz", "min": 45, "max": 65, "mode": "box", "source": "holdbank1", "device_group": "Controls"},
+                ],
+            },
+        },
+
         "Solis": {
             "sensors": [
                 {"name": "Energy", "type": "sensor", "unique_id": "energy", "state_class": SensorStateClass.MEASUREMENT, "unit": "kWh"},

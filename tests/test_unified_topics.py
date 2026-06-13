@@ -245,6 +245,79 @@ def test_deye_input_routes_canonical_keys(coordinator, monkeypatch):
     assert coordinator.entities["sensor.dongle_test_pload"] == 1900
 
 
+def test_deye_entities_catalog_consistency():
+    """The Deye ENTITIES entry stays structurally consistent with the catalog.
+
+    Guards against regressions in the Deye brand registry: it must be a
+    dict-of-entity-types (matching the Lux shape so _create_entities_for_dongle
+    can walk it), every entity must carry a unique_id, and no unique_id may be
+    duplicated within the brand (duplicates collide on entity_id).
+    """
+    from custom_components.monitormysolar.const import ENTITIES
+
+    assert "Deye" in ENTITIES, "Deye brand entry missing"
+    deye = ENTITIES["Deye"]
+    assert isinstance(deye, dict)
+
+    seen = []
+    for entity_type, banks in deye.items():
+        # Mirrors the dict-of-lists shape the coordinator expects.
+        assert isinstance(banks, dict), f"{entity_type} must be a dict of banks"
+        for bank_name, entities in banks.items():
+            for ent in entities:
+                assert "unique_id" in ent, f"{entity_type}/{bank_name} missing unique_id"
+                assert "type" in ent
+                # source must never masquerade as a GridBoss entity, or the
+                # GridBoss gating would hide every Deye entity.
+                assert not ent.get("source", "").startswith("gridboss_")
+                seen.append(ent["unique_id"])
+
+    dupes = {u for u in seen if seen.count(u) > 1}
+    assert not dupes, f"duplicate Deye unique_ids: {sorted(dupes)}"
+    # Sanity: the catalog has 100+ keys; make sure we actually populated them.
+    assert len(seen) > 100
+
+
+def test_deye_hold_routes_settings_keys(coordinator, monkeypatch):
+    """Deye unified /hold settings keys route by their exact catalog names."""
+    monkeypatch.setattr(coordinator, "determine_entity_type",
+                        MagicMock(return_value="number"))
+    coordinator.entry.data = {"inverter_brand": "Deye"}
+    payload = _make_unified_payload("hold_state", {
+        "ChargeCurr": 100,
+        "DischgCurr": 120,
+        "ACChgStartSOC": 40,
+        "GenChgStartSOC": 30,
+    })
+    _run(coordinator.process_message(
+        "dongle-test", "dongle-test/hold", payload))
+    assert coordinator.entities["number.dongle_test_chargecurr"] == 100
+    assert coordinator.entities["number.dongle_test_dischgcurr"] == 120
+    assert coordinator.entities["number.dongle_test_acchgstartsoc"] == 40
+    assert coordinator.entities["number.dongle_test_genchgstartsoc"] == 30
+
+
+def test_deye_input_routes_family_specific_keys(coordinator, monkeypatch):
+    """Deye-specific input keys (split-phase, gen, meter) route to entities."""
+    monkeypatch.setattr(coordinator, "determine_entity_type",
+                        MagicMock(return_value="sensor"))
+    coordinator.entry.data = {"inverter_brand": "Deye"}
+    payload = _make_unified_payload("input_state", {
+        "VacR": 121.0,
+        "VacS": 120.5,
+        "PgridL1": 800,
+        "EgenDay": 3.2,
+        "Pmeter": -450,
+        "Tradiator1": 41.0,
+    })
+    _run(coordinator.process_message(
+        "dongle-test", "dongle-test/input", payload))
+    assert coordinator.entities["sensor.dongle_test_vacr"] == 121.0
+    assert coordinator.entities["sensor.dongle_test_pgridl1"] == 800
+    assert coordinator.entities["sensor.dongle_test_egenday"] == 3.2
+    assert coordinator.entities["sensor.dongle_test_pmeter"] == -450
+
+
 def test_gridboss_input_routes_state_and_codes(gridboss_coordinator, monkeypatch):
     """GridBoss unified /input includes State + FaultCode + WarningCode."""
     monkeypatch.setattr(gridboss_coordinator, "determine_entity_type",
@@ -285,6 +358,64 @@ def test_setting_updated_routes_to_entity(coordinator, monkeypatch):
     _run(coordinator.process_message(
         "dongle-test", "dongle-test/setting/updated", payload))
     assert coordinator.entities["number.dongle_test_chargepowerpercentcmd"] == 75
+
+
+def test_setting_updated_bitfield_per_bit_event(coordinator, monkeypatch):
+    """Each changed bit on a packed BITFIELD register arrives as its own event.
+
+    The dongle resolves a write to a packed register (e.g. Lux reg 21 holds
+    EPS, OVFLoadDerate, ACCharge, AntiIsland, ...) by xor-diffing pre vs new
+    and emitting one setting/updated per changed bit with the bit's symbolic
+    name and 0/1 state. HA routes each one independently — same dispatch
+    code, no special handling needed.
+    """
+    monkeypatch.setattr(coordinator, "determine_entity_type",
+                        MagicMock(return_value="switch"))
+
+    # ACCharge bit flipped on.
+    _run(coordinator.process_message(
+        "dongle-test", "dongle-test/setting/updated",
+        json.dumps({
+            "setting": "ACCharge",
+            "value":   "1",
+            "from":    "MMS",
+            "ts":      1717000000,
+        }),
+    ))
+    assert coordinator.entities["switch.dongle_test_accharge"] == "1"
+
+    # EPS bit flipped on (a separate event for the same write that toggled it).
+    _run(coordinator.process_message(
+        "dongle-test", "dongle-test/setting/updated",
+        json.dumps({
+            "setting": "EPS",
+            "value":   "1",
+            "from":    "MMS",
+            "ts":      1717000000,
+        }),
+    ))
+    assert coordinator.entities["switch.dongle_test_eps"] == "1"
+
+
+def test_setting_updated_envelope_without_reg_field(coordinator, monkeypatch):
+    """HA-shaped envelope (no `reg` field) still routes correctly.
+
+    Dongle v4.3+ omits the raw register number from the HA-bound envelope
+    because HA addresses entities by symbolic name only. The handler must
+    not require `reg` to be present.
+    """
+    monkeypatch.setattr(coordinator, "determine_entity_type",
+                        MagicMock(return_value="number"))
+    payload = json.dumps({
+        "setting": "ChargePowerPercentCMD",
+        "value":   "60",
+        "from":    "HA",
+        "ts":      1717000000,
+        # no `reg` field — HA envelope omits it
+    })
+    _run(coordinator.process_message(
+        "dongle-test", "dongle-test/setting/updated", payload))
+    assert coordinator.entities["number.dongle_test_chargepowerpercentcmd"] == "60"
 
 
 def test_setting_updated_handles_missing_fields(coordinator):

@@ -206,7 +206,18 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
         if self.entity_id in self.coordinator.entities:
             value = self.coordinator.entities[self.entity_id]
             if value is not None:
-                new_state = bool(value)
+                # CRITICAL: setting/updated payloads ship value as a STRING
+                # ("0" / "1"), and bool("0") in Python is True because any
+                # non-empty string is truthy. Coerce via int() so the actual
+                # numeric value drives the switch state.
+                try:
+                    if isinstance(value, str):
+                        new_state = bool(int(value))
+                    else:
+                        new_state = bool(value)
+                except (TypeError, ValueError):
+                    _LOGGER.debug(f"Switch {self.entity_id}: ignoring uncoercible value {value!r}")
+                    return
                 # If this is a user-initiated change, don't override with stale coordinator data
                 if self._user_initiated_change:
                     if new_state == self._state:
