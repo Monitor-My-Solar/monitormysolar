@@ -74,7 +74,7 @@ class BatteryStatusBinarySensor(MonitorMySolarEntity, BinarySensorEntity):
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._status_type = sensor_info.get("status_type")
-        self.entity_id = f"binary_sensor.{self._formatted_dongle_id}_{sensor_info['unique_id'].lower()}"
+        self.entity_id = self.coordinator.build_entity_id("binary_sensor", self._dongle_id, sensor_info['unique_id'])
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._parent_sensor = sensor_info.get("parent_sensor")
@@ -106,7 +106,7 @@ class BatteryStatusBinarySensor(MonitorMySolarEntity, BinarySensorEntity):
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
         # Look for the parent sensor entity ID
-        parent_entity_id = f"sensor.{self._formatted_dongle_id}_{self._parent_sensor.lower()}"
+        parent_entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._parent_sensor)
         
         if parent_entity_id in self.coordinator.entities:
             value = self.coordinator.entities[parent_entity_id]

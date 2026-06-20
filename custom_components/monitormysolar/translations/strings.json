@@ -13,7 +13,11 @@
             "single_inverter": {
                 "data": {
                     "dongle_id": "Dongle ID",
-                    "dongle_ip": "Dongle IP Address (optional)"
+                    "dongle_ip": "Dongle IP Address (optional)",
+                    "install_kind": "Install type"
+                },
+                "data_description": {
+                    "install_kind": "Choose 'Reconnecting an existing system' if you previously ran Monitor My Solar on this Home Assistant and want your existing history kept. Choose 'Fresh install' for cleaner entity names without the dongle ID."
                 },
                 "description": "Configure your {brand} inverter settings.",
                 "title": "Single Inverter Setup"

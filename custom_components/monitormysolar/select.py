@@ -68,7 +68,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
-        self.entity_id = f"select.{self._formatted_dongle_id}_{self._entity_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("select", self._dongle_id, self._entity_type)
         self.hass = hass
         self._options = entity_info["options"]
         self._manufacturer = entry.data.get("inverter_brand")
@@ -292,7 +292,7 @@ class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
-        self.entity_id = f"select.{self._formatted_dongle_id}_{self._entity_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("select", self._dongle_id, self._entity_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._additional_payload = entity_info.get("additional_payload")

@@ -70,7 +70,7 @@ class FirmwareUpdateButton(MonitorMySolarEntity, ButtonEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._button_type = button_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"button.{self._formatted_dongle_id}_{self._button_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("button", self._dongle_id, self._button_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
 
@@ -92,8 +92,8 @@ class FirmwareUpdateButton(MonitorMySolarEntity, ButtonEntity):
         """Handle the button press."""
         formatted_dongle_id = self._formatted_dongle_id
 
-        sw_version_entity_id = f"sensor.{formatted_dongle_id}_sw_version"
-        latest_firmware_entity_id = f"sensor.{formatted_dongle_id}_latestfirmwareversion"
+        sw_version_entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, "sw_version")
+        latest_firmware_entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, "latestfirmwareversion")
 
         sw_version = self.hass.states.get(sw_version_entity_id)
         latest_firmware_version = self.hass.states.get(latest_firmware_entity_id)
@@ -128,7 +128,7 @@ class RestartButton(MonitorMySolarEntity, ButtonEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._button_type = button_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"button.{self._formatted_dongle_id}_{self._button_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("button", self._dongle_id, self._button_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
 

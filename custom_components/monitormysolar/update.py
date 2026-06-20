@@ -89,7 +89,7 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._unique_id = f"{entry.entry_id}_{dongle_id}_firmware_update"
         self._manufacturer = "MonitorMySolar"
-        self.entity_id = f"update.{self._formatted_dongle_id}_firmware_update"
+        self.entity_id = self.coordinator.build_entity_id("update", self._dongle_id, "firmware_update")
         self._attr_in_progress = False
         self._attr_progress = None
         self._unsubscribe_timer = None

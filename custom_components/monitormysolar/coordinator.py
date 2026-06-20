@@ -82,6 +82,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._setting_history = {}  # Track setting changes with timestamps
         self._max_history_entries = 100  # Limit history size per setting
         self._setup_errors = []  # Track errors during setup
+        self._drop_dongle_id = entry.data.get("drop_dongle_id", False)  # Optional: omit dongle id from entity_ids (single-dongle only)
         self._has_gridboss = entry.data.get("has_gridboss", False)  # Track if GridBoss is enabled
         self._gridboss_dongle = entry.data.get("gridboss_dongle", "")  # Track which dongle is GridBoss
         self._last_fault_warning_data = {}  # Track last fault/warning data to prevent duplicate processing
@@ -110,6 +111,19 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     def get_formatted_dongle_id(self, dongle_id: str) -> str:
         """Convert a dongle ID to the formatted version used in entity IDs."""
         return dongle_id.lower().replace("-", "_").replace(":", "_")
+
+    def build_entity_id(self, platform: str, dongle_id: str, type_suffix: str) -> str:
+        """Build an entity_id honoring the drop_dongle_id flag.
+
+        The dongle id prefix is only dropped for single-dongle installs (multi-dongle
+        needs it to disambiguate, e.g. two dongles both exposing 'battery_soc'). The
+        entity's unique_id is unaffected, so history follows across a scheme change.
+        """
+        suffix = type_suffix.lower()
+        if self._drop_dongle_id and len(self._dongle_ids) == 1:
+            return f"{platform}.{suffix}"
+        formatted = self.get_formatted_dongle_id(dongle_id)
+        return f"{platform}.{formatted}_{suffix}"
     
 
     @property

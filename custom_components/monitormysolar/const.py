@@ -36,6 +36,13 @@ DEFAULT_ENABLE_DEVICE_GROUPING = False
 CONF_USE_INPUT_BOX = "use_input_box"
 DEFAULT_USE_INPUT_BOX = False
 
+# Entity naming: drop the dongle ID prefix from entity_ids.
+# Only honored for single-dongle installs (multi-dongle must keep the dongle ID
+# to disambiguate). No module-level default: it is install-time contextual —
+# fresh installs default True, existing/reconnect installs default False so
+# history (anchored to unique_id) is preserved.
+CONF_DROP_DONGLE_ID = "drop_dongle_id"
+
 PLATFORMS = [
     Platform.SENSOR,
     Platform.BINARY_SENSOR,

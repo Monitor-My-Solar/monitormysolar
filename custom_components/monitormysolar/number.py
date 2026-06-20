@@ -96,7 +96,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"number.{self._formatted_dongle_id}_{self._entity_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("number", self._dongle_id, self._entity_type)
         self.hass = hass
 
         # Get firmware-specific max value if available
@@ -226,7 +226,7 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
         self._source_entity = entity_info.get("source_entity", "")
         # Remove 'combined_' prefix from unique_id for entity_id
         entity_suffix = self._entity_type.lower().replace("combined_", "", 1)
-        self.entity_id = f"number.{self._formatted_dongle_id}_{entity_suffix}"
+        self.entity_id = self.coordinator.build_entity_id("number", self._dongle_id, entity_suffix)
         self.hass = hass
         self._attr_native_min_value = entity_info.get("min", None)
         self._attr_native_max_value = entity_info.get("max", None)
@@ -245,8 +245,7 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
         self._tracked_entities = []
         self._source_values = {}
         for dongle_id in dongle_ids:
-            formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
-            source_entity_id = f"number.{formatted_id}_{self._source_entity.lower()}"
+            source_entity_id = self.coordinator.build_entity_id("number", dongle_id, self._source_entity)
             self._tracked_entities.append(source_entity_id)
             self._source_values[source_entity_id] = None
             

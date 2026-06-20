@@ -4,6 +4,7 @@ from homeassistant.components import mqtt
 from homeassistant.helpers import service
 from .const import LOGGER, PLATFORMS
 from .coordinator import MonitorMySolar, MonitorMySolarEntry
+from .migration import async_migrate_entity_ids
 
 async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
     """Set up Monitor My Solar from a config entry."""
@@ -71,6 +72,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
     # TODO: Re-enable when Home Assistant service registration API is clarified
     LOGGER.debug("Skipping platform entity service registration - API compatibility issue")
     
+    # Step 3.5: Migrate existing entity_ids to the current naming scheme BEFORE
+    # platforms are set up. This renames via the entity registry so HA carries the
+    # user's states + statistics history across (history is anchored to unique_id).
+    try:
+        await async_migrate_entity_ids(hass, entry, coordinator)
+    except Exception as e:
+        error_msg = f"Error migrating entity ids: {e}"
+        LOGGER.error(error_msg)
+        coordinator._setup_errors.append(error_msg)
+
     # Step 4: Now that we have tried to get firmware codes, set up the platforms
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

@@ -5,7 +5,7 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.components import mqtt
 import asyncio
-from .const import DOMAIN, CONF_ENABLE_DEVICE_GROUPING, DEFAULT_ENABLE_DEVICE_GROUPING, CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX
+from .const import DOMAIN, CONF_ENABLE_DEVICE_GROUPING, DEFAULT_ENABLE_DEVICE_GROUPING, CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX, CONF_DROP_DONGLE_ID
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -101,10 +101,19 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             
             # Normalize the dongle ID
             user_input["dongle_id"] = self._normalize_dongle_id(user_input["dongle_id"])
-            
+
+            # Determine entity naming scheme from install kind.
+            # fresh    -> drop the dongle id from entity_ids (clean new scheme)
+            # reconnect-> keep the dongle id so new entities adopt the OLD entity_ids
+            #             and existing history/statistics line up automatically. The
+            #             user can drop the dongle id later via the options flow, which
+            #             performs a proper history-preserving registry rename.
+            install_kind = user_input.pop("install_kind", "fresh")
+            user_input[CONF_DROP_DONGLE_ID] = install_kind == "fresh"
+
             # Merge with initial data
             data = {**self.initial_data, **user_input}
-            
+
             # Create dongle data structure for single inverter
             dongle_data = [{
                 "dongle_id": data["dongle_id"],
@@ -131,11 +140,17 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         _LOGGER.debug("Displaying the single inverter form")
 
-        # Create schema for single inverter setup
+        # Create schema for single inverter setup.
+        # install_kind is REQUIRED: it decides whether existing Monitor My Solar
+        # history should be preserved (reconnect) or a clean naming scheme used (fresh).
         schema = vol.Schema(
             {
                 vol.Required("dongle_id"): str,
                 vol.Optional("dongle_ip"): str,
+                vol.Required("install_kind", default="fresh"): vol.In({
+                    "fresh": "Fresh install (no previous Monitor My Solar history)",
+                    "reconnect": "Reconnecting an existing system (preserve my history)",
+                }),
             }
         )
 
@@ -825,11 +840,17 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             if CONF_USE_INPUT_BOX in user_input:
                 new_data[CONF_USE_INPUT_BOX] = user_input[CONF_USE_INPUT_BOX]
 
+            # Update entity naming scheme if provided (single-dongle installs only).
+            # Changing this triggers a history-preserving entity-registry rename on
+            # reload (see migration.async_migrate_entity_ids).
+            if CONF_DROP_DONGLE_ID in user_input:
+                new_data[CONF_DROP_DONGLE_ID] = user_input[CONF_DROP_DONGLE_ID]
+
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data
             )
 
-            # Reload the integration so device grouping takes effect
+            # Reload the integration so device grouping / naming changes take effect
             await self.hass.config_entries.async_reload(self.config_entry.entry_id)
 
             return self.async_create_entry(title="", data={})
@@ -842,8 +863,13 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
         current_use_input_box = self.config_entry.data.get(
             CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX
         )
+        current_drop_dongle_id = self.config_entry.data.get(CONF_DROP_DONGLE_ID, False)
 
-        schema = vol.Schema({
+        # Dropping the dongle id is only meaningful for single-dongle installs;
+        # multi-dongle needs the dongle id to disambiguate entity_ids.
+        is_single_dongle = len(self.config_entry.data.get("dongle_ids", [])) == 1
+
+        schema_dict = {
             vol.Optional("update_interval", default=current_update_interval): vol.In(
                 {1: "1 second", 3: "3 seconds", 5: "5 seconds", 10: "10 seconds",
                  30: "30 seconds", 60: "1 minute", 300: "5 minutes", 600: "10 minutes"}
@@ -851,7 +877,13 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             vol.Optional("has_gridboss", default=current_has_gridboss): bool,
             vol.Optional(CONF_ENABLE_DEVICE_GROUPING, default=current_device_grouping): bool,
             vol.Optional(CONF_USE_INPUT_BOX, default=current_use_input_box): bool,
-        })
+        }
+        if is_single_dongle:
+            schema_dict[
+                vol.Optional(CONF_DROP_DONGLE_ID, default=current_drop_dongle_id)
+            ] = bool
+
+        schema = vol.Schema(schema_dict)
 
         return self.async_show_form(
             step_id="update_settings",

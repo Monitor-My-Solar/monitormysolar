@@ -44,16 +44,14 @@ def _check_source_entities_exist(sensor_info, dongle_ids, coordinator):
     if source_entities:
         # Check multiple source entities (for NET calculations)
         for dongle_id in dongle_ids:
-            formatted_id = coordinator.get_formatted_dongle_id(dongle_id)
             for source_entity in source_entities:
-                entity_id = f"sensor.{formatted_id}_{source_entity.lower()}"
+                entity_id = coordinator.build_entity_id("sensor", dongle_id, source_entity)
                 if entity_id not in coordinator.entities:
                     return False
     else:
         # Check single source entity
         for dongle_id in dongle_ids:
-            formatted_id = coordinator.get_formatted_dongle_id(dongle_id)
-            entity_id = f"sensor.{formatted_id}_{source_entity}"
+            entity_id = coordinator.build_entity_id("sensor", dongle_id, source_entity)
             if entity_id not in coordinator.entities:
                 return False
     
@@ -261,7 +259,7 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id: str = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
+        self.entity_id: str = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._unsubscribe_midnight = None
@@ -405,7 +403,7 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._expected_attributes = sensor_info.get("attributes", [])
@@ -489,7 +487,7 @@ class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
-        self.entity_id = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._attribute1 = sensor_info.get("attribute1")
@@ -552,8 +550,8 @@ class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        attr1_entity_id = f"sensor.{self._formatted_dongle_id}_{self._attribute1.lower()}"
-        attr2_entity_id = f"sensor.{self._formatted_dongle_id}_{self._attribute2.lower()}"
+        attr1_entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._attribute1)
+        attr2_entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._attribute2)
         if attr1_entity_id in self.coordinator.entities:
             attr1_value = self.coordinator.entities[attr1_entity_id]
             if attr1_value is not None:
@@ -656,7 +654,7 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
-        self.entity_id = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         
@@ -842,7 +840,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
         self._formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)   # For sensor entity matching
 
         self._sensor_type = sensor_info["unique_id"]
-        self.entity_id = f"sensor.{self._formatted_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._bank_name = bank_name
@@ -953,7 +951,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
         """Update sensor with latest data from coordinator."""
         # Get our source sensor IDs using the entry ID format
         source_entity_ids = {
-            f"sensor.{self._formatted_id}_{sensor.lower()}": sensor
+            self.coordinator.build_entity_id("sensor", self._dongle_id, sensor): sensor
             for sensor in self._source_sensors
         }
 
@@ -1076,16 +1074,14 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
         if self._source_entities:
             # Handle multiple source entities (for NET calculations)
             for dongle_id in dongle_ids:
-                formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
                 for source_entity in self._source_entities:
-                    source_entity_id = f"sensor.{formatted_id}_{source_entity.lower()}"
+                    source_entity_id = self.coordinator.build_entity_id("sensor", dongle_id, source_entity)
                     self._tracked_entities.append(source_entity_id)
                     self._source_values[source_entity_id] = None
         else:
             # Handle single source entity (for standard combined calculations)
             for dongle_id in dongle_ids:
-                formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
-                source_entity_id = f"sensor.{formatted_id}_{self._source_entity}"
+                source_entity_id = self.coordinator.build_entity_id("sensor", dongle_id, self._source_entity)
                 self._tracked_entities.append(source_entity_id)
                 self._source_values[source_entity_id] = None
         
@@ -1337,13 +1333,11 @@ class SyncStatusSensor(MonitorMySolarEntity, SensorEntity):
             
             # Get values from all dongles for this setting
             for dongle_id in self._dongle_ids:
-                formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
-                
                 # Determine entity ID based on type
                 if entity_type == "time_hhmm":
-                    entity_id = f"time.{formatted_id}_{unique_id.lower()}"
+                    entity_id = self.coordinator.build_entity_id("time", dongle_id, unique_id)
                 else:
-                    entity_id = f"{entity_type}.{formatted_id}_{unique_id.lower()}"
+                    entity_id = self.coordinator.build_entity_id(entity_type, dongle_id, unique_id)
                 
                 state = self.hass.states.get(entity_id)
                 if state and state.state not in [STATE_UNKNOWN, "unavailable"]:
@@ -1485,7 +1479,7 @@ class BatteryDetailSensor(MonitorMySolarEntity, SensorEntity):
         self._name = f"Battery {bat_index + 1} {sensor_def['name']}"
         self._unique_id = f"{entry.entry_id}_{dongle_id}_battery_{bat_index}_{key}".lower()
         self._state = initial_value
-        self.entity_id = f"sensor.{self._formatted_dongle_id}_battery_{bat_index}_{key.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, f"battery_{bat_index}_{key}")
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
 
