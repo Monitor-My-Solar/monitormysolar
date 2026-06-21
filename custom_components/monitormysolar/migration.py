@@ -110,3 +110,96 @@ async def async_migrate_entity_ids(hass: HomeAssistant, entry, coordinator) -> N
 
     if migrated:
         LOGGER.info("Monitor My Solar: migrated %d entity_id(s) to new naming scheme", migrated)
+
+
+async def async_transfer_dongle_entities(
+    hass: HomeAssistant, entry, old_dongle_id: str, new_dongle_id: str
+) -> int:
+    """Transfer all entities (and their history) from one dongle to another.
+
+    Used when a user replaces a physical dongle: the new dongle has a new MAC, so
+    its entities would get brand-new unique_ids and the old dongle's history would
+    be orphaned. Instead we rewrite the dongle segment of each existing entity's
+    unique_id (and its entity_id prefix) from old -> new, in place. Because history
+    is anchored to unique_id and we change it via the entity registry, HA carries
+    states + statistics across to the new dongle automatically.
+
+    Both dongles live in the same config entry, so the entry_id portion of the
+    unique_id is identical and only the dongle segment changes — collision-free.
+
+    Returns the number of entities transferred.
+    """
+    if not old_dongle_id or not new_dongle_id or old_dongle_id == new_dongle_id:
+        return 0
+
+    ent_reg = er.async_get(hass)
+
+    # unique_id uses the raw dongle id, lowercased: '{entry_id}_{dongle_id}_{type}'.
+    old_uid_seg = old_dongle_id.lower()
+    new_uid_seg = new_dongle_id.lower()
+    # entity_id uses the formatted dongle id: 'dongle_aa_bb_...'.
+    old_eid_seg = old_dongle_id.lower().replace("-", "_").replace(":", "_")
+    new_eid_seg = new_dongle_id.lower().replace("-", "_").replace(":", "_")
+
+    transferred = 0
+    for reg_entry in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
+        uid = reg_entry.unique_id
+        # Match the dongle segment bounded by underscores to avoid partial hits.
+        token = f"_{old_uid_seg}_"
+        if token not in uid:
+            continue
+
+        new_uid = uid.replace(token, f"_{new_uid_seg}_", 1)
+        if new_uid == uid:
+            continue
+
+        # Guard: don't collide with an entity that already uses the new unique_id.
+        existing_eid = ent_reg.async_get_entity_id(
+            reg_entry.entity_id.split(".")[0], DOMAIN, new_uid
+        )
+        if existing_eid and existing_eid != reg_entry.entity_id:
+            LOGGER.warning(
+                "Skipping dongle transfer for %s: new unique_id %s already in use by %s",
+                reg_entry.entity_id,
+                new_uid,
+                existing_eid,
+            )
+            continue
+
+        # Also move the entity_id's dongle prefix so it reads as the new dongle.
+        new_entity_id = reg_entry.entity_id
+        platform, _, object_id = reg_entry.entity_id.partition(".")
+        if object_id == old_eid_seg or object_id.startswith(f"{old_eid_seg}_"):
+            new_object_id = object_id.replace(old_eid_seg, new_eid_seg, 1)
+            candidate = f"{platform}.{new_object_id}"
+            taken = ent_reg.async_get(candidate)
+            if taken is None or taken.entity_id == reg_entry.entity_id:
+                new_entity_id = candidate
+
+        update_kwargs = {"new_unique_id": new_uid}
+        if new_entity_id != reg_entry.entity_id:
+            update_kwargs["new_entity_id"] = new_entity_id
+
+        LOGGER.info(
+            "Transferring entity %s -> unique_id %s, entity_id %s (history preserved)",
+            reg_entry.entity_id,
+            new_uid,
+            new_entity_id,
+        )
+        try:
+            ent_reg.async_update_entity(reg_entry.entity_id, **update_kwargs)
+        except ValueError as err:
+            LOGGER.warning(
+                "Could not transfer %s to %s: %s", reg_entry.entity_id, new_dongle_id, err
+            )
+            continue
+        transferred += 1
+
+    if transferred:
+        LOGGER.info(
+            "Monitor My Solar: transferred %d entit(ies) from %s to %s",
+            transferred,
+            old_dongle_id,
+            new_dongle_id,
+        )
+    return transferred

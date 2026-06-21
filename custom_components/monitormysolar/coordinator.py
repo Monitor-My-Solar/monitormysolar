@@ -83,6 +83,8 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._max_history_entries = 100  # Limit history size per setting
         self._setup_errors = []  # Track errors during setup
         self._drop_dongle_id = entry.data.get("drop_dongle_id", False)  # Optional: omit dongle id from entity_ids (single-dongle only)
+        self._snapshot_requested: Set[str] = set()  # Dongles we've requested a full snapshot from this session
+        self._dongle_availability: Dict[str, bool] = {}  # Track LWT online/offline per dongle
         self._has_gridboss = entry.data.get("has_gridboss", False)  # Track if GridBoss is enabled
         self._gridboss_dongle = entry.data.get("gridboss_dongle", "")  # Track which dongle is GridBoss
         self._last_fault_warning_data = {}  # Track last fault/warning data to prevent duplicate processing
@@ -111,6 +113,70 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     def get_formatted_dongle_id(self, dongle_id: str) -> str:
         """Convert a dongle ID to the formatted version used in entity IDs."""
         return dongle_id.lower().replace("-", "_").replace(":", "_")
+
+    @staticmethod
+    def parse_fw_version(version: str):
+        """Parse a dongle /status version string into a (major, minor, patch) tuple.
+
+        Versions look like '4.3.0.111S3' — major.minor.patch.build + chip suffix.
+        Returns the first three dotted integers, or None if they can't be parsed.
+        """
+        if not version:
+            return None
+        parts = version.strip().split(".")
+        nums = []
+        for part in parts[:3]:
+            # Strip any trailing non-digits (e.g. the 'S3' chip suffix on the build field).
+            digits = ""
+            for ch in part:
+                if ch.isdigit():
+                    digits += ch
+                else:
+                    break
+            if not digits:
+                return None
+            nums.append(int(digits))
+        if len(nums) < 3:
+            return None
+        return tuple(nums)
+
+    def _needs_snapshot(self, version: str) -> bool:
+        """Whether a dongle on this firmware needs an explicit full-data snapshot.
+
+        FW >= 4.3.0 only streams change-data, so it must be asked for a full
+        snapshot on connect. Fail-open: if the version can't be parsed, request
+        anyway — older firmware simply ignores the snapshot topic.
+        """
+        parsed = self.parse_fw_version(version)
+        if parsed is None:
+            return True
+        return parsed >= (4, 3, 0)
+
+    async def request_snapshot(self, dongle_id: str, version: str = "", force: bool = False) -> None:
+        """Ask a dongle for a full /input + /hold snapshot (once per session).
+
+        Dongles on FW >= 4.3.0 only publish change-data, so without this the
+        entities stay 'unknown' until each value happens to change. Gated to fire
+        once per dongle per HA session unless force=True (e.g. a reconnect).
+        """
+        if not force and dongle_id in self._snapshot_requested:
+            return
+        if not self._needs_snapshot(version):
+            return
+        try:
+            await mqtt.async_publish(
+                self.hass,
+                f"{dongle_id}/snapshot/request",
+                '{"what":"all"}',
+                qos=1,
+                retain=False,
+            )
+            self._snapshot_requested.add(dongle_id)
+            LOGGER.info(
+                "Requested full snapshot from %s (version=%s)", dongle_id, version or "unknown"
+            )
+        except Exception as e:
+            LOGGER.debug(f"Snapshot request publish failed for {dongle_id} (non-fatal): {e}")
 
     def build_entity_id(self, platform: str, dongle_id: str, type_suffix: str) -> str:
         """Build an entity_id honoring the drop_dongle_id flag.
@@ -1063,6 +1129,13 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # Handle battery extended data topic
             elif topic.endswith("/batteries"):
                 await self._handle_battery_data(dongle_id, msg.payload)
+            # Always process /status and /availability, even during startup: they
+            # carry the firmware version and connection state that drive the
+            # full-snapshot bootstrap (FW >= 4.3.0 streams change-data only).
+            elif topic.endswith("/status"):
+                await self.process_status_message(dongle_id, msg.payload)
+            elif topic.endswith("/availability"):
+                await self.process_message(dongle_id, topic, msg.payload)
             # Skip other message processing during startup to prevent excessive updates
             elif not self._hass_startup_complete:
                 # Just store the message for later processing if needed
@@ -1448,29 +1521,13 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # Log all active subscriptions
         LOGGER.debug(f"Active MQTT subscriptions after setup: {list(self._mqtt_unsubscribe_callbacks.keys())}")
 
-        # Unified-topic bootstrap (dongle FW ≥ 4.3.0): ask each dongle for a
-        # fresh full /input + /hold snapshot. This populates entities even
-        # when the broker's retained data is stale (e.g. dongle rebooted
-        # without a clean MQTT disconnect, so retained = pre-reboot state).
-        #
-        # Old firmware (< 4.3.0) ignores this topic — the per-bank
-        # subscriptions above still drive entity updates. Fully backward
-        # compatible: there's no harm in publishing the request on either
-        # firmware version.
-        for dongle_id in self._dongle_ids:
-            try:
-                snapshot_topic = f"{dongle_id}/snapshot/request"
-                await mqtt.async_publish(
-                    self.hass,
-                    snapshot_topic,
-                    '{"what":"all"}',
-                    qos=1,
-                    retain=False,
-                )
-                LOGGER.debug(f"Snapshot bootstrap requested for {dongle_id}")
-            except Exception as e:
-                LOGGER.debug(f"Snapshot bootstrap publish failed for {dongle_id} (non-fatal): {e}")
-        
+        # Note: the full-data snapshot bootstrap (FW >= 4.3.0 streams change-data
+        # only) is NOT triggered here. At subscription time we don't yet know the
+        # dongle's firmware version, and on a fresh install the dongle may not have
+        # published yet. Instead it's driven by the first /status payload (which
+        # carries the version) and by /availability offline->online recovery — see
+        # process_status_message() and request_snapshot().
+
         # Schedule a one-time log of ignored entity counts after 2 minutes
         async def log_ignored_entities(_):
             ignored_count = len(self._ignored_entity_suffixes)
@@ -1523,7 +1580,18 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
         entity_id = f"sensor.{formatted_dongle_id}_uptime"
         self.entities[entity_id] = status_data
-        
+
+        # The /status payload carries the real dongle firmware version (e.g.
+        # "4.3.0.111S3"). Record it and, on the first status seen this session,
+        # ask FW >= 4.3.0 dongles for a full snapshot — they only stream
+        # change-data, so entities stay 'unknown' until this bootstrap runs.
+        version = ""
+        if isinstance(status_data, dict):
+            version = status_data.get("version", "") or ""
+        if version:
+            self.current_fw_versions[dongle_id] = version
+        await self.request_snapshot(dongle_id, version)
+
         # Don't update coordinator data for status messages - they're too frequent
         # The main message processing will handle coordinator updates
 
@@ -1536,9 +1604,18 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # string, not JSON. Track it and skip the JSON decoder.
         if topic.endswith("/availability"):
             state = payload.strip().lower()
-            self._dongle_availability = getattr(self, "_dongle_availability", {})
-            self._dongle_availability[dongle_id] = (state == "online")
+            was_online = self._dongle_availability.get(dongle_id)
+            is_online = (state == "online")
+            self._dongle_availability[dongle_id] = is_online
             LOGGER.debug(f"availability {dongle_id}={state}")
+            # On an offline->online recovery the dongle has reconnected and may
+            # have lost retained state, so force a fresh full snapshot. (was_online
+            # is None on the very first availability message — the /status path
+            # handles that initial bootstrap, so only act on a real transition.)
+            if is_online and was_online is False:
+                await self.request_snapshot(
+                    dongle_id, self.current_fw_versions.get(dongle_id, ""), force=True
+                )
             return
 
         try:

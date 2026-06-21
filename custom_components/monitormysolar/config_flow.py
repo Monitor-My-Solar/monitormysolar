@@ -665,11 +665,14 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
                 return await self.async_step_remove_dongle()
             elif action == "update":
                 return await self.async_step_update_dongles()
-        
+            elif action == "replace":
+                return await self.async_step_replace_dongle()
+
         schema = vol.Schema({
             vol.Required("action"): vol.In({
                 "add": "Add new dongle",
                 "remove": "Remove existing dongle",
+                "replace": "Replace a dongle (transfer history to new dongle)",
                 "update": "Update dongle IPs"
             })
         })
@@ -780,6 +783,79 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=schema
         )
     
+    async def async_step_replace_dongle(self, user_input=None):
+        """Replace a dongle, transferring all its entities and history to the new one."""
+        from .migration import async_transfer_dongle_entities
+
+        errors = {}
+        current_dongles = self.config_entry.data.get("dongle_ids", [])
+
+        if user_input is not None:
+            old_dongle_id = user_input["old_dongle_id"]
+            new_dongle_id = self._normalize_dongle_id(user_input["new_dongle_id"])
+            new_dongle_ip = user_input.get("new_dongle_ip", "")
+
+            if not new_dongle_id:
+                errors["new_dongle_id"] = "dongle_id_required"
+            elif new_dongle_id in current_dongles:
+                errors["new_dongle_id"] = "dongle_already_exists"
+            elif old_dongle_id not in current_dongles:
+                errors["old_dongle_id"] = "dongle_not_found"
+            else:
+                # Transfer entities + history from the old dongle to the new one
+                # (rewrites unique_ids via the entity registry, in place).
+                transferred = await async_transfer_dongle_entities(
+                    self.hass, self.config_entry, old_dongle_id, new_dongle_id
+                )
+                _LOGGER.info(
+                    "Replaced dongle %s with %s, transferred %d entities",
+                    old_dongle_id, new_dongle_id, transferred,
+                )
+
+                # Swap the old dongle for the new one in the config entry, preserving
+                # its position and master/slave/gridboss role.
+                new_data = dict(self.config_entry.data)
+                dongle_ids = list(new_data.get("dongle_ids", []))
+                dongle_ips = list(new_data.get("dongle_ips", []))
+                dongle_data = [dict(d) for d in new_data.get("dongle_data", [])]
+
+                idx = dongle_ids.index(old_dongle_id)
+                dongle_ids[idx] = new_dongle_id
+                if idx < len(dongle_ips):
+                    dongle_ips[idx] = new_dongle_ip
+                for d in dongle_data:
+                    if d.get("dongle_id") == old_dongle_id:
+                        d["dongle_id"] = new_dongle_id
+                        d["dongle_ip"] = new_dongle_ip
+
+                new_data["dongle_ids"] = dongle_ids
+                new_data["dongle_ips"] = dongle_ips
+                new_data["dongle_data"] = dongle_data
+                # Keep gridboss_dongle pointer in sync if it referenced the old dongle.
+                if new_data.get("gridboss_dongle") == old_dongle_id:
+                    new_data["gridboss_dongle"] = new_dongle_id
+
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                return self.async_create_entry(title="", data={})
+
+        schema = vol.Schema({
+            vol.Required("old_dongle_id"): vol.In(current_dongles),
+            vol.Required("new_dongle_id"): str,
+            vol.Optional("new_dongle_ip"): str,
+        })
+
+        return self.async_show_form(
+            step_id="replace_dongle",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "current_dongles": ", ".join(current_dongles)
+            },
+        )
+
     async def async_step_update_dongles(self, user_input=None):
         """Update dongle IPs."""
         if user_input is not None:
