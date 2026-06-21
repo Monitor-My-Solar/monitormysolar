@@ -36,6 +36,10 @@ DEFAULT_ENABLE_DEVICE_GROUPING = False
 CONF_USE_INPUT_BOX = "use_input_box"
 DEFAULT_USE_INPUT_BOX = False
 
+# Firmware track selection: install beta firmware instead of prod.
+CONF_USE_BETA = "use_beta_firmware"
+DEFAULT_USE_BETA = False
+
 # Entity naming: drop the dongle ID prefix from entity_ids.
 # Only honored for single-dongle installs (multi-dongle must keep the dongle ID
 # to disambiguate). No module-level default: it is install-time contextual —
