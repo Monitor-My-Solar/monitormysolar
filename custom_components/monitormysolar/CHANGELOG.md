@@ -16,9 +16,12 @@
   (`<dongle_id>/admin {"cmd":"ota"}`) and streams live progress over MQTT
   (`<dongle_id>/ota/progress`), with a final pass/fail on `<dongle_id>/ota/result`.
   No dongle IP, HTTP, or WebSocket involved.
-- Added a **Use Beta Firmware** option (Settings) to track the beta channel.
+- Added a **Use Beta Firmware** option (Settings) to choose the prod or beta
+  track. Updates are selected by track only — since firmware 4.3.0 the version is
+  CI-stamped from the build, so the dongle always installs the current build on the
+  chosen track (no version targeting).
 - The installed-version display strips the chip suffix (e.g. `S3`/`C6`) so it
-  compares correctly against the published version.
+  compares correctly against the published build version.
 
 #### Optional dongle ID in entity names (with history kept)
 - New single-dongle installs get clean entity names without the dongle ID. Existing

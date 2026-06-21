@@ -225,20 +225,20 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         <dongle_id>/ota/progress, finishing on <dongle_id>/ota/result. No dongle
         IP / HTTP / WebSocket involved — the whole flow is MQTT. Requires dongle
         firmware >= 4.3.0 (the /admin command surface).
+
+        Version selection is by *track* only. Since firmware 4.3.0 the dongle's
+        version is CI-stamped from the build (the build number in e.g.
+        "4.3.0.111S3"), so HA never specifies a target version — it just asks for
+        the current build on prod or beta. The `version` argument from HA is
+        ignored.
         """
         track = "beta" if self._use_beta else "prod"
-        # `version` here is what HA expects post-flash; the dongle picks the build
-        # by track. Pass it through so the dongle stamps the reported version.
-        target_version = version or self.latest_version
 
         request_id = uuid.uuid4().hex[:12]
-        args = {"track": track}
-        if target_version:
-            args["version"] = str(target_version)
-        command = {"cmd": "ota", "id": request_id, "args": args}
+        command = {"cmd": "ota", "id": request_id, "args": {"track": track}}
 
         LOGGER.info(
-            f"Requesting OTA for {self._dongle_id}: track={track} version={target_version} (id={request_id})"
+            f"Requesting OTA for {self._dongle_id}: track={track} (id={request_id})"
         )
 
         self._attr_in_progress = True
