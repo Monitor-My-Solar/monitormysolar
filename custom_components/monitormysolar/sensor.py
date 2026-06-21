@@ -228,22 +228,35 @@ def _create_battery_entities(hass, entry, async_add_entities, dongle_id, battery
         {"key": "fwVersionText", "name": "Firmware Version"},
     ]
 
+    # The firmware's batIndex is unreliable — multiple batteries can all report
+    # batIndex == 0 — so use the list position as the stable per-battery index.
+    # Track per (dongle, position) so re-fired events don't recreate entities
+    # (which would raise "unique id already registered") but DO create entities
+    # for any new battery positions that appear later.
+    created = coordinator._battery_entities_created
+
     entities = []
-    for battery in batteries:
-        bat_index = battery.get("batIndex", 0)
+    for position, battery in enumerate(batteries):
+        marker = f"{dongle_id}:{position}"
+        if marker in created:
+            continue
+        created.add(marker)
         for sensor_def in battery_sensor_defs:
             key = sensor_def["key"]
             if key not in battery:
                 continue
             entities.append(
                 BatteryDetailSensor(
-                    hass, entry, dongle_id, bat_index, key, sensor_def, battery.get(key)
+                    hass, entry, dongle_id, position, key, sensor_def, battery.get(key)
                 )
             )
 
     if entities:
         async_add_entities(entities)
-        LOGGER.info(f"Created {len(entities)} battery detail sensors for {dongle_id}")
+        LOGGER.info(
+            f"Created {len(entities)} battery detail sensors for {dongle_id} "
+            f"({len(batteries)} batteries)"
+        )
 
 
 class InverterSensor(MonitorMySolarEntity, SensorEntity):

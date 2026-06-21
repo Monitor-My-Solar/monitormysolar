@@ -1241,20 +1241,33 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # Store battery data
         self._battery_data[dongle_id] = battery_payload
 
-        # Update entity states for existing battery sensors
+        # Update entity states for existing battery sensors.
+        # NOTE: the firmware's batIndex is unreliable — multiple batteries in the
+        # same payload can all report batIndex == 0. Use the list position as the
+        # stable per-battery index instead, matching _create_battery_entities().
         formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
-        for battery in batteries:
-            bat_index = battery.get("batIndex", 0)
+        for position, battery in enumerate(batteries):
             for key, value in battery.items():
                 if key in ("batIndex",):
                     continue
-                entity_id = f"sensor.{formatted_dongle_id}_battery_{bat_index}_{key.lower()}"
+                entity_id = self.build_entity_id(
+                    "sensor", dongle_id, f"battery_{position}_{key}"
+                )
                 self.entities[entity_id] = value
 
-        # If we haven't created battery entities for this dongle yet, fire an event
-        if dongle_id not in self._battery_entities_created:
-            self._battery_entities_created.add(dongle_id)
-            LOGGER.info(f"First battery data received for {dongle_id} - triggering entity creation")
+        # Fire the creation event whenever we see more batteries than we've already
+        # built entities for (the count can grow, and the firmware's batIndex can't
+        # be trusted to distinguish them). Tracked per (dongle, position).
+        created = self._battery_entities_created
+        new_positions = [
+            f"{dongle_id}:{pos}" for pos in range(len(batteries))
+            if f"{dongle_id}:{pos}" not in created
+        ]
+        if new_positions:
+            LOGGER.info(
+                f"Battery data for {dongle_id}: {len(batteries)} batteries, "
+                f"{len(new_positions)} new - triggering entity creation"
+            )
             self.hass.bus.async_fire(
                 f"{DOMAIN}_battery_data_received",
                 {"dongle_id": dongle_id, "battery_count": len(batteries)}
