@@ -85,6 +85,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._drop_dongle_id = entry.data.get("drop_dongle_id", False)  # Optional: omit dongle id from entity_ids (single-dongle only)
         self._snapshot_requested: Set[str] = set()  # Dongles we've requested a full snapshot from this session
         self._dongle_availability: Dict[str, bool] = {}  # Track LWT online/offline per dongle
+        self._dongle_boot_count: Dict[str, int] = {}  # Last-seen boot.count per dongle (detect silent reboots)
         self._has_gridboss = entry.data.get("has_gridboss", False)  # Track if GridBoss is enabled
         self._gridboss_dongle = entry.data.get("gridboss_dongle", "")  # Track which dongle is GridBoss
         self._last_fault_warning_data = {}  # Track last fault/warning data to prevent duplicate processing
@@ -1521,12 +1522,20 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # Log all active subscriptions
         LOGGER.debug(f"Active MQTT subscriptions after setup: {list(self._mqtt_unsubscribe_callbacks.keys())}")
 
-        # Note: the full-data snapshot bootstrap (FW >= 4.3.0 streams change-data
-        # only) is NOT triggered here. At subscription time we don't yet know the
-        # dongle's firmware version, and on a fresh install the dongle may not have
-        # published yet. Instead it's driven by the first /status payload (which
-        # carries the version) and by /availability offline->online recovery — see
+        # Full-data snapshot bootstrap (FW >= 4.3.0 streams change-data only).
+        # Fire an eager request now so entities populate immediately instead of
+        # waiting up to ~30s for the dongle's next periodic /status heartbeat
+        # (there is no on-demand status-request topic). We don't know the version
+        # yet, so this is fail-open: request_snapshot() with no version requests
+        # anyway, and old firmware simply ignores the topic. force=True bypasses
+        # the per-session dedup but still records the dongle, so the later
+        # /status-driven call won't double-send on this same connect.
+        #
+        # The /status (version-confirmed) and /availability offline->online paths
+        # remain the triggers for reconnect/reboot recovery — see
         # process_status_message() and request_snapshot().
+        for dongle_id in self._dongle_ids:
+            await self.request_snapshot(dongle_id, version="", force=True)
 
         # Schedule a one-time log of ignored entity counts after 2 minutes
         async def log_ignored_entities(_):
@@ -1586,11 +1595,31 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # ask FW >= 4.3.0 dongles for a full snapshot — they only stream
         # change-data, so entities stay 'unknown' until this bootstrap runs.
         version = ""
+        boot_count = None
         if isinstance(status_data, dict):
             version = status_data.get("version", "") or ""
+            boot = status_data.get("boot")
+            if isinstance(boot, dict):
+                boot_count = boot.get("count")
         if version:
             self.current_fw_versions[dongle_id] = version
-        await self.request_snapshot(dongle_id, version)
+
+        # Detect a silent reboot: if boot.count changed since we last saw it (and
+        # this isn't the first sighting), the dongle restarted without dropping its
+        # MQTT session, so /availability never flipped. Force a fresh snapshot —
+        # its in-memory change-data baseline reset on reboot.
+        reboot_detected = False
+        if isinstance(boot_count, int):
+            previous = self._dongle_boot_count.get(dongle_id)
+            if previous is not None and boot_count != previous:
+                reboot_detected = True
+                LOGGER.info(
+                    "Detected reboot of %s (boot.count %s -> %s), refreshing snapshot",
+                    dongle_id, previous, boot_count,
+                )
+            self._dongle_boot_count[dongle_id] = boot_count
+
+        await self.request_snapshot(dongle_id, version, force=reboot_detected)
 
         # Don't update coordinator data for status messages - they're too frequent
         # The main message processing will handle coordinator updates
