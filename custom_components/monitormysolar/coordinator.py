@@ -1245,7 +1245,6 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # NOTE: the firmware's batIndex is unreliable — multiple batteries in the
         # same payload can all report batIndex == 0. Use the list position as the
         # stable per-battery index instead, matching _create_battery_entities().
-        formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
         for position, battery in enumerate(batteries):
             for key, value in battery.items():
                 if key in ("batIndex",):
@@ -1281,8 +1280,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
 
     def _process_gridboss_nested_data(self, dongle_id: str, payload_data):
         """Process GridBoss nested payload structure - now simplified since payload has correct entity names."""
-        formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
-        
+
         # Recursively process all nested data, flattening it to match entity unique_ids
         def flatten_nested_data(data, prefix=""):
             """Recursively flatten nested data structure."""
@@ -1322,12 +1320,11 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 
             formatted_entity_id_suffix = entity_id_suffix.lower().replace("-", "_").replace(":", "_")
             entity_type = self.determine_entity_type(formatted_entity_id_suffix)
-            entity_id = f"{entity_type}.{formatted_dongle_id}_{formatted_entity_id_suffix}"
+            entity_id = self.build_entity_id(entity_type, dongle_id, formatted_entity_id_suffix)
             self.entities[entity_id] = state
 
     async def _create_entities_for_dongle(self, dongle_id: str):
         """Create entities for a specific dongle after firmware code is received."""
-        formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
         is_gridboss = self.is_gridboss_dongle(dongle_id)
         
         # Get brand entities
@@ -1361,7 +1358,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                     elif not is_gridboss and source.startswith("gridboss_"):
                         continue
                         
-                    entity_id: str = f"{entityTypeName}.{formatted_dongle_id}_{entity['unique_id'].lower()}"
+                    entity_id: str = self.build_entity_id(entityTypeName, dongle_id, entity['unique_id'])
                     self.entities[entity_id] = None
                     entities_created += 1
         
@@ -1599,8 +1596,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             serial_number = None  # For backward compatibility
             status_data = data  # Old format
 
-        formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
-        entity_id = f"sensor.{formatted_dongle_id}_uptime"
+        entity_id = self.build_entity_id("sensor", dongle_id, "uptime")
         self.entities[entity_id] = status_data
 
         # The /status payload carries the real dongle firmware version (e.g.
@@ -1634,8 +1630,12 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
 
         await self.request_snapshot(dongle_id, version, force=reboot_detected)
 
-        # Don't update coordinator data for status messages - they're too frequent
-        # The main message processing will handle coordinator updates
+        # Push the update so status-derived sensors (uptime + the /status
+        # diagnostic sensors) refresh. /status arrives ~every 30s, so this is not
+        # high-frequency — only gate it behind startup completion to avoid churn
+        # during initial setup.
+        if self._hass_startup_complete:
+            self.async_set_updated_data(self.entities)
 
     async def process_message(self, dongle_id: str, topic, payload):
         """Process incoming MQTT message and update entity states."""
@@ -1681,18 +1681,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             value = data.get("value")
             from_who = data.get("from") or ""
             if setting and value is not None:
-                formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
                 formatted_suffix = setting.lower().replace("-", "_").replace(":", "_")
                 entity_type = self.determine_entity_type(formatted_suffix)
-                entity_id = f"{entity_type}.{formatted_dongle_id}_{formatted_suffix}"
+                entity_id = self.build_entity_id(entity_type, dongle_id, formatted_suffix)
                 self.entities[entity_id] = value
                 self.async_set_updated_data(self.entities)
                 LOGGER.debug(
                     f"setting/updated routed: {entity_id}={value} (from={from_who})"
                 )
             return
-
-        formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
 
         # Handle new payload structure while maintaining backward compatibility
         serial_number = None
@@ -1721,7 +1718,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             fw_version = payload_data["SW_VERSION"]
             self.current_fw_versions[dongle_id] = fw_version
             # Set entity value
-            entity_id = f"update.{formatted_dongle_id}_firmware_update"
+            entity_id = self.build_entity_id("update", dongle_id, "firmware_update")
             self.entities[entity_id] = fw_version
 
         # Inverter FWCode fallback path. v4.3+ dongles no longer publish
@@ -1768,7 +1765,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 # LOGGER.debug(f"Processing fault data for {dongle_id}: {fault_data}")
                 self._last_fault_warning_data[fault_key] = fault_data
                 fault_value = fault_data.get("value", 0)
-                entity_id = f"sensor.{formatted_dongle_id}_fault_status"
+                entity_id = self.build_entity_id("sensor", dongle_id, "fault_status")
 
                 if fault_value == 0:
                     self.entities[entity_id] = {
@@ -1796,7 +1793,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 # LOGGER.debug(f"Processing warning data for {dongle_id}: {warning_data}")
                 self._last_fault_warning_data[warning_key] = warning_data
                 warning_value = warning_data.get("value", 0)
-                entity_id = f"sensor.{formatted_dongle_id}_warning_status"
+                entity_id = self.build_entity_id("sensor", dongle_id, "warning_status")
 
                 if warning_value == 0:
                     self.entities[entity_id] = {
@@ -1836,18 +1833,18 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                     
                 formatted_entity_id_suffix = entity_id_suffix.lower().replace("-", "_").replace(":", "_")
                 entity_type = self.determine_entity_type(formatted_entity_id_suffix)
-                entity_id = f"{entity_type}.{formatted_dongle_id}_{formatted_entity_id_suffix}"
+                entity_id = self.build_entity_id(entity_type, dongle_id, formatted_entity_id_suffix)
                 self.entities[entity_id] = state
-            
+
         # Process events data if present (new format)
         if events_data:
             for event_id, event_state in events_data.items():
                 # Skip fault and warning which are handled separately
                 if event_id in ("fault", "warning"):
                     continue
-                    
+
                 formatted_event_id = event_id.lower().replace("-", "_").replace(":", "_")
-                entity_id = f"binary_sensor.{formatted_dongle_id}_{formatted_event_id}"
+                entity_id = self.build_entity_id("binary_sensor", dongle_id, formatted_event_id)
                 self.entities[entity_id] = event_state
         
         # Update coordinator data after processing all entities
