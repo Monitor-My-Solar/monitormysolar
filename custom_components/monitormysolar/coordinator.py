@@ -48,23 +48,21 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         if not self._dongle_data:
             # Create dongle_data from old structure
             dongle_ids = entry.data.get("dongle_ids", [entry.data.get("dongle_id")])
-            dongle_ips = entry.data.get("dongle_ips", [""] * len(dongle_ids))
             self._dongle_data = []
-            for i, (dongle_id, dongle_ip) in enumerate(zip(dongle_ids, dongle_ips)):
+            for i, dongle_id in enumerate(dongle_ids):
                 self._dongle_data.append({
                     "dongle_id": dongle_id,
-                    "dongle_ip": dongle_ip,
                     "is_master": i == 0,  # First dongle is master
                     "is_slave": i > 0,    # Others are slaves
                     "is_gridboss": False,
                     "is_gridboss_slave": False,
                     "gridboss_bundle": None
                 })
-        
-        # Extract dongle IDs and IPs for backward compatibility
+
+        # Extract dongle IDs (dongle IP was removed in 4.0.0 — OTA and all admin
+        # actions go over MQTT now, so no IP is needed).
         self._dongle_ids: List[str] = [d["dongle_id"] for d in self._dongle_data]
-        self._dongle_ips: List[str] = [d["dongle_ip"] for d in self._dongle_data]
-        
+
         # Initialize per-dongle data structures
         # Load saved firmware codes from config entry
         saved_firmware_codes = entry.data.get("firmware_codes", {})
@@ -756,15 +754,8 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # Update the config entry
             self.hass.config_entries.async_update_entry(self.entry, data=current_data)
             LOGGER.info(f"Saved firmware code {firmware_code} for dongle {dongle_id}")
-    
-    def get_dongle_ip(self, dongle_id: str) -> str:
-        """Get IP address for a specific dongle."""
-        try:
-            index = self._dongle_ids.index(dongle_id)
-            return self._dongle_ips[index] if index < len(self._dongle_ips) else ""
-        except ValueError:
-            return ""
-    
+
+
     def get_dongle_info(self, dongle_id: str) -> Dict[str, Any]:
         """Get complete dongle information including bundle tracking."""
         for dongle_info in self._dongle_data:

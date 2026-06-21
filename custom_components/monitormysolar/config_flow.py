@@ -5,7 +5,7 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.components import mqtt
 import asyncio
-from .const import DOMAIN, CONF_ENABLE_DEVICE_GROUPING, DEFAULT_ENABLE_DEVICE_GROUPING, CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX, CONF_DROP_DONGLE_ID
+from .const import DOMAIN, CONF_ENABLE_DEVICE_GROUPING, DEFAULT_ENABLE_DEVICE_GROUPING, CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX, CONF_DROP_DONGLE_ID, CONF_USE_BETA, DEFAULT_USE_BETA
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -117,19 +117,17 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # Create dongle data structure for single inverter
             dongle_data = [{
                 "dongle_id": data["dongle_id"],
-                "dongle_ip": data.get("dongle_ip", ""),
                 "is_master": True,
                 "is_slave": False,
                 "is_gridboss": False,
                 "is_gridboss_slave": False,
                 "gridboss_bundle": None
             }]
-            
+
             # Update data with dongle structure
             data.update({
                 "dongle_data": dongle_data,
                 "dongle_ids": [data["dongle_id"]],
-                "dongle_ips": [data.get("dongle_ip", "")]
             })
             
             # Create the entry
@@ -146,7 +144,6 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required("dongle_id"): str,
-                vol.Optional("dongle_ip"): str,
                 vol.Required("install_kind", default="fresh"): vol.In({
                     "fresh": "Fresh install (no previous Monitor My Solar history)",
                     "reconnect": "Reconnecting an existing system (preserve my history)",
@@ -215,8 +212,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             # Process the master dongle (from user input)
             master_dongle = user_input.get("master_dongle_id")
-            master_ip = user_input.get("master_dongle_ip", "")
-            
+
             if not master_dongle or not master_dongle.strip():
                 errors["master_dongle_id"] = "Master dongle ID is required"
             else:
@@ -226,49 +222,42 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             if not errors:
                 # Process slave dongles
                 slave_dongles = []
-                slave_ips = []
-                
+
                 for i in range(1, 6):  # Up to 5 slaves
                     slave_dongle = user_input.get(f"slave_dongle_id_{i}")
                     if slave_dongle and slave_dongle.strip():
                         # Normalize the slave dongle ID
                         normalized_dongle = self._normalize_dongle_id(slave_dongle)
                         slave_dongles.append(normalized_dongle)
-                        # Get corresponding IP or empty string
-                        slave_ip = user_input.get(f"slave_dongle_ip_{i}", "")
-                        slave_ips.append(slave_ip)
-                
+
                 # Create dongle data with master/slave tracking
                 dongle_data = []
-                
+
                 # Add master dongle
                 dongle_data.append({
                     "dongle_id": master_dongle,
-                    "dongle_ip": master_ip,
                     "is_master": True,
                     "is_slave": False,
                     "is_gridboss": False,
                     "is_gridboss_slave": False,
                     "gridboss_bundle": None
                 })
-                
+
                 # Add slave dongles
-                for i, (slave_dongle, slave_ip) in enumerate(zip(slave_dongles, slave_ips)):
+                for slave_dongle in slave_dongles:
                     dongle_data.append({
                         "dongle_id": slave_dongle,
-                        "dongle_ip": slave_ip,
                         "is_master": False,
                         "is_slave": True,
                         "is_gridboss": False,
                         "is_gridboss_slave": False,
                         "gridboss_bundle": None
                     })
-                
+
                 # Update initial data
                 self.initial_data.update({
                     "dongle_data": dongle_data,
                     "dongle_ids": [d["dongle_id"] for d in dongle_data],
-                    "dongle_ips": [d["dongle_ip"] for d in dongle_data]
                 })
                 
                 # Create the entry
@@ -281,17 +270,11 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required("master_dongle_id"): str,
-                vol.Optional("master_dongle_ip"): str,
                 vol.Optional("slave_dongle_id_1"): str,
-                vol.Optional("slave_dongle_ip_1"): str,
                 vol.Optional("slave_dongle_id_2"): str,
-                vol.Optional("slave_dongle_ip_2"): str,
                 vol.Optional("slave_dongle_id_3"): str,
-                vol.Optional("slave_dongle_ip_3"): str,
                 vol.Optional("slave_dongle_id_4"): str,
-                vol.Optional("slave_dongle_ip_4"): str,
                 vol.Optional("slave_dongle_id_5"): str,
-                vol.Optional("slave_dongle_ip_5"): str,
             }
         )
 
@@ -311,8 +294,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             # Process the GridBoss dongle (from user input)
             gridboss_dongle = user_input.get("gridboss_dongle_id")
-            gridboss_ip = user_input.get("gridboss_dongle_ip", "")
-            
+
             if not gridboss_dongle or not gridboss_dongle.strip():
                 errors["gridboss_dongle_id"] = "GridBoss dongle ID is required"
             else:
@@ -322,49 +304,42 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             if not errors:
                 # Process slave dongles
                 slave_dongles = []
-                slave_ips = []
-                
+
                 for i in range(1, 4):  # Up to 3 slaves for single GridBoss
                     slave_dongle = user_input.get(f"slave_dongle_id_{i}")
                     if slave_dongle and slave_dongle.strip():
                         # Normalize the slave dongle ID
                         normalized_dongle = self._normalize_dongle_id(slave_dongle)
                         slave_dongles.append(normalized_dongle)
-                    # Get corresponding IP or empty string
-                        slave_ip = user_input.get(f"slave_dongle_ip_{i}", "")
-                        slave_ips.append(slave_ip)
-                
+
                 # Create dongle data with GridBoss tracking
                 dongle_data = []
-                
+
                 # Add GridBoss dongle
                 dongle_data.append({
                     "dongle_id": gridboss_dongle,
-                    "dongle_ip": gridboss_ip,
                     "is_master": False,
                     "is_slave": False,
                     "is_gridboss": True,
                     "is_gridboss_slave": False,
                     "gridboss_bundle": 1
                 })
-                
+
                 # Add slave dongles
-                for i, (slave_dongle, slave_ip) in enumerate(zip(slave_dongles, slave_ips)):
+                for slave_dongle in slave_dongles:
                     dongle_data.append({
                         "dongle_id": slave_dongle,
-                        "dongle_ip": slave_ip,
                         "is_master": False,
                         "is_slave": False,
                         "is_gridboss": False,
                         "is_gridboss_slave": True,
                         "gridboss_bundle": 1
                     })
-                
+
                 # Update initial data
                 self.initial_data.update({
                     "dongle_data": dongle_data,
                     "dongle_ids": [d["dongle_id"] for d in dongle_data],
-                    "dongle_ips": [d["dongle_ip"] for d in dongle_data],
                     "has_gridboss": True,
                     "gridboss_dongle": gridboss_dongle
                 })
@@ -379,13 +354,9 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required("gridboss_dongle_id"): str,
-                vol.Optional("gridboss_dongle_ip"): str,
                 vol.Optional("slave_dongle_id_1"): str,
-                vol.Optional("slave_dongle_ip_1"): str,
                 vol.Optional("slave_dongle_id_2"): str,
-                vol.Optional("slave_dongle_ip_2"): str,
                 vol.Optional("slave_dongle_id_3"): str,
-                vol.Optional("slave_dongle_ip_3"): str,
             }
         )
 
@@ -405,8 +376,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             # Process the first GridBoss dongle (from user input)
             gridboss1_dongle = user_input.get("gridboss1_dongle_id")
-            gridboss1_ip = user_input.get("gridboss1_dongle_ip", "")
-            
+
             if not gridboss1_dongle or not gridboss1_dongle.strip():
                 errors["gridboss1_dongle_id"] = "First GridBoss dongle ID is required"
             else:
@@ -415,8 +385,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             
             # Process the second GridBoss dongle
             gridboss2_dongle = user_input.get("gridboss2_dongle_id")
-            gridboss2_ip = user_input.get("gridboss2_dongle_ip", "")
-            
+
             if not gridboss2_dongle or not gridboss2_dongle.strip():
                 errors["gridboss2_dongle_id"] = "Second GridBoss dongle ID is required"
             else:
@@ -426,82 +395,71 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             if not errors:
                 # Process slave dongles for GridBoss 1
                 gridboss1_slaves = []
-                gridboss1_slave_ips = []
-                
+
                 for i in range(1, 4):  # Up to 3 slaves for GridBoss 1
                     slave_dongle = user_input.get(f"gridboss1_slave_dongle_id_{i}")
                     if slave_dongle and slave_dongle.strip():
                         normalized_dongle = self._normalize_dongle_id(slave_dongle)
                         gridboss1_slaves.append(normalized_dongle)
-                        slave_ip = user_input.get(f"gridboss1_slave_dongle_ip_{i}", "")
-                        gridboss1_slave_ips.append(slave_ip)
-                
+
                 # Process slave dongles for GridBoss 2
                 gridboss2_slaves = []
-                gridboss2_slave_ips = []
-                
+
                 for i in range(1, 4):  # Up to 3 slaves for GridBoss 2
                     slave_dongle = user_input.get(f"gridboss2_slave_dongle_id_{i}")
                     if slave_dongle and slave_dongle.strip():
                         normalized_dongle = self._normalize_dongle_id(slave_dongle)
                         gridboss2_slaves.append(normalized_dongle)
-                        slave_ip = user_input.get(f"gridboss2_slave_dongle_ip_{i}", "")
-                        gridboss2_slave_ips.append(slave_ip)
-                
+
                 # Create dongle data with dual GridBoss tracking
                 dongle_data = []
-                
+
                 # Add GridBoss 1
                 dongle_data.append({
                     "dongle_id": gridboss1_dongle,
-                    "dongle_ip": gridboss1_ip,
                     "is_master": False,
                     "is_slave": False,
                     "is_gridboss": True,
                     "is_gridboss_slave": False,
                     "gridboss_bundle": 1
                 })
-                
+
                 # Add GridBoss 1 slaves
-                for slave_dongle, slave_ip in zip(gridboss1_slaves, gridboss1_slave_ips):
+                for slave_dongle in gridboss1_slaves:
                     dongle_data.append({
                         "dongle_id": slave_dongle,
-                        "dongle_ip": slave_ip,
                         "is_master": False,
                         "is_slave": False,
                         "is_gridboss": False,
                         "is_gridboss_slave": True,
                         "gridboss_bundle": 1
                     })
-                
+
                 # Add GridBoss 2
                 dongle_data.append({
                     "dongle_id": gridboss2_dongle,
-                    "dongle_ip": gridboss2_ip,
                     "is_master": False,
                     "is_slave": False,
                     "is_gridboss": True,
                     "is_gridboss_slave": False,
                     "gridboss_bundle": 2
                 })
-                
+
                 # Add GridBoss 2 slaves
-                for slave_dongle, slave_ip in zip(gridboss2_slaves, gridboss2_slave_ips):
+                for slave_dongle in gridboss2_slaves:
                     dongle_data.append({
                         "dongle_id": slave_dongle,
-                        "dongle_ip": slave_ip,
                         "is_master": False,
                         "is_slave": False,
                         "is_gridboss": False,
                         "is_gridboss_slave": True,
                         "gridboss_bundle": 2
                     })
-                
+
                 # Update initial data
                 self.initial_data.update({
                     "dongle_data": dongle_data,
                     "dongle_ids": [d["dongle_id"] for d in dongle_data],
-                    "dongle_ips": [d["dongle_ip"] for d in dongle_data],
                     "has_gridboss": True,
                     "gridboss_dongle": gridboss1_dongle  # Keep for backward compatibility
                 })
@@ -517,22 +475,14 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 # GridBoss 1 and its slaves
                 vol.Required("gridboss1_dongle_id"): str,
-                vol.Optional("gridboss1_dongle_ip"): str,
                 vol.Optional("gridboss1_slave_dongle_id_1"): str,
-                vol.Optional("gridboss1_slave_dongle_ip_1"): str,
                 vol.Optional("gridboss1_slave_dongle_id_2"): str,
-                vol.Optional("gridboss1_slave_dongle_ip_2"): str,
                 vol.Optional("gridboss1_slave_dongle_id_3"): str,
-                vol.Optional("gridboss1_slave_dongle_ip_3"): str,
                 # GridBoss 2 and its slaves
                 vol.Required("gridboss2_dongle_id"): str,
-                vol.Optional("gridboss2_dongle_ip"): str,
                 vol.Optional("gridboss2_slave_dongle_id_1"): str,
-                vol.Optional("gridboss2_slave_dongle_ip_1"): str,
                 vol.Optional("gridboss2_slave_dongle_id_2"): str,
-                vol.Optional("gridboss2_slave_dongle_ip_2"): str,
                 vol.Optional("gridboss2_slave_dongle_id_3"): str,
-                vol.Optional("gridboss2_slave_dongle_ip_3"): str,
             }
         )
 
@@ -663,8 +613,6 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
                 return await self.async_step_add_dongle()
             elif action == "remove":
                 return await self.async_step_remove_dongle()
-            elif action == "update":
-                return await self.async_step_update_dongles()
             elif action == "replace":
                 return await self.async_step_replace_dongle()
 
@@ -673,7 +621,6 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
                 "add": "Add new dongle",
                 "remove": "Remove existing dongle",
                 "replace": "Replace a dongle (transfer history to new dongle)",
-                "update": "Update dongle IPs"
             })
         })
         
@@ -692,25 +639,21 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             # Normalize the new dongle ID
             new_dongle_id = self._normalize_dongle_id(user_input["dongle_id"])
-            new_dongle_ip = user_input.get("dongle_ip", "")
-            
+
             # Get current data
             new_data = dict(self.config_entry.data)
             dongle_ids = list(new_data.get("dongle_ids", []))
-            dongle_ips = list(new_data.get("dongle_ips", []))
-            
+
             # Check if dongle already exists
             if new_dongle_id in dongle_ids:
                 errors["dongle_id"] = "dongle_already_exists"
             else:
                 # Add new dongle
                 dongle_ids.append(new_dongle_id)
-                dongle_ips.append(new_dongle_ip)
-                
+
                 # Update data
                 new_data["dongle_ids"] = dongle_ids
-                new_data["dongle_ips"] = dongle_ips
-                
+
                 # Test connection to new dongle
                 if await self._test_dongle_connection(new_dongle_id):
                     # Update entry with new data
@@ -727,10 +670,9 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
                     errors["base"] = "dongle_not_responding"
         
         schema = vol.Schema({
-            vol.Required("dongle_id"): str,
-            vol.Optional("dongle_ip"): str
+            vol.Required("dongle_id"): str
         })
-        
+
         return self.async_show_form(
             step_id="add_dongle",
             data_schema=schema,
@@ -750,19 +692,15 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             # Get current data
             new_data = dict(self.config_entry.data)
             dongle_ids = list(new_data.get("dongle_ids", []))
-            dongle_ips = list(new_data.get("dongle_ips", []))
-            
+
             # Find and remove dongle
             if dongle_to_remove in dongle_ids:
                 index = dongle_ids.index(dongle_to_remove)
                 dongle_ids.pop(index)
-                if index < len(dongle_ips):
-                    dongle_ips.pop(index)
-                
+
                 # Update data
                 new_data["dongle_ids"] = dongle_ids
-                new_data["dongle_ips"] = dongle_ips
-                
+
                 # Update entry with new data
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, 
@@ -793,7 +731,6 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             old_dongle_id = user_input["old_dongle_id"]
             new_dongle_id = self._normalize_dongle_id(user_input["new_dongle_id"])
-            new_dongle_ip = user_input.get("new_dongle_ip", "")
 
             if not new_dongle_id:
                 errors["new_dongle_id"] = "dongle_id_required"
@@ -816,20 +753,15 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
                 # its position and master/slave/gridboss role.
                 new_data = dict(self.config_entry.data)
                 dongle_ids = list(new_data.get("dongle_ids", []))
-                dongle_ips = list(new_data.get("dongle_ips", []))
                 dongle_data = [dict(d) for d in new_data.get("dongle_data", [])]
 
                 idx = dongle_ids.index(old_dongle_id)
                 dongle_ids[idx] = new_dongle_id
-                if idx < len(dongle_ips):
-                    dongle_ips[idx] = new_dongle_ip
                 for d in dongle_data:
                     if d.get("dongle_id") == old_dongle_id:
                         d["dongle_id"] = new_dongle_id
-                        d["dongle_ip"] = new_dongle_ip
 
                 new_data["dongle_ids"] = dongle_ids
-                new_data["dongle_ips"] = dongle_ips
                 new_data["dongle_data"] = dongle_data
                 # Keep gridboss_dongle pointer in sync if it referenced the old dongle.
                 if new_data.get("gridboss_dongle") == old_dongle_id:
@@ -844,7 +776,6 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
         schema = vol.Schema({
             vol.Required("old_dongle_id"): vol.In(current_dongles),
             vol.Required("new_dongle_id"): str,
-            vol.Optional("new_dongle_ip"): str,
         })
 
         return self.async_show_form(
@@ -856,45 +787,6 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             },
         )
 
-    async def async_step_update_dongles(self, user_input=None):
-        """Update dongle IPs."""
-        if user_input is not None:
-            # Update the config entry with new data
-            new_data = dict(self.config_entry.data)
-            
-            # Update dongle IPs if provided
-            if "dongle_ips" in self.config_entry.data:
-                dongle_ips = []
-                for i, dongle_id in enumerate(self.config_entry.data["dongle_ids"]):
-                    ip_key = f"dongle_ip_{i+1}" if i > 0 else "dongle_ip"
-                    dongle_ips.append(user_input.get(ip_key, ""))
-                new_data["dongle_ips"] = dongle_ips
-            
-            self.hass.config_entries.async_update_entry(
-                self.config_entry, data=new_data
-            )
-            return self.async_create_entry(title="", data={})
-
-        # Build schema based on current configuration
-        dongle_ids = self.config_entry.data.get("dongle_ids", [])
-        dongle_ips = self.config_entry.data.get("dongle_ips", [""] * len(dongle_ids))
-        
-        schema_dict = {}
-        for i, dongle_id in enumerate(dongle_ids):
-            current_ip = dongle_ips[i] if i < len(dongle_ips) else ""
-            if i == 0:
-                schema_dict[vol.Optional("dongle_ip", default=current_ip)] = str
-            else:
-                schema_dict[vol.Optional(f"dongle_ip_{i+1}", default=current_ip)] = str
-        
-        return self.async_show_form(
-            step_id="update_dongles",
-            data_schema=vol.Schema(schema_dict),
-            description_placeholders={
-                "dongle_ids": ", ".join(dongle_ids)
-            }
-        )
-    
     async def async_step_update_settings(self, user_input=None):
         """Update general settings."""
         if user_input is not None:
@@ -922,6 +814,10 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             if CONF_DROP_DONGLE_ID in user_input:
                 new_data[CONF_DROP_DONGLE_ID] = user_input[CONF_DROP_DONGLE_ID]
 
+            # Update firmware track (prod/beta) if provided.
+            if CONF_USE_BETA in user_input:
+                new_data[CONF_USE_BETA] = user_input[CONF_USE_BETA]
+
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data
             )
@@ -940,6 +836,7 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX
         )
         current_drop_dongle_id = self.config_entry.data.get(CONF_DROP_DONGLE_ID, False)
+        current_use_beta = self.config_entry.data.get(CONF_USE_BETA, DEFAULT_USE_BETA)
 
         # Dropping the dongle id is only meaningful for single-dongle installs;
         # multi-dongle needs the dongle id to disambiguate entity_ids.
@@ -953,6 +850,7 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             vol.Optional("has_gridboss", default=current_has_gridboss): bool,
             vol.Optional(CONF_ENABLE_DEVICE_GROUPING, default=current_device_grouping): bool,
             vol.Optional(CONF_USE_INPUT_BOX, default=current_use_input_box): bool,
+            vol.Optional(CONF_USE_BETA, default=current_use_beta): bool,
         }
         if is_single_dongle:
             schema_dict[

@@ -17,7 +17,6 @@
                     "mqtt_username": "MQTT Username",
                     "mqtt_password": "MQTT Password",
                     "dongle_id": "Dongle ID 'dongle-35:S4:48:S7:41'",
-                    "dongle_ip": "Dongle IP Address (optional, for firmware updates)",
                     "parallel_inverters": "Setup Multiple Inverters in Parallel",
                     "update_interval": "Update Interval (how often to save to database)",
                     "dongle_id_2": "Additional Dongle ID #2 (optional)",
@@ -31,11 +30,8 @@
                 "description": "Enter the additional dongle IDs for your parallel inverters.",
                 "data": {
                     "dongle_id_2": "Dongle ID #2",
-                    "dongle_ip_2": "Dongle IP #2 (optional)",
                     "dongle_id_3": "Dongle ID #3",
-                    "dongle_ip_3": "Dongle IP #3 (optional)",
-                    "dongle_id_4": "Dongle ID #4",
-                    "dongle_ip_4": "Dongle IP #4 (optional)"
+                    "dongle_id_4": "Dongle ID #4"
                 }
             }
         }
@@ -70,8 +66,7 @@
                 "title": "Add New Dongle",
                 "description": "Enter the ID of the dongle you want to add",
                 "data": {
-                    "dongle_id": "Dongle ID (e.g., dongle-12:34:56:78:90:12)",
-                    "dongle_ip": "Dongle IP Address (optional)"
+                    "dongle_id": "Dongle ID (e.g., dongle-12:34:56:78:90:12)"
                 }
             },
             "remove_dongle": {
@@ -86,18 +81,7 @@
                 "description": "Replace a failed or swapped dongle. All entities and their full history will be transferred from the old dongle to the new one. Current dongles: {current_dongles}",
                 "data": {
                     "old_dongle_id": "Dongle being replaced",
-                    "new_dongle_id": "New dongle ID (e.g., dongle-12:34:56:78:90:12)",
-                    "new_dongle_ip": "New dongle IP address (optional)"
-                }
-            },
-            "update_dongles": {
-                "title": "Update Dongle IP Addresses",
-                "description": "Update the IP addresses for your dongles: {dongle_ids}",
-                "data": {
-                    "dongle_ip": "Dongle IP Address",
-                    "dongle_ip_2": "Dongle IP #2",
-                    "dongle_ip_3": "Dongle IP #3",
-                    "dongle_ip_4": "Dongle IP #4"
+                    "new_dongle_id": "New dongle ID (e.g., dongle-12:34:56:78:90:12)"
                 }
             },
             "update_settings": {
@@ -108,7 +92,8 @@
                     "has_gridboss": "GridBoss Connected (for GridBoss distribution units)",
                     "enable_device_grouping": "Enable Device Grouping (organise entities into sub-devices)",
                     "use_input_box": "Use Input Box (use text input instead of slider for number entities)",
-                    "drop_dongle_id": "Drop Dongle ID from entity names (cleaner names; history is preserved)"
+                    "drop_dongle_id": "Drop Dongle ID from entity names (cleaner names; history is preserved)",
+                    "use_beta_firmware": "Use Beta Firmware (install beta releases instead of stable)"
                 }
             },
             "check_status": {

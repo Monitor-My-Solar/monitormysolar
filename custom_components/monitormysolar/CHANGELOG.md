@@ -1,4 +1,76 @@
 # Changelog
+## Version 4.0.0
+### Best with dongle firmware 4.3.0+. Some features below REQUIRE 4.3.0.
+
+#### ⚠️ Breaking change — Dongle IP address removed
+- The dongle IP address is **no longer collected or used**. Firmware updates and
+  all admin actions now run over MQTT, so an IP is never needed.
+- The "Update dongle IPs" option and all IP input fields have been removed from
+  setup and options. Existing IP values in your config are ignored.
+- **Firmware updates now require dongle firmware 4.3.0 or newer** (the MQTT admin
+  command surface). Dongles older than 4.3.0 can no longer be updated from Home
+  Assistant — update them once to 4.3.0 by the previous method / app first.
+
+#### Firmware updates over MQTT
+- The firmware update entity now triggers OTA via the dongle's MQTT admin command
+  (`<dongle_id>/admin {"cmd":"ota"}`) and streams live progress over MQTT
+  (`<dongle_id>/ota/progress`), with a final pass/fail on `<dongle_id>/ota/result`.
+  No dongle IP, HTTP, or WebSocket involved.
+- Added a **Use Beta Firmware** option (Settings) to track the beta channel.
+- The installed-version display strips the chip suffix (e.g. `S3`/`C6`) so it
+  compares correctly against the published version.
+
+#### Optional dongle ID in entity names (with history kept)
+- New single-dongle installs get clean entity names without the dongle ID. Existing
+  installs are unchanged; opt in via Settings. History (states + statistics) is
+  preserved across the change.
+- Setup asks whether this is a fresh install or a reconnect so existing history
+  lines up automatically.
+
+#### Replace a dongle (transfer history)
+- New "Replace a dongle" action (Options → Manage Dongles) moves all entities and
+  their full history from a failed/swapped dongle to its replacement.
+
+#### Status diagnostic entities
+- The dongle `/status` payload now drives individual diagnostic sensors (firmware
+  version, chip type, MQTT/server connection states, memory, boot/crash counts, SD
+  health, last reset reason).
+
+#### Deye / SunSynk / SolArk / NeoVolta support
+- Added the **Deye** inverter family as a selectable brand (labelled
+  "Deye / SunSynk / SolArk / NeoVolta") with a full entity catalog (114 entities:
+  84 sensors, 30 numbers, 6 selects, 4 switches), unique_ids mapping 1:1 with the
+  dongle's Deye catalog keys.
+- Deye TimeSlots (a nested array) currently lands as a single opaque,
+  disabled-by-default sensor; per-slot entities are a documented follow-up.
+
+#### Unified `/input` + `/hold` topics (firmware 4.3.0+)
+- Firmware 4.3.0+ publishes consolidated `<dongle>/input` and `<dongle>/hold`
+  payloads. The coordinator routes these the same way as the legacy per-bank
+  topics (the per-key lookup is bank-agnostic), so the same value updates the same
+  entity whichever topic it arrives on.
+- On connect the integration requests a full snapshot (`<dongle>/snapshot/request`)
+  so entities populate immediately. Older firmware ignores the request and keeps
+  using the per-bank topics — fully backward compatible.
+
+#### Durable write confirmation (firmware 4.3.0+)
+- Firmware 4.3.0+ publishes `<dongle>/setting/updated` on every successful write,
+  no matter who initiated it. The integration mirrors that value onto the matching
+  entity so Home Assistant converges in ~1 ms instead of waiting for the next
+  `/hold` cycle. No-op on older firmware.
+
+#### Fixes
+- **Multiple batteries**: when a `/batteries` payload contains more than one
+  battery, all of them now get their own entities (previously only the first was
+  created, because the firmware reports the same battery index for each).
+- Full-data snapshot is requested promptly on connect (and on reconnect / reboot)
+  so entities populate immediately on firmware that only streams change-data.
+- `<dongle>/availability` (the LWT online/offline message) is no longer mis-parsed
+  as JSON — it stopped spamming "Invalid JSON" warnings.
+- Entity creation no longer aborts on brand registries that contain legacy
+  flat-list entries (an `isinstance` guard was added).
+- Switch states given as the strings `"0"`/`"1"` are now coerced correctly
+  (previously `"0"` evaluated truthy and showed switches as on).
 
 ## Version 3.2.0
 
