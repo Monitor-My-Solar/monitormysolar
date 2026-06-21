@@ -17,6 +17,7 @@ from homeassistant.const import (
     UnitOfPower,
     UnitOfTemperature,
     STATE_UNKNOWN,
+    EntityCategory,
 )
 from homeassistant.core import (
     Event,
@@ -31,7 +32,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, ENTITIES, FIRMWARE_CODES, LOGGER
+from .const import DOMAIN, ENTITIES, FIRMWARE_CODES, LOGGER, STATUS_DIAGNOSTIC_SENSORS
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
 
@@ -102,6 +103,10 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                         entities.append(
                             StatusSensor(sensor, hass, entry, bank_name, dongle_id),
                         )
+                    elif sensor_class_key == "status_field":
+                        entities.append(
+                            StatusFieldSensor(sensor, hass, entry, bank_name, dongle_id),
+                        )
                     elif sensor_class_key == "powerflow":
                         entities.append(
                             PowerFlowSensor(sensor, hass, entry, bank_name, dongle_id)
@@ -132,6 +137,17 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                         )
                 except Exception as e:
                     LOGGER.error(f"Error setting up sensor {sensor} for dongle {dongle_id}: {e}")
+
+        # Diagnostic sensors from the firmware-level /status payload. These are
+        # brand- and firmware-agnostic (every dongle publishes /status), so they're
+        # created for every dongle outside the per-brand ENTITIES gating above.
+        for sensor in STATUS_DIAGNOSTIC_SENSORS:
+            try:
+                entities.append(
+                    StatusFieldSensor(sensor, hass, entry, "status", dongle_id)
+                )
+            except Exception as e:
+                LOGGER.error(f"Error setting up status diagnostic sensor {sensor} for dongle {dongle_id}: {e}")
 
     # Create combined parallel sensors if we have multiple dongles
     if len(dongle_ids) > 1:
@@ -488,6 +504,87 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
                 #LOGGER.debug(f'Attributes updated to: {self._attributes}')
 
                 self.throttled_async_write_ha_state()
+
+
+class StatusFieldSensor(MonitorMySolarEntity, SensorEntity):
+    """Diagnostic sensor exposing a single field from the /status payload.
+
+    The full /status blob is stored by the coordinator at the dongle's `_uptime`
+    entity_id. Rather than add new MQTT plumbing, each of these sensors reads that
+    shared blob and pulls out one (possibly nested) field by a dotted path, e.g.
+    "memory.heap_free" or "mqtt.ha_state".
+    """
+
+    def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
+        self.coordinator = entry.runtime_data
+        self.sensor_info = sensor_info
+        self._name = sensor_info["name"]
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
+        self._state = None
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+        self._sensor_type = sensor_info["unique_id"]
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
+        self.hass = hass
+        self._manufacturer = entry.data.get("inverter_brand")
+        # Dotted path into the /status blob, e.g. "memory.heap_free".
+        self._status_field = sensor_info["status_field"]
+        # Where the coordinator stores the raw /status blob for this dongle.
+        self._status_source_entity_id = self.coordinator.build_entity_id(
+            "sensor", self._dongle_id, "uptime"
+        )
+
+        super().__init__(self.coordinator)
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def unique_id(self):
+        return self._unique_id
+
+    @property
+    def state(self):
+        return self._state
+
+    @property
+    def state_class(self):
+        return self.sensor_info.get("state_class")
+
+    @property
+    def unit_of_measurement(self):
+        return self.sensor_info.get("unit_of_measurement")
+
+    @property
+    def device_class(self):
+        return self.sensor_info.get("device_class")
+
+    @property
+    def entity_category(self):
+        return EntityCategory.DIAGNOSTIC
+
+    @property
+    def device_info(self):
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Pull this field's value out of the shared /status blob."""
+        blob = self.coordinator.entities.get(self._status_source_entity_id)
+        if not isinstance(blob, dict):
+            return
+        value = blob
+        for part in self._status_field.split("."):
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            else:
+                value = None
+                break
+        if value is not None:
+            self._state = round(value, 2) if isinstance(value, float) else value
+            self.throttled_async_write_ha_state()
+
 
 class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
     def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):

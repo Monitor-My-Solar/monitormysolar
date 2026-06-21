@@ -243,6 +243,34 @@ DEFAULT_MQTT_USERNAME = ""
 DEFAULT_MQTT_PASSWORD = ""
 
 
+# Diagnostic sensors derived from the firmware-level /status payload. These apply
+# to every dongle regardless of brand/firmware (all dongles publish /status), so
+# they are created for all dongles independently of the per-brand ENTITIES table.
+# Each reads one (possibly nested) field from the /status blob via status_field.
+# sensor_class "status_field" -> StatusFieldSensor in sensor.py.
+STATUS_DIAGNOSTIC_SENSORS = [
+    # --- Health / connectivity essentials ---
+    {"name": "Firmware Version", "type": "sensor", "unique_id": "fw_version_full", "status_field": "version", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "Chip Type", "type": "sensor", "unique_id": "chip_type", "status_field": "chipType", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "MQTT HA State", "type": "sensor", "unique_id": "mqtt_ha_state", "status_field": "mqtt.ha_state", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "MQTT Web State", "type": "sensor", "unique_id": "mqtt_web_state", "status_field": "mqtt.web_state", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "Inverter Server State", "type": "sensor", "unique_id": "lux_server_state", "status_field": "lux_server.state", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "SD Card Health", "type": "sensor", "unique_id": "sd_health", "status_field": "sd.health", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "Last Reset Reason", "type": "sensor", "unique_id": "last_reset_reason", "status_field": "Last_Reset_Reason", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    # --- Memory diagnostics ---
+    {"name": "Heap Free", "type": "sensor", "unique_id": "heap_free", "status_field": "memory.heap_free", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": "B", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "Heap Min Free", "type": "sensor", "unique_id": "heap_min", "status_field": "memory.heap_min", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": "B", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "Heap Fragmentation", "type": "sensor", "unique_id": "heap_frag_pct", "status_field": "memory.heap_frag_pct", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": PERCENTAGE, "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "PSRAM Free", "type": "sensor", "unique_id": "psram_free", "status_field": "memory.psram_free", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": "B", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    # --- Reliability counters ---
+    {"name": "Boot Count", "type": "sensor", "unique_id": "boot_count", "status_field": "boot.count", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "Crash Count", "type": "sensor", "unique_id": "crash_count", "status_field": "crash.count", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "Inverter Server Reconnects", "type": "sensor", "unique_id": "lux_server_reconnects", "status_field": "lux_server.reconnects", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "Inverter Server Failed", "type": "sensor", "unique_id": "lux_server_failed", "status_field": "lux_server.failed", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "SD Write Failures", "type": "sensor", "unique_id": "sd_write_failures", "status_field": "sd.write_failures", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics"},
+]
+
+
 
 ENTITIES = {
         "Lux": {
