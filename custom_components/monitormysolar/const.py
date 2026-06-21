@@ -262,10 +262,14 @@ STATUS_DIAGNOSTIC_SENSORS = [
     {"name": "SD Card Health", "type": "sensor", "unique_id": "sd_health", "status_field": "sd.health", "sensor_class": "status_field", "device_group": "Diagnostics"},
     {"name": "Last Reset Reason", "type": "sensor", "unique_id": "last_reset_reason", "status_field": "Last_Reset_Reason", "sensor_class": "status_field", "device_group": "Diagnostics"},
     # --- Memory diagnostics ---
-    {"name": "Heap Free", "type": "sensor", "unique_id": "heap_free", "status_field": "memory.heap_free", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": "B", "sensor_class": "status_field", "device_group": "Diagnostics"},
-    {"name": "Heap Min Free", "type": "sensor", "unique_id": "heap_min", "status_field": "memory.heap_min", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": "B", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    # Raw-byte heap/PSRAM sensors are disabled by default: they're large, noisy,
+    # 30s-cadence diagnostics that would bloat the recorder. Users can enable them
+    # per-entity when actually debugging memory. heap_frag_pct (a 0-100 %) is kept
+    # enabled — it's a small, meaningful trend.
+    {"name": "Heap Free", "type": "sensor", "unique_id": "heap_free", "status_field": "memory.heap_free", "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.DATA_SIZE, "unit_of_measurement": "B", "sensor_class": "status_field", "device_group": "Diagnostics", "entity_registry_enabled_default": False},
+    {"name": "Heap Min Free", "type": "sensor", "unique_id": "heap_min", "status_field": "memory.heap_min", "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.DATA_SIZE, "unit_of_measurement": "B", "sensor_class": "status_field", "device_group": "Diagnostics", "entity_registry_enabled_default": False},
     {"name": "Heap Fragmentation", "type": "sensor", "unique_id": "heap_frag_pct", "status_field": "memory.heap_frag_pct", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": PERCENTAGE, "sensor_class": "status_field", "device_group": "Diagnostics"},
-    {"name": "PSRAM Free", "type": "sensor", "unique_id": "psram_free", "status_field": "memory.psram_free", "state_class": SensorStateClass.MEASUREMENT, "unit_of_measurement": "B", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "PSRAM Free", "type": "sensor", "unique_id": "psram_free", "status_field": "memory.psram_free", "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.DATA_SIZE, "unit_of_measurement": "B", "sensor_class": "status_field", "device_group": "Diagnostics", "entity_registry_enabled_default": False},
     # --- Reliability counters ---
     {"name": "Boot Count", "type": "sensor", "unique_id": "boot_count", "status_field": "boot.count", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics"},
     {"name": "Crash Count", "type": "sensor", "unique_id": "crash_count", "status_field": "crash.count", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics"},

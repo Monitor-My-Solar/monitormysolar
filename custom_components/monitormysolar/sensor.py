@@ -256,16 +256,22 @@ def _create_battery_entities(hass, entry, async_add_entities, dongle_id, battery
         marker = f"{dongle_id}:{position}"
         if marker in created:
             continue
-        created.add(marker)
+        position_entities = []
         for sensor_def in battery_sensor_defs:
             key = sensor_def["key"]
             if key not in battery:
                 continue
-            entities.append(
+            position_entities.append(
                 BatteryDetailSensor(
                     hass, entry, dongle_id, position, key, sensor_def, battery.get(key)
                 )
             )
+        # Only mark this position done once we've actually built its entities.
+        # A first payload that arrives before this position's fields are populated
+        # would otherwise burn the marker and the entities would never be created.
+        if position_entities:
+            created.add(marker)
+            entities.extend(position_entities)
 
     if entities:
         async_add_entities(entities)
@@ -532,6 +538,12 @@ class StatusFieldSensor(MonitorMySolarEntity, SensorEntity):
         # Where the coordinator stores the raw /status blob for this dongle.
         self._status_source_entity_id = self.coordinator.build_entity_id(
             "sensor", self._dongle_id, "uptime"
+        )
+        # Honour per-sensor enabled-by-default (set False on noisy raw-byte
+        # diagnostics to keep them out of the recorder unless the user opts in).
+        # Set before super().__init__ so the base class doesn't override it.
+        self._attr_entity_registry_enabled_default = sensor_info.get(
+            "entity_registry_enabled_default", True
         )
 
         super().__init__(self.coordinator)

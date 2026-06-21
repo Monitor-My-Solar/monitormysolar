@@ -267,12 +267,23 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
 
         @callback
         def _on_progress(msg):
+            # Ignore retained messages: a progress message retained from a previous
+            # OTA is delivered immediately on subscribe and would jump the bar to a
+            # stale value. Only act on live progress for this install.
+            if getattr(msg, "retain", False):
+                return
             try:
                 data = json.loads(msg.payload)
             except (ValueError, TypeError):
                 return
+            # If the dongle echoes the request id on progress, honour it; otherwise
+            # accept (the topic is dongle-specific and only subscribed during this
+            # install).
+            msg_id = data.get("id")
+            if msg_id is not None and msg_id != request_id:
+                return
             pct = data.get("progress")
-            if isinstance(pct, (int, float)):
+            if isinstance(pct, (int, float)) and 0 <= pct <= 100:
                 self._attr_progress = int(pct)
                 self.async_write_ha_state()
 
@@ -329,7 +340,10 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
                 await self._refresh_firmware_version()
                 return
 
-            if result["status"] == "success":
+            # Accept both "success" (the documented OTA result token) and "ok"
+            # (the admin-command ACK vocabulary) so a firmware that reuses "ok" on
+            # the result topic isn't reported as a spurious failure.
+            if result["status"] in ("success", "ok"):
                 LOGGER.info(f"OTA succeeded for {self._dongle_id}")
                 self._attr_progress = 100
                 self.async_write_ha_state()

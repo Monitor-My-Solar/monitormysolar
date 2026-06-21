@@ -185,7 +185,9 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         entity's unique_id is unaffected, so history follows across a scheme change.
         """
         suffix = type_suffix.lower()
-        if self._drop_dongle_id and len(self._dongle_ids) == 1:
+        # getattr default keeps this safe if called before __init__ finishes
+        # assigning the flag (e.g. lightweight test fixtures).
+        if getattr(self, "_drop_dongle_id", False) and len(self._dongle_ids) == 1:
             return f"{platform}.{suffix}"
         formatted = self.get_formatted_dongle_id(dongle_id)
         return f"{platform}.{formatted}_{suffix}"
@@ -1576,7 +1578,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         try:
             data = json.loads(payload)
         except ValueError:
-            LOGGER.error(f"Invalid JSON payload received for status message from {dongle_id} on topic {msg.topic}: {payload}")
+            LOGGER.error(f"Invalid JSON payload received for status message from {dongle_id}: {payload}")
             return
 
         # Check if the message follows the new structure with 'Serialnumber' and 'payload'
@@ -1622,11 +1624,12 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         await self.request_snapshot(dongle_id, version, force=reboot_detected)
 
         # Push the update so status-derived sensors (uptime + the /status
-        # diagnostic sensors) refresh. /status arrives ~every 30s, so this is not
-        # high-frequency — only gate it behind startup completion to avoid churn
-        # during initial setup.
-        if self._hass_startup_complete:
-            self.async_set_updated_data(self.entities)
+        # diagnostic sensors) refresh. /status arrives ~every 30s — far less often
+        # than the /input + /hold change-data that already drives this same push —
+        # so the extra fan-out is marginal. Not gated on _hass_startup_complete so
+        # the diagnostic sensors populate on the very first status, rather than
+        # waiting up to a full heartbeat after startup finishes.
+        self.async_set_updated_data(self.entities)
 
     async def process_message(self, dongle_id: str, topic, payload):
         """Process incoming MQTT message and update entity states."""
