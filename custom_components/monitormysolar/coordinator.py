@@ -1130,6 +1130,16 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 await self.process_status_message(dongle_id, msg.payload)
             elif topic.endswith("/availability"):
                 await self.process_message(dongle_id, topic, msg.payload)
+            # Always process the snapshot reply, even during startup. The snapshot
+            # IS the connect-time bootstrap: it arrives within ~1s of the request
+            # we send in start_mqtt_subscription, which is well inside the ~30s
+            # startup window. If we dropped it (as the generic pre-startup branch
+            # below would), entities would stay empty until the next change-data —
+            # which on FW >= 4.3.0 (change-data only) may be a long time. The
+            # firmware publishes it on <dongle>/snap/input and <dongle>/snap/hold.
+            elif topic.endswith("/snap/input") or topic.endswith("/snap/hold"):
+                await self.process_message(dongle_id, topic, msg.payload)
+                self.async_set_updated_data(self.entities)
             # Skip other message processing during startup to prevent excessive updates
             elif not self._hass_startup_complete:
                 # Just store the message for later processing if needed
@@ -1142,7 +1152,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                     await self.process_status_message(dongle_id, msg.payload)
                 else:
                     await self.process_message(dongle_id, topic, msg.payload)
-                    
+
                 self.async_set_updated_data(self.entities)
         except Exception as e:
             LOGGER.error(f"Error processing MQTT message on topic {msg.topic}: {e}")
