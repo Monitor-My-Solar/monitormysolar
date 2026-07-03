@@ -620,11 +620,11 @@ ENTITIES = {
                     {"name": "SmartLoad4 Shedding", "type": "switch", "unique_id": "SmartLoad4_Shedding", "allowed_groups": ["midbox"], "source": "gridboss_holdbank1", "device_group": "GridBoss Controls"},
                 ],
                 "holdbank3": [
-                    {"name": "PV Grid Off", "type": "switch", "unique_id": "ubPVGridOffEn", "source": "holdbank3"}, #"allowed_groups": [], "device_group": "Controls"},
-                    {"name": "Fast Zero Export", "type": "switch", "unique_id": "ubFastZeroExport", "source": "holdbank3"}, #"allowed_groups": [], "device_group": "Controls"},
-                    {"name": "Micro Grid On", "type": "switch", "unique_id": "ubMicroGridEn", "source": "holdbank3"}, #"allowed_groups": [], "device_group": "Controls"},
-                    {"name": "Battery Shared", "type": "switch", "unique_id": "ubBatShared", "source": "holdbank3"}, #"allowed_groups": [], "device_group": "Controls"},
-                    {"name": "Charge Last", "type": "switch", "unique_id": "ubChgLastEn", "source": "holdbank3"}, #"allowed_groups": [], "device_group": "Controls"},
+                    {"name": "PV Grid Off", "type": "switch", "unique_id": "ubPVGridOffEn", "source": "holdbank3", "device_group": "Controls"}, #"allowed_groups": [],
+                    {"name": "Fast Zero Export", "type": "switch", "unique_id": "ubFastZeroExport", "source": "holdbank3", "device_group": "Controls"}, #"allowed_groups": [],
+                    {"name": "Micro Grid On", "type": "switch", "unique_id": "ubMicroGridEn", "source": "holdbank3", "device_group": "Controls"}, #"allowed_groups": [],
+                    {"name": "Battery Shared", "type": "switch", "unique_id": "ubBatShared", "source": "holdbank3", "device_group": "Controls"}, #"allowed_groups": [],
+                    {"name": "Charge Last", "type": "switch", "unique_id": "ubChgLastEn", "source": "holdbank3", "device_group": "Controls"}, #"allowed_groups": [],
                     {"name": "Take Load Together", "type": "switch", "unique_id": "TakeLoadTogether", "source": "holdbank3", "device_group": "Controls"},
                 ],
                 "holdbank4": [
@@ -637,12 +637,12 @@ ENTITIES = {
                     "type": "binary_sensor",
                     "unique_id": "battery_charge_status",
                     "parent_sensor": "batstatus_inv",
-                    "status_type": "charge", "source": "battery", "sensor_class": "battery"},
+                    "status_type": "charge", "source": "battery", "sensor_class": "battery", "device_group": "Battery"},
                     {"name": "Battery Discharge",
                     "type": "binary_sensor",
                     "unique_id": "battery_discharge_status",
                     "parent_sensor": "batstatus_inv",
-                    "status_type": "discharge", "source": "battery", "sensor_class": "battery"}
+                    "status_type": "discharge", "source": "battery", "sensor_class": "battery", "device_group": "Battery"}
                 ]
             },
             "number": {
@@ -716,42 +716,42 @@ ENTITIES = {
                     {"name": "NEC 120 Current Limit", "type": "number", "unique_id": "NEC_120CurrLimit", "unit": "A", "min": 0, "max": 200, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                 ],
                 "holdbank3": [
-                    {"name": "Force Discharge Power Rate kW", "type": "number", "unique_id": "ForcedDischgPowerCMD", "unit": "kW", "min": 0, "max": 24 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"]}, # KW for GEN units % for Legcay A***/B*** These need to be Derrived not manually written
-                    {"name": "Force Discharge Power Rate %", "type": "number", "unique_id": "ForcedDischgPowerCMD", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["legacy"]},
-                    {"name": "Force Discharge SOC Limit", "type": "number", "unique_id": "ForcedDischgSOCLimit", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank3"}, # Always % no matter the machine
-                    {"name": "Lead acid Charge Rate (A)", "type": "number", "unique_id": "ChargeRate", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3"},
-                    {"name": "Lead Acid Discharge Rate (A)", "type": "number", "unique_id": "DischgRate", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3"},
-                    {"name": "Battery Discharge Start Point (W)", "type": "number", "unique_id": "PtoUserStartdischg", "unit": "W", "min": 1, "max": 500 , "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3"},
-                    {"name": "Battery Charge Start Point (W)", "type": "number", "unique_id": "PtoUserStartchg", "unit": "W", "min": -50, "max": 1, "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3"},
-                    {"name": "CT Offset (W)", "type": "number", "unique_id": "wCT_PowerOffset", "unit": "W", "min": -1000, "max": 1000 , "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3"},
-                    {"name": "Export Power (%)", "type": "number", "unique_id": "MaxBackFlow", "unit": "W", "min": 0, "max": 200 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["legacy"]},
-                    {"name": "Export Power (kW)", "type": "number", "unique_id": "MaxBackFlow", "unit": "kW", "min": 0, "max": 24 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"]},
-                    {"name": "On-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "EOD", "unit": "%", "min": 0, "max": 90, "mode": "slider", "source": "holdbank3"},
-                    {"name": "Off-grid Battery Voltage Cut off", "type": "number", "unique_id": "CutVoltForDischg", "unit": "V", "min": 40, "max": 56, "mode": "slider", "source": "holdbank3"},
-                    {"name": "Charge Current DC(A)", "type": "number", "unique_id": "ChargeCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3"},
-                    {"name": "Discharge Current DC(A) Lead Acid", "type": "number", "unique_id": "DischgCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3"},
+                    {"name": "Force Discharge Power Rate kW", "type": "number", "unique_id": "ForcedDischgPowerCMD", "unit": "kW", "min": 0, "max": 24 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"], "device_group": "Controls"}, # KW for GEN units % for Legcay A***/B*** These need to be Derrived not manually written
+                    {"name": "Force Discharge Power Rate %", "type": "number", "unique_id": "ForcedDischgPowerCMD", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["legacy"], "device_group": "Controls"},
+                    {"name": "Force Discharge SOC Limit", "type": "number", "unique_id": "ForcedDischgSOCLimit", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank3", "device_group": "Controls"}, # Always % no matter the machine
+                    {"name": "Lead acid Charge Rate (A)", "type": "number", "unique_id": "ChargeRate", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
+                    {"name": "Lead Acid Discharge Rate (A)", "type": "number", "unique_id": "DischgRate", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
+                    {"name": "Battery Discharge Start Point (W)", "type": "number", "unique_id": "PtoUserStartdischg", "unit": "W", "min": 1, "max": 500 , "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
+                    {"name": "Battery Charge Start Point (W)", "type": "number", "unique_id": "PtoUserStartchg", "unit": "W", "min": -50, "max": 1, "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
+                    {"name": "CT Offset (W)", "type": "number", "unique_id": "wCT_PowerOffset", "unit": "W", "min": -1000, "max": 1000 , "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
+                    {"name": "Export Power (%)", "type": "number", "unique_id": "MaxBackFlow", "unit": "W", "min": 0, "max": 200 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["legacy"], "device_group": "Controls"},
+                    {"name": "Export Power (kW)", "type": "number", "unique_id": "MaxBackFlow", "unit": "kW", "min": 0, "max": 24 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"], "device_group": "Controls"},
+                    {"name": "On-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "EOD", "unit": "%", "min": 0, "max": 90, "mode": "slider", "source": "holdbank3", "device_group": "Controls"},
+                    {"name": "Off-grid Battery Voltage Cut off", "type": "number", "unique_id": "CutVoltForDischg", "unit": "V", "min": 40, "max": 56, "mode": "slider", "source": "holdbank3", "device_group": "Controls"},
+                    {"name": "Charge Current DC(A)", "type": "number", "unique_id": "ChargeCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
+                    {"name": "Discharge Current DC(A) Lead Acid", "type": "number", "unique_id": "DischgCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
                 ],
                 "holdbank4": [
-                    {"name": "Off-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "SOCLowLimitForESPSDischg", "unit": "%", "min": 0, "max": 90, "mode": "slider", "source": "holdbank4"},
-                    {"name": "AC Charge Start (Voltage)", "type": "number", "unique_id": "ACChgStartVolt", "step": 0.1, "unit": "V", "min": 38.5, "max": 52, "mode": "slider", "source": "holdbank4", "mqtt_multiplier": 10},
-                    {"name": "AC Charge End (Voltage)", "type": "number", "unique_id": "ACChgEndVolt", "step": 0.1, "unit": "V", "min": 48, "max": 59, "mode": "slider", "source": "holdbank4", "mqtt_multiplier": 10},
-                    {"name": "Max Grid Input Power", "type": "number", "unique_id": "MaxGridInputPower", "unit": "kW", "min": 0, "max": 24, "mode": "slider", "step": 0.1, "source": "holdbank4"},
-                    {"name": "Generator Ratied Input Power", "type": "number", "unique_id": "GenRatePower", "unit": "kW", "min": 0, "max": 24, "mode": "slider", "step": 0.1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4"},
-                    {"name": "Generator Charge Start Voltage", "type": "number", "unique_id": "GenChgStartVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "step": 0.1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "mqtt_multiplier": 10},
-                    {"name": "Generator Charge End Voltage", "type": "number", "unique_id": "GenChgEndVolt", "unit": "V", "min": 50, "max": 60, "mode": "slider", "step": 0.1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "mqtt_multiplier": 10},
-                    {"name": "Generator Charge Start SOC", "type": "number", "unique_id": "GenChgStartSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "step": 1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4"},
-                    {"name": "Generator Charge End SOC", "type": "number", "unique_id": "GenChgEndSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "step": 1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4"},
-                    {"name": "Max Generator Charge Battery Current", "type": "number", "unique_id": "MaxGenChgBatCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "HAAA": 195, "ccaa": 250, "ceaa": 250}, "mode": "slider", "step": 1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4"},
-                    {"name": "Generator Charge Start Current", "type": "number", "unique_id": "GenChgStartCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "HAAA": 195, "ccaa": 250, "ceaa": 250}, "mode": "slider", "step": 1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4"}
+                    {"name": "Off-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "SOCLowLimitForESPSDischg", "unit": "%", "min": 0, "max": 90, "mode": "slider", "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "AC Charge Start (Voltage)", "type": "number", "unique_id": "ACChgStartVolt", "step": 0.1, "unit": "V", "min": 38.5, "max": 52, "mode": "slider", "source": "holdbank4", "mqtt_multiplier": 10, "device_group": "Controls"},
+                    {"name": "AC Charge End (Voltage)", "type": "number", "unique_id": "ACChgEndVolt", "step": 0.1, "unit": "V", "min": 48, "max": 59, "mode": "slider", "source": "holdbank4", "mqtt_multiplier": 10, "device_group": "Controls"},
+                    {"name": "Max Grid Input Power", "type": "number", "unique_id": "MaxGridInputPower", "unit": "kW", "min": 0, "max": 24, "mode": "slider", "step": 0.1, "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "Generator Ratied Input Power", "type": "number", "unique_id": "GenRatePower", "unit": "kW", "min": 0, "max": 24, "mode": "slider", "step": 0.1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "Generator Charge Start Voltage", "type": "number", "unique_id": "GenChgStartVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "step": 0.1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "mqtt_multiplier": 10, "device_group": "Controls"},
+                    {"name": "Generator Charge End Voltage", "type": "number", "unique_id": "GenChgEndVolt", "unit": "V", "min": 50, "max": 60, "mode": "slider", "step": 0.1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "mqtt_multiplier": 10, "device_group": "Controls"},
+                    {"name": "Generator Charge Start SOC", "type": "number", "unique_id": "GenChgStartSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "step": 1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "Generator Charge End SOC", "type": "number", "unique_id": "GenChgEndSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "step": 1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "Max Generator Charge Battery Current", "type": "number", "unique_id": "MaxGenChgBatCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "HAAA": 195, "ccaa": 250, "ceaa": 250}, "mode": "slider", "step": 1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "Generator Charge Start Current", "type": "number", "unique_id": "GenChgStartCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "HAAA": 195, "ccaa": 250, "ceaa": 250}, "mode": "slider", "step": 1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "device_group": "Controls"}
 
                 ],
                 "holdbank5": [
-                    {"name": "On Grid Battery Voltage Cut off", "type": "number", "unique_id": "OngridEOD_Voltage", "unit": "V", "min": 40, "max": 56, "mode": "slider", "mqtt_multiplier": 10}
+                    {"name": "On Grid Battery Voltage Cut off", "type": "number", "unique_id": "OngridEOD_Voltage", "unit": "V", "min": 40, "max": 56, "mode": "slider", "mqtt_multiplier": 10, "device_group": "Controls"}
                 ],
                 "holdbank6": [
-                    {"name": "System Charge SOC Limit %", "type": "number", "unique_id": "BatStopChgSOC", "unit": "%", "min": 0, "max": 101, "mode": "slider", "allowed_groups": ["GEN", "offgrid"], "source": "holdbank6"},
-                    {"name": "System Charge Volt limit (v)", "type": "number", "unique_id": "BatStopChgVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "allowed_groups": ["GEN", "offgrid"], "source": "holdbank6"},
-                    {"name": "Stop Dischage (Voltage)", "type": "number", "unique_id": "ForceDichgEndVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "source": "holdbank6", "mqtt_multiplier": 10},
+                    {"name": "System Charge SOC Limit %", "type": "number", "unique_id": "BatStopChgSOC", "unit": "%", "min": 0, "max": 101, "mode": "slider", "allowed_groups": ["GEN", "offgrid"], "source": "holdbank6", "device_group": "Controls"},
+                    {"name": "System Charge Volt limit (v)", "type": "number", "unique_id": "BatStopChgVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "allowed_groups": ["GEN", "offgrid"], "source": "holdbank6", "device_group": "Controls"},
+                    {"name": "Stop Dischage (Voltage)", "type": "number", "unique_id": "ForceDichgEndVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "source": "holdbank6", "mqtt_multiplier": 10, "device_group": "Controls"},
                 ],
             },
             "select": {
