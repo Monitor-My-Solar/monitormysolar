@@ -43,18 +43,10 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                 continue
                 
             for switch in switches:
-                allowed_firmware_codes = switch.get("allowed_firmware_codes", [])
-                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
-                if coordinator.is_gridboss_dongle(dongle_id):
-                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
-                        continue
-                else:
-                    # For regular dongles, use the original logic
-                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                        pass  # Continue to entity creation
-                    else:
-                        continue  # Skip this entity
-                
+                # Group-based firmware gating (replaces exact allowed_firmware_codes).
+                if not coordinator.entity_allowed_for_dongle(dongle_id, switch):
+                    continue
+
                 try:
                     entities.append(
                         InverterSwitch(switch, hass, entry, bank_name, dongle_id)

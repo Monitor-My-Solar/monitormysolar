@@ -33,18 +33,10 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
         # Process selects for this dongle
         for bank_name, selects in select_config.items():
             for select in selects:
-                allowed_firmware_codes = select.get("allowed_firmware_codes", [])
-                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
-                if coordinator.is_gridboss_dongle(dongle_id):
-                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
-                        continue
-                else:
-                    # For regular dongles, use the original logic
-                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                        pass  # Continue to entity creation
-                    else:
-                        continue  # Skip this entity
-                
+                # Group-based firmware gating (replaces exact allowed_firmware_codes).
+                if not coordinator.entity_allowed_for_dongle(dongle_id, select):
+                    continue
+
                 try:
                     sensor_class_key = select.get("sensor_class", bank_name)
                     if sensor_class_key == "holdbank6":

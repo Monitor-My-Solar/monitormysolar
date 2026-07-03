@@ -203,11 +203,32 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Check if GridBoss is enabled."""
         return self._has_gridboss
     
+    def get_firmware_group(self, dongle_id: str) -> str:
+        """Return the firmware group (midbox/GEN/legacy/threephase/offgrid) for a dongle."""
+        from .const import firmware_group
+        return firmware_group(self.get_firmware_code(dongle_id))
+
+    def entity_allowed_for_dongle(self, dongle_id: str, entity_def: dict) -> bool:
+        """Whether an entity definition should be created for this dongle.
+
+        Group-based gating, replacing the old exact `allowed_firmware_codes` lists:
+        - An entity with `allowed_groups` is created only when the dongle's firmware
+          group is listed.
+        - An entity WITHOUT `allowed_groups` is a generic entity available to every
+          group EXCEPT midbox. midbox (GridBoss) is a distinct device that only gets
+          entities explicitly tagged with the 'midbox' group — matching the old rule
+          where GridBoss dongles required an explicit allow-list entry.
+        """
+        group = self.get_firmware_group(dongle_id)
+        allowed_groups = entity_def.get("allowed_groups")
+        if not allowed_groups:
+            return group != "midbox"
+        return group in allowed_groups
+
     def is_gridboss_dongle(self, dongle_id: str) -> bool:
         """Check if a specific dongle is the GridBoss dongle."""
-        # First check if firmware code indicates GridBoss (IAAB)
-        firmware_code = self.get_firmware_code(dongle_id)
-        if firmware_code == "IAAB":
+        # Firmware group 'midbox' (any I*** code) indicates GridBoss.
+        if self.get_firmware_group(dongle_id) == "midbox":
             return True
         
         # Use the new dongle data structure to check if this dongle is marked as GridBoss
@@ -384,22 +405,24 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     
     def update_charge_type_setting(self, dongle_id: str, charge_type):
         """Update the charge type setting for a dongle."""
-        # Convert integer to string option if needed
-        # ACChargeType options vary by firmware (0-based indexing):
-        # AAAA/AAAB/BAAA/BAAB/ccaa/EAAA/EAAB/ceaa: 0="Disabled", 1="Time According To", 2="According To Voltage", 3="According To SOC", 4="According To Time and Voltage", 5="According To Time and SOC"
-        # FAAB/FAAA/HAAA: 0="According To Time", 1="According To SOC/VOLT", 2="According To Time and SOC/VOLT"
+        # Convert integer to string option if needed. ACChargeType's option list
+        # varies by firmware group (0-based indexing) — these MUST stay in lockstep
+        # with the three ACChargeType select entries in const.py:
+        #   offgrid (C***):            6 options (0-5)
+        #   GEN (12K, F/H/E):          3 options (According To Time / SOC-Volt / both)
+        #   legacy (A) + ac_coupled (B): 3 options (Off / Time / SOC-Volt)
         if isinstance(charge_type, int):
-            firmware_code = self.get_firmware_code(dongle_id)
+            group = self.get_firmware_group(dongle_id)
 
-            # Determine which option list to use based on firmware code
-            if firmware_code in ["AAAA", "AAAB", "BAAA", "BAAB", "ccaa", "EAAA", "EAAB", "ceaa"]:
+            if group == "offgrid":
                 options = ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"]
-            elif firmware_code in ["FAAB", "FAAA", "HAAA"]:
+            elif group == "GEN":
                 options = ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
+            elif group in ("legacy", "ac_coupled"):
+                options = ["Off", "Time According To", "SOC/Volt According To"]
             else:
-                # Default fallback for unknown firmware codes
-                LOGGER.warning(f"Unknown firmware code {firmware_code} for ACChargeType, using default option list")
-                options = ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"]
+                LOGGER.warning(f"No ACChargeType option list for group {group!r} (dongle {dongle_id}), using legacy list")
+                options = ["Off", "Time According To", "SOC/Volt According To"]
 
             charge_type = options[charge_type] if charge_type < len(options) else charge_type
 
@@ -1536,19 +1559,41 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         LOGGER.debug(f"Active MQTT subscriptions after setup: {list(self._mqtt_unsubscribe_callbacks.keys())}")
 
         # Full-data snapshot bootstrap (FW >= 4.3.0 streams change-data only).
-        # Fire an eager request now so entities populate immediately instead of
-        # waiting up to ~30s for the dongle's next periodic /status heartbeat
-        # (there is no on-demand status-request topic). We don't know the version
-        # yet, so this is fail-open: request_snapshot() with no version requests
-        # anyway, and old firmware simply ignores the topic. force=True bypasses
-        # the per-session dedup but still records the dongle, so the later
-        # /status-driven call won't double-send on this same connect.
+        #
+        # We must NOT request the snapshot here: at this point the platforms have
+        # been forwarded but each entity's async_added_to_hass (where it subscribes
+        # to the coordinator) is only *scheduled*, not yet run. The snap/input reply
+        # comes back within ~1s; if it lands before the input sensors have finished
+        # subscribing, their async_set_updated_data fan-out misses them and they sit
+        # at 'unknown' until a later change-data delta happens to carry that key —
+        # which for static fields (SOC when idle, settings, etc.) may be never.
+        # (Verified on a live dongle: hold populated but input did not, and the
+        # difference was purely this timing window.)
+        #
+        # So defer the request to a short settle delay, by which point every
+        # entity's coordinator subscription is live. fail-open: request_snapshot()
+        # with no version requests anyway, and old firmware ignores the topic.
+        # force=True bypasses the per-session dedup but still records the dongle, so
+        # the later /status-driven call won't double-send on this same connect.
         #
         # The /status (version-confirmed) and /availability offline->online paths
         # remain the triggers for reconnect/reboot recovery — see
         # process_status_message() and request_snapshot().
-        for dongle_id in self._dongle_ids:
-            await self.request_snapshot(dongle_id, version="", force=True)
+        async def _request_initial_snapshots(*_):
+            for dongle_id in self._dongle_ids:
+                await self.request_snapshot(dongle_id, version="", force=True)
+
+        # Fire once HA has fully started (async_at_started runs immediately if HA
+        # is already running, e.g. a config-entry reload), then a short settle so
+        # the just-added entities have finished subscribing to the coordinator
+        # before the snapshot reply lands.
+        from homeassistant.helpers.start import async_at_started
+
+        @callback
+        def _schedule_snapshot(_event):
+            async_call_later(self.hass, 2, _request_initial_snapshots)
+
+        async_at_started(self.hass, _schedule_snapshot)
 
         # Schedule a one-time log of ignored entity counts after 2 minutes
         async def log_ignored_entities(_):

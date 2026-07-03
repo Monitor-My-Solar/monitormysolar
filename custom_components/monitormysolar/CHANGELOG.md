@@ -62,12 +62,52 @@
   entity so Home Assistant converges in ~1 ms instead of waiting for the next
   `/hold` cycle. No-op on older firmware.
 
+#### Firmware-group based entity selection
+- Which entities a unit gets is now decided by its **firmware group**, derived from
+  the firmware code, instead of brittle per-entity allow-lists of exact codes. The
+  groups are: **legacy** (A-family hybrids), **ac_coupled** (B units), **GEN**
+  (E/F/H — incl. 12K and 8-10K), **threephase** (G), **offgrid** (C — incl. SNA
+  6000/12000XP), and **midbox** (GridBoss / I units).
+- Each entity declares the groups it applies to; a unit is given an entity when its
+  group matches. Membership in a group *is* validity — there's no separate "valid
+  codes" list to maintain, and new codes within a known family are handled
+  automatically. Matching is case-insensitive, fixing units whose code differed only
+  in case.
+- GridBoss (midbox) remains a distinct device that only receives its own
+  midbox-tagged entities.
+
 #### Fixes
+- **Snapshot now reliably populates all entities on connect.** The full-data
+  snapshot (the `{"what":"all"}` reply on `<dongle>/snap/input` and
+  `<dongle>/snap/hold`) was being requested before entities had finished
+  subscribing, so the reply could land in a window where input sensors missed it —
+  leaving values like SOC and other static fields stuck at `unknown` until a later
+  change happened to carry that key. The snapshot is now requested once Home
+  Assistant has started and entities are subscribed, so every value lands. Entities
+  also seed their initial state from the latest snapshot when added, so a value that
+  never changes again still shows.
+- The snapshot reply (`snap/input` / `snap/hold`) is processed even during the
+  startup window rather than being dropped.
 - **Multiple batteries**: when a `/batteries` payload contains more than one
   battery, all of them now get their own entities (previously only the first was
-  created, because the firmware reports the same battery index for each).
-- Full-data snapshot is requested promptly on connect (and on reconnect / reboot)
-  so entities populate immediately on firmware that only streams change-data.
+  created, because the firmware reports the same battery index for each). A battery
+  position is only registered once its sensors are actually built, so a partial
+  first payload no longer permanently hides a battery.
+- **Duplicate / `_2` entities fixed.** Several sensors (PV power/voltage/current,
+  PV energy, temperatures, charge-rate controls, and the "Charge Based on"
+  selector) had two catalog definitions that resolved to the same entity, which
+  forced Home Assistant to suffix the second with `_2`. Definitions are now scoped
+  to the firmware group they apply to, so each unit gets exactly one of each.
+- The "Charge Based on" (ACChargeType) selector now shows the correct option set
+  per family: offgrid units get the 6-option list, GEN (12K) units the 3-option
+  list, and legacy/AC-coupled units their own 3-option list — and the value→label
+  mapping follows the same split.
+- Firmware updates over MQTT: progress now ignores stale/retained progress
+  messages, accepts both `success` and `ok` as a successful result, and the
+  installed-version comparison no longer perpetually shows an update available.
+- Status diagnostic sensors refresh on the first `/status` after startup; the noisy
+  raw-byte memory sensors (heap/PSRAM) are disabled by default to avoid bloating the
+  recorder.
 - `<dongle>/availability` (the LWT online/offline message) is no longer mis-parsed
   as JSON — it stopped spamming "Invalid JSON" warnings.
 - Entity creation no longer aborts on brand registries that contain legacy
