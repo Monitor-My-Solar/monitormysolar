@@ -575,19 +575,39 @@ class StatusFieldSensor(MonitorMySolarEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Pull this field's value out of the shared /status blob."""
+        value = self._extract_field()
+        if value is not None:
+            self._state = round(value, 2) if isinstance(value, float) else value
+            self.throttled_async_write_ha_state()
+
+    def _extract_field(self):
+        """Return this sensor's field from the shared /status blob, or None."""
         blob = self.coordinator.entities.get(self._status_source_entity_id)
         if not isinstance(blob, dict):
-            return
+            return None
         value = blob
         for part in self._status_field.split("."):
             if isinstance(value, dict) and part in value:
                 value = value[part]
             else:
-                value = None
-                break
-        if value is not None:
-            self._state = round(value, 2) if isinstance(value, float) else value
-            self.throttled_async_write_ha_state()
+                return None
+        return value
+
+    @property
+    def available(self) -> bool:
+        """Availability.
+
+        Fields that are optional per chip (e.g. the SD-card sensors, which don't
+        exist on C6 / littlefs units) are marked with require_field=True: they are
+        only available once the field actually appears in a /status payload, so a
+        C6 unit shows them as unavailable rather than a stuck 'unknown'. All other
+        status sensors follow the coordinator's normal availability.
+        """
+        if self.sensor_info.get("require_field"):
+            # Only available once we've seen the field in a /status payload AND it's
+            # currently present (absent on the wrong chip).
+            return self._extract_field() is not None
+        return True
 
 
 class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
@@ -858,12 +878,12 @@ class FaultWarningSensor(MonitorMySolarEntity, SensorEntity):
         self.coordinator = entry.runtime_data
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
-        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
         self._state = None
         self._dongle_id = dongle_id
         self._device_id = dongle_id
         self._sensor_type = sensor_info["unique_id"]
-        self.entity_id = f"sensor.{self._device_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._bank_name = bank_name
@@ -947,7 +967,10 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
         self.entry = entry  # Store the entry for use in event handling
-        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        # Per-dongle entity: unique_id MUST include the dongle_id so it stays
+        # distinct across dongles and never collides with the plain-sensor form
+        # of the same key (which caused _2 duplicates).
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
         self._state = None
 
         # Store the formatted IDs
@@ -1092,13 +1115,14 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
         self.coordinator = entry.runtime_data
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
-        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        # Per-dongle entity: unique_id MUST include the dongle_id (see CalculatedSensor).
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
         self._state = None
         self._dongle_id = dongle_id
         self._device_id = dongle_id
         self._sensor_type = sensor_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"sensor.{self._device_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
 

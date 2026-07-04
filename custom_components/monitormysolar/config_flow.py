@@ -114,9 +114,12 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # Merge with initial data
             data = {**self.initial_data, **user_input}
 
-            # Create dongle data structure for single inverter
+            # Create dongle data structure for single inverter.
+            # Single-dongle installs get NO entity_id prefix (clean names like
+            # sensor.battery_soc) — we never ask. entity_prefix stays empty.
             dongle_data = [{
                 "dongle_id": data["dongle_id"],
+                "entity_prefix": "",
                 "is_master": True,
                 "is_slave": False,
                 "is_gridboss": False,
@@ -228,7 +231,13 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     if slave_dongle and slave_dongle.strip():
                         # Normalize the slave dongle ID
                         normalized_dongle = self._normalize_dongle_id(slave_dongle)
-                        slave_dongles.append(normalized_dongle)
+                        # Pair each slave's prefix with its dongle; fall back to the
+                        # normalized dongle_id if left blank (avoids collisions).
+                        slave_prefix = (
+                            user_input.get(f"slave_prefix_{i}", "").strip()
+                            or normalized_dongle
+                        )
+                        slave_dongles.append((normalized_dongle, slave_prefix))
 
                 # Create dongle data with master/slave tracking
                 dongle_data = []
@@ -236,6 +245,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 # Add master dongle
                 dongle_data.append({
                     "dongle_id": master_dongle,
+                    "entity_prefix": user_input.get("master_prefix", "").strip() or master_dongle,
                     "is_master": True,
                     "is_slave": False,
                     "is_gridboss": False,
@@ -244,9 +254,10 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 })
 
                 # Add slave dongles
-                for slave_dongle in slave_dongles:
+                for slave_dongle, slave_prefix in slave_dongles:
                     dongle_data.append({
                         "dongle_id": slave_dongle,
+                        "entity_prefix": slave_prefix,
                         "is_master": False,
                         "is_slave": True,
                         "is_gridboss": False,
@@ -270,16 +281,22 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required("master_dongle_id"): str,
+                vol.Optional("master_prefix"): str,
                 vol.Optional("slave_dongle_id_1"): str,
+                vol.Optional("slave_prefix_1"): str,
                 vol.Optional("slave_dongle_id_2"): str,
+                vol.Optional("slave_prefix_2"): str,
                 vol.Optional("slave_dongle_id_3"): str,
+                vol.Optional("slave_prefix_3"): str,
                 vol.Optional("slave_dongle_id_4"): str,
+                vol.Optional("slave_prefix_4"): str,
                 vol.Optional("slave_dongle_id_5"): str,
+                vol.Optional("slave_prefix_5"): str,
             }
         )
 
         return self.async_show_form(
-            step_id="parallel", 
+            step_id="parallel",
             data_schema=schema, 
             errors=errors,
             description_placeholders={
@@ -310,7 +327,13 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     if slave_dongle and slave_dongle.strip():
                         # Normalize the slave dongle ID
                         normalized_dongle = self._normalize_dongle_id(slave_dongle)
-                        slave_dongles.append(normalized_dongle)
+                        # Pair each slave's prefix with its dongle; fall back to the
+                        # normalized dongle_id if left blank (avoids collisions).
+                        slave_prefix = (
+                            user_input.get(f"slave_prefix_{i}", "").strip()
+                            or normalized_dongle
+                        )
+                        slave_dongles.append((normalized_dongle, slave_prefix))
 
                 # Create dongle data with GridBoss tracking
                 dongle_data = []
@@ -318,6 +341,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 # Add GridBoss dongle
                 dongle_data.append({
                     "dongle_id": gridboss_dongle,
+                    "entity_prefix": user_input.get("gridboss_prefix", "").strip() or gridboss_dongle,
                     "is_master": False,
                     "is_slave": False,
                     "is_gridboss": True,
@@ -326,9 +350,10 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 })
 
                 # Add slave dongles
-                for slave_dongle in slave_dongles:
+                for slave_dongle, slave_prefix in slave_dongles:
                     dongle_data.append({
                         "dongle_id": slave_dongle,
+                        "entity_prefix": slave_prefix,
                         "is_master": False,
                         "is_slave": False,
                         "is_gridboss": False,
@@ -354,14 +379,18 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required("gridboss_dongle_id"): str,
+                vol.Optional("gridboss_prefix"): str,
                 vol.Optional("slave_dongle_id_1"): str,
+                vol.Optional("slave_prefix_1"): str,
                 vol.Optional("slave_dongle_id_2"): str,
+                vol.Optional("slave_prefix_2"): str,
                 vol.Optional("slave_dongle_id_3"): str,
+                vol.Optional("slave_prefix_3"): str,
             }
         )
 
         return self.async_show_form(
-            step_id="single_gridboss", 
+            step_id="single_gridboss",
             data_schema=schema, 
             errors=errors,
             description_placeholders={
@@ -400,7 +429,11 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     slave_dongle = user_input.get(f"gridboss1_slave_dongle_id_{i}")
                     if slave_dongle and slave_dongle.strip():
                         normalized_dongle = self._normalize_dongle_id(slave_dongle)
-                        gridboss1_slaves.append(normalized_dongle)
+                        slave_prefix = (
+                            user_input.get(f"gridboss1_slave_prefix_{i}", "").strip()
+                            or normalized_dongle
+                        )
+                        gridboss1_slaves.append((normalized_dongle, slave_prefix))
 
                 # Process slave dongles for GridBoss 2
                 gridboss2_slaves = []
@@ -409,7 +442,11 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     slave_dongle = user_input.get(f"gridboss2_slave_dongle_id_{i}")
                     if slave_dongle and slave_dongle.strip():
                         normalized_dongle = self._normalize_dongle_id(slave_dongle)
-                        gridboss2_slaves.append(normalized_dongle)
+                        slave_prefix = (
+                            user_input.get(f"gridboss2_slave_prefix_{i}", "").strip()
+                            or normalized_dongle
+                        )
+                        gridboss2_slaves.append((normalized_dongle, slave_prefix))
 
                 # Create dongle data with dual GridBoss tracking
                 dongle_data = []
@@ -417,6 +454,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 # Add GridBoss 1
                 dongle_data.append({
                     "dongle_id": gridboss1_dongle,
+                    "entity_prefix": user_input.get("gridboss1_prefix", "").strip() or gridboss1_dongle,
                     "is_master": False,
                     "is_slave": False,
                     "is_gridboss": True,
@@ -425,9 +463,10 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 })
 
                 # Add GridBoss 1 slaves
-                for slave_dongle in gridboss1_slaves:
+                for slave_dongle, slave_prefix in gridboss1_slaves:
                     dongle_data.append({
                         "dongle_id": slave_dongle,
+                        "entity_prefix": slave_prefix,
                         "is_master": False,
                         "is_slave": False,
                         "is_gridboss": False,
@@ -438,6 +477,7 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 # Add GridBoss 2
                 dongle_data.append({
                     "dongle_id": gridboss2_dongle,
+                    "entity_prefix": user_input.get("gridboss2_prefix", "").strip() or gridboss2_dongle,
                     "is_master": False,
                     "is_slave": False,
                     "is_gridboss": True,
@@ -446,9 +486,10 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 })
 
                 # Add GridBoss 2 slaves
-                for slave_dongle in gridboss2_slaves:
+                for slave_dongle, slave_prefix in gridboss2_slaves:
                     dongle_data.append({
                         "dongle_id": slave_dongle,
+                        "entity_prefix": slave_prefix,
                         "is_master": False,
                         "is_slave": False,
                         "is_gridboss": False,
@@ -475,14 +516,22 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 # GridBoss 1 and its slaves
                 vol.Required("gridboss1_dongle_id"): str,
+                vol.Optional("gridboss1_prefix"): str,
                 vol.Optional("gridboss1_slave_dongle_id_1"): str,
+                vol.Optional("gridboss1_slave_prefix_1"): str,
                 vol.Optional("gridboss1_slave_dongle_id_2"): str,
+                vol.Optional("gridboss1_slave_prefix_2"): str,
                 vol.Optional("gridboss1_slave_dongle_id_3"): str,
+                vol.Optional("gridboss1_slave_prefix_3"): str,
                 # GridBoss 2 and its slaves
                 vol.Required("gridboss2_dongle_id"): str,
+                vol.Optional("gridboss2_prefix"): str,
                 vol.Optional("gridboss2_slave_dongle_id_1"): str,
+                vol.Optional("gridboss2_slave_prefix_1"): str,
                 vol.Optional("gridboss2_slave_dongle_id_2"): str,
+                vol.Optional("gridboss2_slave_prefix_2"): str,
                 vol.Optional("gridboss2_slave_dongle_id_3"): str,
+                vol.Optional("gridboss2_slave_prefix_3"): str,
             }
         )
 

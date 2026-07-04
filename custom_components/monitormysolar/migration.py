@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN, LOGGER, CONF_DROP_DONGLE_ID
 
@@ -203,3 +204,110 @@ async def async_transfer_dongle_entities(
             new_dongle_id,
         )
     return transferred
+
+
+async def async_cleanup_orphan_devices(hass: HomeAssistant, entry) -> int:
+    """Remove this entry's devices that no longer have any entities.
+
+    Device-grouping sub-devices ("<dongle> - PV", "- Battery", …) are created
+    implicitly by HA when an entity reports its device_info. When the user turns
+    device grouping OFF, entities move back to the main dongle device and the
+    sub-devices become empty — but HA does not delete them on its own, so they
+    linger as stale devices. This prunes any device under this config entry that
+    has zero entities left (which is exactly the emptied sub-devices), while never
+    touching the main dongle device (it always keeps entities).
+
+    Runs after platforms are set up, so the entity registry reflects the current
+    grouping state. Returns the number of devices removed.
+    """
+    dev_reg = dr.async_get(hass)
+    ent_reg = er.async_get(hass)
+
+    devices = dr.async_entries_for_config_entry(dev_reg, entry.entry_id)
+    removed = 0
+    for device in devices:
+        entities = er.async_entries_for_device(
+            ent_reg, device.id, include_disabled_entities=True
+        )
+        if entities:
+            continue
+        # No entities remain on this device — it's an orphaned (e.g. grouping-off)
+        # sub-device. Detach it from this config entry; HA deletes the device once
+        # it has no remaining config entries.
+        LOGGER.info(
+            "Removing orphaned device %r (%s) — no entities remain",
+            device.name,
+            device.identifiers,
+        )
+        dev_reg.async_update_device(device.id, remove_config_entry_id=entry.entry_id)
+        removed += 1
+
+    if removed:
+        LOGGER.info("Monitor My Solar: removed %d orphaned device(s)", removed)
+    return removed
+
+
+async def async_migrate_dongleless_unique_ids(hass: HomeAssistant, entry, coordinator) -> int:
+    """Fix per-dongle entities that were registered with a dongle-less unique_id.
+
+    TemperatureSensor / CalculatedSensor (and historically others) used to build
+    their registry unique_id as ``{entry_id}_{key}`` — WITHOUT the dongle id — while
+    the same key created as a plain sensor used ``{entry_id}_{dongle}_{key}``. The
+    two differing unique_ids made HA create a second entity (``_2``) and orphan the
+    first. Now that every per-dongle class uses the dongle-scoped form, rewrite any
+    surviving dongle-less unique_id to the dongle-scoped one via the registry so the
+    existing entity is REUSED (history kept) and its clean entity_id is reclaimed —
+    instead of a fresh duplicate appearing on the next start.
+
+    Only safe/meaningful for single-dongle installs (we can't know which dongle a
+    dongle-less uid belonged to when there are several). Multi-dongle installs never
+    had the dongle-less form for these classes in practice.
+    """
+    if len(coordinator._dongle_ids) != 1:
+        return 0
+
+    dongle_id = coordinator._dongle_ids[0]
+    ent_reg = er.async_get(hass)
+    prefix = f"{entry.entry_id}_".lower()
+    dongle_seg = f"{entry.entry_id}_{dongle_id}_".lower()
+
+    migrated = 0
+    for reg_entry in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
+        uid = reg_entry.unique_id
+        # Skip if already dongle-scoped, or not one of our prefixed uids.
+        if not uid.startswith(prefix) or uid.startswith(dongle_seg):
+            continue
+        # Skip combined/aggregate uids (they legitimately have no single dongle).
+        key = uid[len(prefix):]
+        if key.startswith("combined") or key == "sync_status":
+            continue
+
+        new_uid = f"{dongle_seg}{key}"
+        # Don't collide with an already-correct entity.
+        existing = ent_reg.async_get_entity_id(
+            reg_entry.entity_id.split(".")[0], DOMAIN, new_uid
+        )
+        if existing and existing != reg_entry.entity_id:
+            # The correct entity already exists; this dongle-less one is a true
+            # orphan/duplicate — remove it so it stops shadowing the clean id.
+            LOGGER.info(
+                "Removing duplicate dongle-less entity %s (uid %s); %s already holds %s",
+                reg_entry.entity_id, uid, existing, new_uid,
+            )
+            ent_reg.async_remove(reg_entry.entity_id)
+            migrated += 1
+            continue
+
+        LOGGER.info(
+            "Migrating dongle-less unique_id %s -> %s (%s)", uid, new_uid, reg_entry.entity_id
+        )
+        try:
+            ent_reg.async_update_entity(reg_entry.entity_id, new_unique_id=new_uid)
+        except ValueError as err:
+            LOGGER.warning("Could not migrate uid for %s: %s", reg_entry.entity_id, err)
+            continue
+        migrated += 1
+
+    if migrated:
+        LOGGER.info("Monitor My Solar: fixed %d dongle-less unique_id(s)", migrated)
+    return migrated

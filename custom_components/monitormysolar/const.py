@@ -306,7 +306,7 @@ STATUS_DIAGNOSTIC_SENSORS = [
     {"name": "MQTT HA State", "type": "sensor", "unique_id": "mqtt_ha_state", "status_field": "mqtt.ha_state", "sensor_class": "status_field", "device_group": "Diagnostics"},
     {"name": "MQTT Web State", "type": "sensor", "unique_id": "mqtt_web_state", "status_field": "mqtt.web_state", "sensor_class": "status_field", "device_group": "Diagnostics"},
     {"name": "Inverter Server State", "type": "sensor", "unique_id": "lux_server_state", "status_field": "lux_server.state", "sensor_class": "status_field", "device_group": "Diagnostics"},
-    {"name": "SD Card Health", "type": "sensor", "unique_id": "sd_health", "status_field": "sd.health", "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "SD Card Health", "type": "sensor", "unique_id": "sd_health", "status_field": "sd.health", "sensor_class": "status_field", "device_group": "Diagnostics", "require_field": True, "entity_registry_enabled_default": False},
     {"name": "Last Reset Reason", "type": "sensor", "unique_id": "last_reset_reason", "status_field": "Last_Reset_Reason", "sensor_class": "status_field", "device_group": "Diagnostics"},
     # --- Memory diagnostics ---
     # Raw-byte heap/PSRAM sensors are disabled by default: they're large, noisy,
@@ -322,7 +322,7 @@ STATUS_DIAGNOSTIC_SENSORS = [
     {"name": "Crash Count", "type": "sensor", "unique_id": "crash_count", "status_field": "crash.count", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics"},
     {"name": "Inverter Server Reconnects", "type": "sensor", "unique_id": "lux_server_reconnects", "status_field": "lux_server.reconnects", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics"},
     {"name": "Inverter Server Failed", "type": "sensor", "unique_id": "lux_server_failed", "status_field": "lux_server.failed", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics"},
-    {"name": "SD Write Failures", "type": "sensor", "unique_id": "sd_write_failures", "status_field": "sd.write_failures", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics"},
+    {"name": "SD Write Failures", "type": "sensor", "unique_id": "sd_write_failures", "status_field": "sd.write_failures", "state_class": SensorStateClass.TOTAL_INCREASING, "sensor_class": "status_field", "device_group": "Diagnostics", "require_field": True, "entity_registry_enabled_default": False},
 ]
 
 
@@ -650,7 +650,7 @@ ENTITIES = {
                     {"name": "Active Power", "type": "number", "unique_id": "ActivePowerPercentCMD", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank2", "device_group": "Controls", "allowed_groups": ["legacy", "ac_coupled"]},
                     #{"name": "Charge Power Rate", "type": "number", "unique_id": "ChargePowerPercentCMD", "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank2", "device_group": "Controls", "allowed_groups": ["legacy", "ac_coupled"]},
                     {"name": "System Discharge Power Rate", "type": "number", "unique_id": "DischgPowerPercentCMD", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank2", "device_group": "Controls"}, # Always % no matter machine type All machines
-                    {"name": "AC Charge Rate kW", "type": "number", "unique_id": "ACChgPowerCMD", "unit": "kW", "min": 0, "max": 24, "mode": "slider", "source": "holdbank2", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"]},
+                    {"name": "AC Charge Rate kW", "type": "number", "unique_id": "ACChgPowerCMD", "unit": "kW", "min": 0, "max": 24, "step": 0.1, "mode": "slider", "source": "holdbank2", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"], "display_scale": 10},
                     {"name": "AC Charge Rate %", "type": "number", "unique_id": "ACChgPowerCMD", "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank2", "device_group": "Controls", "allowed_groups": ["legacy"]},
                     {"name": "AC Charge SOC Limit", "type": "number", "unique_id": "ACChgSOCLimit", "unit": "%", "min": 0, "max": 100, "mode": "slider", "class": "BATTERY", "source": "holdbank2", "device_group": "Controls"},
                     {"name": "Charge First Rate", "type": "number", "unique_id": "ChgFirstPowerCMD", "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank2", "device_group": "Controls"},
@@ -716,7 +716,7 @@ ENTITIES = {
                     {"name": "NEC 120 Current Limit", "type": "number", "unique_id": "NEC_120CurrLimit", "unit": "A", "min": 0, "max": 200, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                 ],
                 "holdbank3": [
-                    {"name": "Force Discharge Power Rate kW", "type": "number", "unique_id": "ForcedDischgPowerCMD", "unit": "kW", "min": 0, "max": 24 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"], "device_group": "Controls"}, # KW for GEN units % for Legcay A***/B*** These need to be Derrived not manually written
+                    {"name": "Force Discharge Power Rate kW", "type": "number", "unique_id": "ForcedDischgPowerCMD", "unit": "kW", "min": 0, "max": 24 , "step": 0.1, "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"], "device_group": "Controls", "display_scale": 10}, # KW for GEN units % for Legcay A***/B*** These need to be Derrived not manually written
                     {"name": "Force Discharge Power Rate %", "type": "number", "unique_id": "ForcedDischgPowerCMD", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["legacy"], "device_group": "Controls"},
                     {"name": "Force Discharge SOC Limit", "type": "number", "unique_id": "ForcedDischgSOCLimit", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank3", "device_group": "Controls"}, # Always % no matter the machine
                     {"name": "Lead acid Charge Rate (A)", "type": "number", "unique_id": "ChargeRate", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
@@ -725,7 +725,7 @@ ENTITIES = {
                     {"name": "Battery Charge Start Point (W)", "type": "number", "unique_id": "PtoUserStartchg", "unit": "W", "min": -50, "max": 1, "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
                     {"name": "CT Offset (W)", "type": "number", "unique_id": "wCT_PowerOffset", "unit": "W", "min": -1000, "max": 1000 , "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
                     {"name": "Export Power (%)", "type": "number", "unique_id": "MaxBackFlow", "unit": "W", "min": 0, "max": 200 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["legacy"], "device_group": "Controls"},
-                    {"name": "Export Power (kW)", "type": "number", "unique_id": "MaxBackFlow", "unit": "kW", "min": 0, "max": 24 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"], "device_group": "Controls"},
+                    {"name": "Export Power (kW)", "type": "number", "unique_id": "MaxBackFlow", "unit": "kW", "min": 0, "max": 24 , "step": 0.1, "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"], "device_group": "Controls", "display_scale": 10},
                     {"name": "On-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "EOD", "unit": "%", "min": 0, "max": 90, "mode": "slider", "source": "holdbank3", "device_group": "Controls"},
                     {"name": "Off-grid Battery Voltage Cut off", "type": "number", "unique_id": "CutVoltForDischg", "unit": "V", "min": 40, "max": 56, "mode": "slider", "source": "holdbank3", "device_group": "Controls"},
                     {"name": "Charge Current DC(A)", "type": "number", "unique_id": "ChargeCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},

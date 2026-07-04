@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import time
 from typing import Any, cast, Set, List, Dict
 from propcache import cached_property
 
@@ -84,6 +85,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._snapshot_requested: Set[str] = set()  # Dongles we've requested a full snapshot from this session
         self._dongle_availability: Dict[str, bool] = {}  # Track LWT online/offline per dongle
         self._dongle_boot_count: Dict[str, int] = {}  # Last-seen boot.count per dongle (detect silent reboots)
+        # Recovery bookkeeping (monotonic seconds): last time we saw ANY message
+        # from a dongle, and last time we sent it a recovery snapshot (for debounce).
+        self._dongle_last_seen: Dict[str, float] = {}
+        self._last_recovery_snapshot: Dict[str, float] = {}
+        # A dongle that has been silent longer than this is considered "gone dark";
+        # the next message it sends triggers a recovery snapshot.
+        self._dongle_stale_after = 90.0
+        # Don't send more than one recovery snapshot per dongle within this window.
+        self._recovery_snapshot_debounce = 30.0
         self._has_gridboss = entry.data.get("has_gridboss", False)  # Track if GridBoss is enabled
         self._gridboss_dongle = entry.data.get("gridboss_dongle", "")  # Track which dongle is GridBoss
         self._last_fault_warning_data = {}  # Track last fault/warning data to prevent duplicate processing
@@ -177,20 +187,72 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         except Exception as e:
             LOGGER.debug(f"Snapshot request publish failed for {dongle_id} (non-fatal): {e}")
 
-    def build_entity_id(self, platform: str, dongle_id: str, type_suffix: str) -> str:
-        """Build an entity_id honoring the drop_dongle_id flag.
+    async def request_recovery_snapshot(self, dongle_id: str, reason: str) -> None:
+        """Force a snapshot after a dongle recovers, debounced per dongle.
 
-        The dongle id prefix is only dropped for single-dongle installs (multi-dongle
-        needs it to disambiguate, e.g. two dongles both exposing 'battery_soc'). The
-        entity's unique_id is unaffected, so history follows across a scheme change.
+        Called from the recovery triggers (availability 'online', silent-reboot,
+        or a data gap). Debounced so a burst of triggers (e.g. availability +
+        first status arriving together) only sends one request.
+        """
+        now = time.monotonic()
+        last = self._last_recovery_snapshot.get(dongle_id, 0.0)
+        if now - last < self._recovery_snapshot_debounce:
+            return
+        self._last_recovery_snapshot[dongle_id] = now
+        LOGGER.info("Recovery snapshot for %s (%s)", dongle_id, reason)
+        await self.request_snapshot(
+            dongle_id, self.current_fw_versions.get(dongle_id, ""), force=True
+        )
+
+    async def mark_dongle_seen(self, dongle_id: str) -> None:
+        """Record that a message arrived from a dongle and detect gap recovery.
+
+        If the dongle had been silent past the stale threshold (it went dark, e.g.
+        a restart whose LWT 'offline' we never received), its next message triggers
+        a recovery snapshot so entities repopulate instead of staying unavailable.
+        """
+        now = time.monotonic()
+        previous = self._dongle_last_seen.get(dongle_id)
+        self._dongle_last_seen[dongle_id] = now
+        if previous is not None and (now - previous) > self._dongle_stale_after:
+            await self.request_recovery_snapshot(
+                dongle_id, f"data resumed after {int(now - previous)}s gap"
+            )
+
+    def get_entity_prefix(self, dongle_id: str) -> str:
+        """Return the per-dongle entity_id prefix, or "" for none.
+
+        Sourced from the dongle's `entity_prefix` in dongle_data (set during setup:
+        empty on single-dongle installs, mandatory dongle-id-or-custom on
+        multi/parallel/gridboss). Falls back to the legacy behaviour for entries
+        created before entity_prefix existed:
+          - single dongle + drop_dongle_id flag -> "" (clean)
+          - otherwise -> the formatted dongle id (never risk a real collision).
+        The unique_id is unaffected by this, so entity_id renames preserve history.
+        """
+        info = self.get_dongle_info(dongle_id)
+        if info is not None and "entity_prefix" in info:
+            prefix = (info.get("entity_prefix") or "").strip()
+            # Explicitly configured (may be intentionally empty on single dongle).
+            return self.get_formatted_dongle_id(prefix) if prefix else ""
+
+        # Legacy entries without entity_prefix: preserve prior behaviour.
+        if getattr(self, "_drop_dongle_id", False) and len(self._dongle_ids) == 1:
+            return ""
+        return self.get_formatted_dongle_id(dongle_id)
+
+    def build_entity_id(self, platform: str, dongle_id: str, type_suffix: str) -> str:
+        """Build an entity_id using the dongle's entity_prefix.
+
+        prefix set -> "<platform>.<prefix>_<suffix>"; empty -> "<platform>.<suffix>".
+        The unique_id is separate and always dongle-scoped, so history follows across
+        any entity_id naming change.
         """
         suffix = type_suffix.lower()
-        # getattr default keeps this safe if called before __init__ finishes
-        # assigning the flag (e.g. lightweight test fixtures).
-        if getattr(self, "_drop_dongle_id", False) and len(self._dongle_ids) == 1:
-            return f"{platform}.{suffix}"
-        formatted = self.get_formatted_dongle_id(dongle_id)
-        return f"{platform}.{formatted}_{suffix}"
+        prefix = self.get_entity_prefix(dongle_id)
+        if prefix:
+            return f"{platform}.{prefix}_{suffix}"
+        return f"{platform}.{suffix}"
     
 
     @property
@@ -1135,7 +1197,13 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         try:
             dongle_id = topic.split('/')[0]
             #LOGGER.debug(f"Received MQTT message on topic {topic} from dongle {dongle_id}")
-            
+
+            # Record liveness and recover from a silent gap. The snapshot reply
+            # topics are excluded so the recovery snapshot doesn't re-arm itself
+            # from its own reply.
+            if not topic.endswith("/snap/input") and not topic.endswith("/snap/hold"):
+                await self.mark_dongle_seen(dongle_id)
+
             # Always process firmware code responses as they're needed for setup
             if topic.endswith("/firmwarecode/response"):
                 await self._handle_firmware_code_response(dongle_id, msg)
@@ -1676,7 +1744,13 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 )
             self._dongle_boot_count[dongle_id] = boot_count
 
-        await self.request_snapshot(dongle_id, version, force=reboot_detected)
+        if reboot_detected:
+            # A reboot (even one that kept the MQTT session, so /availability never
+            # flipped) resets the dongle's change-data baseline — recover.
+            await self.request_recovery_snapshot(dongle_id, "reboot detected")
+        else:
+            # First-status bootstrap (deduped once per session).
+            await self.request_snapshot(dongle_id, version)
 
         # Push the update so status-derived sensors (uptime + the /status
         # diagnostic sensors) refresh. /status arrives ~every 30s — far less often
@@ -1699,14 +1773,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             is_online = (state == "online")
             self._dongle_availability[dongle_id] = is_online
             LOGGER.debug(f"availability {dongle_id}={state}")
-            # On an offline->online recovery the dongle has reconnected and may
-            # have lost retained state, so force a fresh full snapshot. (was_online
-            # is None on the very first availability message — the /status path
-            # handles that initial bootstrap, so only act on a real transition.)
-            if is_online and was_online is False:
-                await self.request_snapshot(
-                    dongle_id, self.current_fw_versions.get(dongle_id, ""), force=True
-                )
+            # Force a fresh snapshot on ANY 'online' message except the very first
+            # one we ever see (was_online is None -> the /status bootstrap handles
+            # the initial populate). We can't rely on a clean offline->online
+            # transition: on a fast restart the LWT 'offline' is often missed (or
+            # the birth message is retained), so the state would read online->online
+            # and entities would stay unavailable. request_recovery_snapshot is
+            # debounced, so repeated 'online' messages don't spam the dongle.
+            if is_online and was_online is not None:
+                await self.request_recovery_snapshot(dongle_id, "availability online")
             return
 
         try:

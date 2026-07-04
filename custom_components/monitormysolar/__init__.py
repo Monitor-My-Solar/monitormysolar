@@ -4,7 +4,11 @@ from homeassistant.components import mqtt
 from homeassistant.helpers import service
 from .const import LOGGER, PLATFORMS
 from .coordinator import MonitorMySolar, MonitorMySolarEntry
-from .migration import async_migrate_entity_ids
+from .migration import (
+    async_migrate_entity_ids,
+    async_cleanup_orphan_devices,
+    async_migrate_dongleless_unique_ids,
+)
 
 async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
     """Set up Monitor My Solar from a config entry."""
@@ -82,6 +86,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
         LOGGER.error(error_msg)
         coordinator._setup_errors.append(error_msg)
 
+    # Step 3.6: Fix any per-dongle entities that were registered with a dongle-less
+    # unique_id (the cause of the _2 duplicates). Rewrites them to the dongle-scoped
+    # form via the registry — reusing the existing entity (history kept, clean
+    # entity_id reclaimed) — BEFORE platforms recreate entities.
+    try:
+        await async_migrate_dongleless_unique_ids(hass, entry, coordinator)
+    except Exception as e:
+        error_msg = f"Error migrating dongle-less unique ids: {e}"
+        LOGGER.error(error_msg)
+        coordinator._setup_errors.append(error_msg)
+
     # Step 4: Now that we have tried to get firmware codes, set up the platforms
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -95,7 +110,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
     # Step 6: Start listening to all MQTT topics for all dongles
     # Only do this once to avoid duplicate subscriptions
     await coordinator.start_mqtt_subscription()
-    
+
+    # Step 7: Prune orphaned devices (e.g. empty device-grouping sub-devices left
+    # behind after the user turned grouping off). Deferred until HA has started and
+    # entity registration has settled, so we never remove a device whose entities
+    # simply haven't finished registering yet.
+    from homeassistant.helpers.start import async_at_started
+    from homeassistant.helpers.event import async_call_later
+
+    async def _run_device_cleanup(*_):
+        try:
+            await async_cleanup_orphan_devices(hass, entry)
+        except Exception as e:
+            LOGGER.error(f"Error cleaning up orphaned devices: {e}")
+
+    def _schedule_device_cleanup(_event):
+        async_call_later(hass, 5, _run_device_cleanup)
+
+    async_at_started(hass, _schedule_device_cleanup)
+
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: MonitorMySolarEntry) -> bool:
