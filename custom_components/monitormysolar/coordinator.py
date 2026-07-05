@@ -102,6 +102,17 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._smartload_bits = {}  # Track SmartLoad Bits for each dongle
         self._port_modes = {}  # Track Port Mode settings for each dongle
 
+        # Self-write ledger for de-duplicating the FW >= 4.3.0 dual confirmation.
+        # A HA write is acked on BOTH <dongle>/response (legacy, drives the
+        # send lock + revert) AND <dongle>/setting/updated (durable echo). Both
+        # carry the same value. We record what WE just wrote here; when the
+        # matching /setting/updated echo arrives within the window we skip its
+        # redundant refresh. Echoes for writes we DIDN'T make (Lux server, web
+        # UI, HA TCP) have no ledger entry and still apply. Key: (dongle_id,
+        # setting_suffix) -> (normalized_value, monotonic_ts).
+        self._self_write_ledger: Dict[tuple, tuple] = {}
+        self._self_write_dedup_window = 10.0  # seconds
+
         # Battery extended data tracking
         self._battery_data: Dict[str, Dict] = {}  # {dongle_id: battery payload data}
         self._battery_entities_created: Set[str] = set()  # Track which dongles have battery entities
@@ -1238,7 +1249,14 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             else:
                 # Process messages normally after startup is complete
                 if topic.endswith("/response"):
-                    await self.mqtt_handler.response_received(msg)
+                    # /response is owned by the dedicated subscription created in
+                    # MQTTHandler._process_command for the in-flight write (it
+                    # drives the send lock, revert-on-failure and confirm). The
+                    # wildcard {dongle}/# sub also delivers it here — calling
+                    # response_received again would double-process the same ack.
+                    # Skip it; when no write is in flight there's nothing to do
+                    # anyway (current_entity is None -> early return).
+                    pass
                 elif topic.endswith("/status"):
                     await self.process_status_message(dongle_id, msg.payload)
                 else:
@@ -1806,12 +1824,33 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             from_who = data.get("from") or ""
             if setting and value is not None:
                 formatted_suffix = setting.lower().replace("-", "_").replace(":", "_")
-                entity_type = self.determine_entity_type(formatted_suffix)
+                # Resolve the platform AND catalog entry so we can coerce the
+                # value (FW >= 4.3.0 sends it as a string like "1.00") to the
+                # entity's native type — an int index for selects, float for
+                # numbers, etc. Without this a select lands a raw "1.00" that
+                # matches no option and renders 'unknown'.
+                entity_type, entry = self.find_catalog_entry(formatted_suffix)
+                if entity_type is None:
+                    entity_type = self.determine_entity_type(formatted_suffix)
+                normalized = self.normalize_setting_value(entity_type, entry, value)
                 entity_id = self.build_entity_id(entity_type, dongle_id, formatted_suffix)
-                self.entities[entity_id] = value
+
+                # Dedup the dual FW >= 4.3.0 confirmation: if HA itself just
+                # wrote this same value, /response already applied it (and drove
+                # the optimistic state). Skip the redundant refresh here so we
+                # don't process the same write twice. Echoes for writes we didn't
+                # make have no ledger entry and fall through normally.
+                if self._is_own_recent_write(dongle_id, formatted_suffix, normalized):
+                    LOGGER.debug(
+                        f"setting/updated deduped (own write): {entity_id}={normalized!r}"
+                    )
+                    return
+
+                self.entities[entity_id] = normalized
                 self.async_set_updated_data(self.entities)
                 LOGGER.debug(
-                    f"setting/updated routed: {entity_id}={value} (from={from_who})"
+                    f"setting/updated routed: {entity_id}={normalized!r} "
+                    f"(raw={value!r}, type={entity_type}, from={from_who})"
                 )
             return
 
@@ -1974,6 +2013,111 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # Update coordinator data after processing all entities
         self.async_set_updated_data(self.entities)
     
+
+    def find_catalog_entry(self, entity_id_suffix):
+        """Return (entity_type, entry_dict) for a setting key, or (None, None).
+
+        Used by the /setting/updated durable-confirmation channel to learn a
+        setting's platform AND its metadata (e.g. a select's option list) so the
+        raw value can be normalized to the entity's native representation before
+        it lands in the coordinator.
+        """
+        suffix_lower = entity_id_suffix.lower()
+        brand_entities = ENTITIES.get(self.inverter_brand, {})
+        if not brand_entities:
+            return None, None
+        for entity_type in ["sensor", "switch", "number", "time", "time_hhmm", "button", "select"]:
+            if entity_type in brand_entities:
+                for _bank, entries in brand_entities[entity_type].items():
+                    for entry in entries:
+                        if entry["unique_id"].lower() == suffix_lower:
+                            resolved = "time" if entity_type == "time_hhmm" else entity_type
+                            return resolved, entry
+        return None, None
+
+    def normalize_setting_value(self, entity_type, entry, value):
+        """Coerce a /setting/updated raw value to the entity's native type.
+
+        FW >= 4.3.0 emits every write on <dongle>/setting/updated with the value
+        formatted as a STRING (e.g. "1.00" for a numeric register). Each platform
+        expects a specific Python type in coordinator.entities:
+          - select : int option index (decoded from "1.00" -> 1)
+          - number : float (or int)
+          - switch : int/bool 0/1
+          - time   : string, left as-is
+        Anything we can't confidently coerce is returned unchanged so the caller
+        (and the entity's _handle_coordinator_update) can fall back safely.
+        """
+        if value is None:
+            return None
+
+        # A numeric-looking string like "1.00" -> number. Keep the parsed float
+        # around for the int-index / float paths below.
+        num = None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            num = float(value)
+        elif isinstance(value, str):
+            try:
+                num = float(value.strip())
+            except (ValueError, AttributeError):
+                num = None
+
+        if entity_type == "select":
+            options = (entry or {}).get("options") or []
+            # Already a valid option label? Leave it.
+            if value in options:
+                return value
+            if num is not None:
+                idx = int(round(num))
+                if 0 <= idx < len(options):
+                    return idx  # int index -> select decodes to the label
+            return value  # unknown form; let the entity decide
+        if entity_type == "number":
+            if num is not None:
+                # Preserve integers as int where the value is whole.
+                return int(num) if num.is_integer() else num
+            return value
+        if entity_type == "switch":
+            if num is not None:
+                return 1 if num != 0 else 0
+            return value
+        # time / sensor / anything else: pass through untouched.
+        return value
+
+    def record_self_write(self, dongle_id: str, setting: str, value) -> None:
+        """Note a value HA just wrote, so its /setting/updated echo can be deduped.
+
+        `setting` is normalized to the same suffix form used when routing the
+        echo. Called from the MQTT handler right after publishing a write.
+        """
+        suffix = setting.lower().replace("-", "_").replace(":", "_")
+        entity_type, entry = self.find_catalog_entry(suffix)
+        if entity_type is None:
+            entity_type = self.determine_entity_type(suffix)
+        normalized = self.normalize_setting_value(entity_type, entry, value)
+        if not hasattr(self, "_self_write_ledger"):
+            self._self_write_ledger = {}
+        self._self_write_ledger[(dongle_id, suffix)] = (normalized, time.monotonic())
+
+    def _is_own_recent_write(self, dongle_id: str, suffix: str, normalized_value) -> bool:
+        """True if HA just wrote this exact (setting, value) within the window."""
+        ledger = getattr(self, "_self_write_ledger", None)
+        if ledger is None:
+            return False
+        entry = ledger.get((dongle_id, suffix))
+        if not entry:
+            return False
+        recorded_value, ts = entry
+        window = getattr(self, "_self_write_dedup_window", 10.0)
+        if (time.monotonic() - ts) > window:
+            # Stale — drop it so a later external write isn't wrongly deduped.
+            ledger.pop((dongle_id, suffix), None)
+            return False
+        if recorded_value == normalized_value:
+            # Consume it: the echo has now been accounted for.
+            ledger.pop((dongle_id, suffix), None)
+            return True
+        return False
 
     def determine_entity_type(self, entity_id_suffix):
         """Determine the entity type based on the entity_id_suffix."""
