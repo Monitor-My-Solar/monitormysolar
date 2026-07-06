@@ -4,6 +4,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.components import mqtt
+from homeassistant.helpers import config_validation as cv
 import asyncio
 from .const import DOMAIN, CONF_ENABLE_DEVICE_GROUPING, DEFAULT_ENABLE_DEVICE_GROUPING, CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX, CONF_DROP_DONGLE_ID, CONF_USE_BETA, DEFAULT_USE_BETA
 
@@ -651,7 +652,47 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
         """Manage the options - main menu."""
         return self.async_show_menu(
             step_id="init",
-            menu_options=["manage_dongles", "update_settings", "check_status"]
+            menu_options=["manage_dongles", "update_settings", "restore_entities", "check_status"]
+        )
+
+    async def async_step_restore_entities(self, user_input=None):
+        """Restore entities that a reload won't bring back (deleted or disabled).
+
+        When a user deletes an entity from the UI, HA remembers the unique_id as
+        deleted and refuses to recreate it on setup — reboots don't help. This
+        step lists those (plus disabled ones), lets the user pick which to bring
+        back, clears the blocking registry records, and reloads so the platforms
+        recreate them fresh from the catalog.
+        """
+        from .migration import list_restorable_entities, async_restore_entities
+
+        restorable = list_restorable_entities(self.hass, self.config_entry)
+
+        if not restorable:
+            return self.async_abort(reason="no_restorable_entities")
+
+        if user_input is not None:
+            selected = user_input.get("entities", [])
+            if selected:
+                await async_restore_entities(self.hass, self.config_entry, selected)
+                # Reload so platform setup recreates any purged-deleted entities.
+                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        # Label each choice with its state so the user knows what they're getting.
+        options = {
+            item["key"]: f"{item['name']} ({item['state']}) — {item['entity_id']}"
+            for item in restorable
+        }
+
+        schema = vol.Schema({
+            vol.Optional("entities", default=list(options.keys())): cv.multi_select(options)
+        })
+
+        return self.async_show_form(
+            step_id="restore_entities",
+            data_schema=schema,
+            description_placeholders={"count": str(len(restorable))},
         )
     
     async def async_step_manage_dongles(self, user_input=None):

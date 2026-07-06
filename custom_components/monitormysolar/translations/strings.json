@@ -1,121 +1,140 @@
 {
-    "en": {
-        "title": "Inverter MQTT Configuration",
-        "step": {
-            "user": {
-                "data": {
-                    "inverter_brand": "Inverter Brand",
-                    "update_interval": "Data Update Frequency"
-                },
-                "description": "Please select your inverter brand and configure how often data is saved to the database.",
-                "title": "Inverter Brand Selection"
-            },
-            "single_inverter": {
-                "data": {
-                    "dongle_id": "Dongle ID",
-                    "install_kind": "Install type"
-                },
-                "data_description": {
-                    "install_kind": "Choose 'Reconnecting an existing system' if you previously ran Monitor My Solar on this Home Assistant and want your existing history kept. Choose 'Fresh install' for cleaner entity names without the dongle ID."
-                },
-                "description": "Configure your {brand} inverter settings.",
-                "title": "Single Inverter Setup"
-            },
-            "setup_type": {
-                "data": {
-                    "setup_type": "Setup Type"
-                },
-                "description": "Choose the type of setup for your {brand} inverter(s).",
-                "title": "Setup Type Selection"
-            },
-            "parallel": {
-                "data": {
-                    "master_dongle_id": "Master Dongle ID",
-                    "slave_dongle_id_1": "Slave Dongle ID #1 (optional)",
-                    "slave_dongle_id_2": "Slave Dongle ID #2 (optional)",
-                    "slave_dongle_id_3": "Slave Dongle ID #3 (optional)",
-                    "slave_dongle_id_4": "Slave Dongle ID #4 (optional)",
-                    "slave_dongle_id_5": "Slave Dongle ID #5 (optional)"
-                },
-                "description": "Configure your {brand} parallel setup with the master dongle and up to 5 slave inverters.",
-                "title": "Parallel Inverter Configuration"
-            },
-            "single_gridboss": {
-                "data": {
-                    "gridboss_dongle_id": "GridBoss Dongle ID",
-                    "slave_dongle_id_1": "Slave Dongle ID #1 (optional)",
-                    "slave_dongle_id_2": "Slave Dongle ID #2 (optional)",
-                    "slave_dongle_id_3": "Slave Dongle ID #3 (optional)"
-                },
-                "description": "Configure your {brand} single GridBoss setup with the GridBoss dongle and up to 3 slave inverters.",
-                "title": "Single GridBoss Configuration"
-            },
-            "dual_gridboss": {
-                "data": {
-                    "gridboss1_dongle_id": "GridBoss 1 Dongle ID",
-                    "gridboss2_dongle_id": "GridBoss 2 Dongle ID",
-                    "gridboss1_slave_dongle_id_1": "GridBoss 1 Slave Dongle ID #1 (optional)",
-                    "gridboss1_slave_dongle_id_2": "GridBoss 1 Slave Dongle ID #2 (optional)",
-                    "gridboss1_slave_dongle_id_3": "GridBoss 1 Slave Dongle ID #3 (optional)",
-                    "gridboss2_slave_dongle_id_1": "GridBoss 2 Slave Dongle ID #1 (optional)",
-                    "gridboss2_slave_dongle_id_2": "GridBoss 2 Slave Dongle ID #2 (optional)",
-                    "gridboss2_slave_dongle_id_3": "GridBoss 2 Slave Dongle ID #3 (optional)"
-                },
-                "description": "Configure your {brand} dual GridBoss setup with two GridBoss dongles, each with up to 3 slave inverters.",
-                "title": "Dual GridBoss Configuration"
-            },
-            "gridboss": {
-                "data": {
-                    "gridboss_dongle": "GridBoss Dongle"
-                },
-                "description": "Select which dongle is connected to your GridBoss unit.",
-                "title": "GridBoss Configuration"
-            }
+  "en": {
+    "title": "Inverter MQTT Configuration",
+    "step": {
+      "user": {
+        "data": {
+          "inverter_brand": "Inverter Brand",
+          "update_interval": "Data Update Frequency"
         },
-        "error": {
-            "cannot_connect": "Cannot connect to the MQTT server. Please check your settings."
-        }
+        "description": "Please select your inverter brand and configure how often data is saved to the database.",
+        "title": "Inverter Brand Selection"
+      },
+      "single_inverter": {
+        "data": {
+          "dongle_id": "Dongle ID",
+          "install_kind": "Install type"
+        },
+        "data_description": {
+          "install_kind": "Choose 'Reconnecting an existing system' if you previously ran Monitor My Solar on this Home Assistant and want your existing history kept. Choose 'Fresh install' for cleaner entity names without the dongle ID."
+        },
+        "description": "Configure your {brand} inverter settings.",
+        "title": "Single Inverter Setup"
+      },
+      "setup_type": {
+        "data": {
+          "setup_type": "Setup Type"
+        },
+        "description": "Choose the type of setup for your {brand} inverter(s).",
+        "title": "Setup Type Selection"
+      },
+      "parallel": {
+        "data": {
+          "master_dongle_id": "Master Dongle ID",
+          "slave_dongle_id_1": "Slave Dongle ID #1 (optional)",
+          "slave_dongle_id_2": "Slave Dongle ID #2 (optional)",
+          "slave_dongle_id_3": "Slave Dongle ID #3 (optional)",
+          "slave_dongle_id_4": "Slave Dongle ID #4 (optional)",
+          "slave_dongle_id_5": "Slave Dongle ID #5 (optional)"
+        },
+        "description": "Configure your {brand} parallel setup with the master dongle and up to 5 slave inverters.",
+        "title": "Parallel Inverter Configuration"
+      },
+      "single_gridboss": {
+        "data": {
+          "gridboss_dongle_id": "GridBoss Dongle ID",
+          "slave_dongle_id_1": "Slave Dongle ID #1 (optional)",
+          "slave_dongle_id_2": "Slave Dongle ID #2 (optional)",
+          "slave_dongle_id_3": "Slave Dongle ID #3 (optional)"
+        },
+        "description": "Configure your {brand} single GridBoss setup with the GridBoss dongle and up to 3 slave inverters.",
+        "title": "Single GridBoss Configuration"
+      },
+      "dual_gridboss": {
+        "data": {
+          "gridboss1_dongle_id": "GridBoss 1 Dongle ID",
+          "gridboss2_dongle_id": "GridBoss 2 Dongle ID",
+          "gridboss1_slave_dongle_id_1": "GridBoss 1 Slave Dongle ID #1 (optional)",
+          "gridboss1_slave_dongle_id_2": "GridBoss 1 Slave Dongle ID #2 (optional)",
+          "gridboss1_slave_dongle_id_3": "GridBoss 1 Slave Dongle ID #3 (optional)",
+          "gridboss2_slave_dongle_id_1": "GridBoss 2 Slave Dongle ID #1 (optional)",
+          "gridboss2_slave_dongle_id_2": "GridBoss 2 Slave Dongle ID #2 (optional)",
+          "gridboss2_slave_dongle_id_3": "GridBoss 2 Slave Dongle ID #3 (optional)"
+        },
+        "description": "Configure your {brand} dual GridBoss setup with two GridBoss dongles, each with up to 3 slave inverters.",
+        "title": "Dual GridBoss Configuration"
+      },
+      "gridboss": {
+        "data": {
+          "gridboss_dongle": "GridBoss Dongle"
+        },
+        "description": "Select which dongle is connected to your GridBoss unit.",
+        "title": "GridBoss Configuration"
+      }
     },
-    "es": {
-        "title": "Configuración de Inverter MQTT",
-        "step": {
-            "user": {
-                "data": {
-                    "inverter_brand": "Marca del Inversor",
-                    "mqtt_server": "Servidor MQTT",
-                    "mqtt_port": "Puerto MQTT",
-                    "mqtt_username": "Nombre de usuario MQTT",
-                    "mqtt_password": "Contraseña MQTT",
-                    "dongle_id": "ID del Dongle",
-                    "parallel_inverters": "Configurar Múltiples Inversores en Paralelo",
-                    "has_gridboss": "GridBoss Conectado",
-                    "update_interval": "Intervalo de Actualización de Base de Datos",
-                    "dongle_id_2": "ID de Dongle Adicional #2 (opcional)",
-                    "dongle_id_3": "ID de Dongle Adicional #3 (opcional)",
-                    "dongle_id_4": "ID de Dongle Adicional #4 (opcional)"
-                },
-                "description": "Por favor, ingrese la siguiente información para configurar su inversor.",
-                "title": "Configuración de Inverter MQTT"
-            },
-            "parallel": {
-                "data": {
-                    "dongle_id_2": "ID de Dongle #2",
-                    "dongle_id_3": "ID de Dongle #3",
-                    "dongle_id_4": "ID de Dongle #4"
-                },
-                "description": "Ingrese los IDs de dongle adicionales para sus inversores en paralelo.",
-                "title": "Configuración de Múltiples Inversores"
-            },
-            "gridboss": {
-                "data": {
-                    "gridboss_dongle": "Dongle GridBoss"
-                },
-                "description": "Seleccione qué dongle está conectado a su unidad GridBoss.",
-                "title": "Configuración de GridBoss"
-            }
-        },
-        "error": {
-            "cannot_connect": "No se puede conectar al servidor MQTT. Por favor, revise sus configuraciones."
-        }
+    "error": {
+      "cannot_connect": "Cannot connect to the MQTT server. Please check your settings."
     }
+  },
+  "es": {
+    "title": "Configuración de Inverter MQTT",
+    "step": {
+      "user": {
+        "data": {
+          "inverter_brand": "Marca del Inversor",
+          "mqtt_server": "Servidor MQTT",
+          "mqtt_port": "Puerto MQTT",
+          "mqtt_username": "Nombre de usuario MQTT",
+          "mqtt_password": "Contraseña MQTT",
+          "dongle_id": "ID del Dongle",
+          "parallel_inverters": "Configurar Múltiples Inversores en Paralelo",
+          "has_gridboss": "GridBoss Conectado",
+          "update_interval": "Intervalo de Actualización de Base de Datos",
+          "dongle_id_2": "ID de Dongle Adicional #2 (opcional)",
+          "dongle_id_3": "ID de Dongle Adicional #3 (opcional)",
+          "dongle_id_4": "ID de Dongle Adicional #4 (opcional)"
+        },
+        "description": "Por favor, ingrese la siguiente información para configurar su inversor.",
+        "title": "Configuración de Inverter MQTT"
+      },
+      "parallel": {
+        "data": {
+          "dongle_id_2": "ID de Dongle #2",
+          "dongle_id_3": "ID de Dongle #3",
+          "dongle_id_4": "ID de Dongle #4"
+        },
+        "description": "Ingrese los IDs de dongle adicionales para sus inversores en paralelo.",
+        "title": "Configuración de Múltiples Inversores"
+      },
+      "gridboss": {
+        "data": {
+          "gridboss_dongle": "Dongle GridBoss"
+        },
+        "description": "Seleccione qué dongle está conectado a su unidad GridBoss.",
+        "title": "Configuración de GridBoss"
+      }
+    },
+    "error": {
+      "cannot_connect": "No se puede conectar al servidor MQTT. Por favor, revise sus configuraciones."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "restore_entities": "Restore Deleted Entities"
+        }
+      },
+      "restore_entities": {
+        "title": "Restore Entities",
+        "description": "{count} entity(ies) can be restored. These were deleted or disabled and won't come back on a normal reload. Select the ones to bring back — they'll be recreated from the catalog.",
+        "data": {
+          "entities": "Entities to restore"
+        }
+      }
+    },
+    "abort": {
+      "no_restorable_entities": "There are no deleted or disabled entities to restore."
+    }
+  }
 }

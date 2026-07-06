@@ -11,11 +11,70 @@ and HA carries the history across for us.
 """
 from __future__ import annotations
 
+import logging
+from logging.handlers import RotatingFileHandler
+
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN, LOGGER, CONF_DROP_DONGLE_ID
+
+# ---------------------------------------------------------------------------
+# Dedicated migration audit log — <config>/monitormysolar_migration.log
+# ---------------------------------------------------------------------------
+# A standalone, human-readable record of exactly what the migrations did to the
+# entity registry each setup: what was renamed, removed, reclaimed. It survives
+# HA's log rotation (its own rotating file) so a downgrade→upgrade run can be
+# audited after the fact — which the main HA log couldn't give us.
+_AUDIT_LOGGER_NAME = "monitormysolar.migration_audit"
+_audit_logger: logging.Logger | None = None
+
+
+def _get_audit_logger(hass: HomeAssistant) -> logging.Logger:
+    """Lazily build a file-backed audit logger in the HA config directory."""
+    global _audit_logger
+    if _audit_logger is not None:
+        return _audit_logger
+
+    logger = logging.getLogger(_AUDIT_LOGGER_NAME)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False  # don't spam the main HA log
+
+    # Only attach the file handler once.
+    if not logger.handlers:
+        try:
+            path = hass.config.path("monitormysolar_migration.log")
+            handler = RotatingFileHandler(
+                path, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+            )
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S")
+            )
+            logger.addHandler(handler)
+        except Exception as err:  # pragma: no cover - fs edge cases
+            LOGGER.warning("Could not open migration audit log: %s", err)
+
+    _audit_logger = logger
+    return logger
+
+
+def audit(hass: HomeAssistant, message: str) -> None:
+    """Write one line to the migration audit log (and echo to the main log)."""
+    try:
+        _get_audit_logger(hass).info(message)
+    except Exception:  # pragma: no cover
+        pass
+    LOGGER.info("[migration] %s", message)
+
+
+def audit_session(hass: HomeAssistant, entry, coordinator, phase: str) -> None:
+    """Write a session header so runs are easy to tell apart in the log."""
+    dongles = ", ".join(getattr(coordinator, "_dongle_ids", []) or [])
+    audit(
+        hass,
+        f"===== {phase} | entry={entry.entry_id} | dongles=[{dongles}] =====",
+    )
 
 
 def _desired_entity_id(entity_id: str, drop: bool, formatted_dongle_ids: list[str]) -> str | None:
@@ -92,25 +151,18 @@ async def async_migrate_entity_ids(hass: HomeAssistant, entry, coordinator) -> N
             )
             continue
 
-        LOGGER.info(
-            "Migrating entity_id %s -> %s (history preserved via unique_id %s)",
-            reg_entry.entity_id,
-            desired,
-            reg_entry.unique_id,
-        )
         try:
             ent_reg.async_update_entity(reg_entry.entity_id, new_entity_id=desired)
+            audit(hass, f"RENAME {reg_entry.entity_id} -> {desired} (uid {reg_entry.unique_id})")
         except ValueError as err:
             # HA raises if the target entity_id is already in use (registry or state
             # machine). Skip this one entity rather than aborting the whole migration.
-            LOGGER.warning(
-                "Could not migrate %s -> %s: %s", reg_entry.entity_id, desired, err
-            )
+            audit(hass, f"RENAME FAIL {reg_entry.entity_id} -> {desired}: {err}")
             continue
         migrated += 1
 
     if migrated:
-        LOGGER.info("Monitor My Solar: migrated %d entity_id(s) to new naming scheme", migrated)
+        audit(hass, f"entity_id scheme migration: {migrated} change(s)")
 
 
 async def async_transfer_dongle_entities(
@@ -234,16 +286,12 @@ async def async_cleanup_orphan_devices(hass: HomeAssistant, entry) -> int:
         # No entities remain on this device — it's an orphaned (e.g. grouping-off)
         # sub-device. Detach it from this config entry; HA deletes the device once
         # it has no remaining config entries.
-        LOGGER.info(
-            "Removing orphaned device %r (%s) — no entities remain",
-            device.name,
-            device.identifiers,
-        )
+        audit(hass, f"REMOVE empty device {device.name!r} ({device.identifiers})")
         dev_reg.async_update_device(device.id, remove_config_entry_id=entry.entry_id)
         removed += 1
 
     if removed:
-        LOGGER.info("Monitor My Solar: removed %d orphaned device(s)", removed)
+        audit(hass, f"orphan device cleanup: {removed} device(s) removed")
     return removed
 
 
@@ -271,6 +319,7 @@ async def async_migrate_dongleless_unique_ids(hass: HomeAssistant, entry, coordi
     prefix = f"{entry.entry_id}_".lower()
     dongle_seg = f"{entry.entry_id}_{dongle_id}_".lower()
 
+    audit_session(hass, entry, coordinator, "dongle-less unique_id migration")
     migrated = 0
     for reg_entry in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
         uid = reg_entry.unique_id
@@ -290,24 +339,216 @@ async def async_migrate_dongleless_unique_ids(hass: HomeAssistant, entry, coordi
         if existing and existing != reg_entry.entity_id:
             # The correct entity already exists; this dongle-less one is a true
             # orphan/duplicate — remove it so it stops shadowing the clean id.
-            LOGGER.info(
-                "Removing duplicate dongle-less entity %s (uid %s); %s already holds %s",
-                reg_entry.entity_id, uid, existing, new_uid,
+            audit(
+                hass,
+                f"REMOVE orphan {reg_entry.entity_id} (uid {uid}); "
+                f"{existing} already holds uid {new_uid}",
             )
             ent_reg.async_remove(reg_entry.entity_id)
             migrated += 1
             continue
 
-        LOGGER.info(
-            "Migrating dongle-less unique_id %s -> %s (%s)", uid, new_uid, reg_entry.entity_id
-        )
         try:
             ent_reg.async_update_entity(reg_entry.entity_id, new_unique_id=new_uid)
+            audit(hass, f"UID {reg_entry.entity_id}: {uid} -> {new_uid}")
         except ValueError as err:
-            LOGGER.warning("Could not migrate uid for %s: %s", reg_entry.entity_id, err)
+            audit(hass, f"UID FAIL {reg_entry.entity_id}: {uid} -> {new_uid}: {err}")
             continue
         migrated += 1
 
-    if migrated:
-        LOGGER.info("Monitor My Solar: fixed %d dongle-less unique_id(s)", migrated)
+    audit(hass, f"dongle-less unique_id migration: {migrated} change(s)")
     return migrated
+
+
+import re as _re
+
+_SUFFIX_RE = _re.compile(r"^(?P<base>.+)_(?P<n>\d+)$")
+
+
+async def async_reclaim_suffixed_entity_ids(hass: HomeAssistant, entry, coordinator) -> int:
+    """Reclaim clean entity_ids for correctly-registered entities stuck on `_N`.
+
+    The `_2` duplicate has two shapes after a downgrade→upgrade:
+
+      Shape A — the `_N` entity is the OLD dongle-less orphan; the clean id holds
+        the correct dongle-scoped entity. async_migrate_dongleless_unique_ids
+        already removes those orphans (freeing nothing to rename).
+
+      Shape B — the CORRECT (dongle-scoped uid) entity itself got saddled with a
+        `_2` entity_id because the slot was taken when it was first created, and
+        the base id later became free (its old orphan was removed). Nothing
+        rewrites it back down, so the live entity is stuck as `sensor.._t5_2`.
+
+    This pass fixes Shape B: for every entity whose entity_id ends in `_<n>` and
+    whose unique_id is the current dongle-scoped form, if the base entity_id is
+    free (or held only by a removable dongle-less orphan), rename the entity down
+    to the clean id. History is preserved (anchored to the unchanged unique_id).
+
+    Runs BEFORE platforms are set up so the reclaimed ids exist before creation.
+    Single-dongle only (mirrors the other uid migrations). Returns count renamed.
+    """
+    if len(coordinator._dongle_ids) != 1:
+        return 0
+
+    dongle_id = coordinator._dongle_ids[0]
+    ent_reg = er.async_get(hass)
+    dongle_seg = f"{entry.entry_id}_{dongle_id}_".lower()
+
+    audit_session(hass, entry, coordinator, "reclaim suffixed entity_ids")
+
+    # Snapshot entries up front — we mutate the registry while iterating.
+    entries = list(er.async_entries_for_config_entry(ent_reg, entry.entry_id))
+    by_entity_id = {e.entity_id: e for e in entries}
+
+    reclaimed = 0
+    for reg_entry in entries:
+        m = _SUFFIX_RE.match(reg_entry.entity_id)
+        if not m:
+            continue
+        # Only reclaim for entities that ALREADY hold the correct dongle-scoped
+        # uid — i.e. this is the live entity, just on the wrong id. Leave anything
+        # else (a genuine dongle-less orphan) to the uid migration.
+        if not (reg_entry.unique_id or "").lower().startswith(dongle_seg):
+            continue
+
+        base_id = m.group("base")
+        occupant = by_entity_id.get(base_id) or ent_reg.async_get(base_id)
+
+        if occupant is not None and occupant.entity_id != reg_entry.entity_id:
+            # Base id is taken. Only safe to reclaim if the occupant is a stale
+            # dongle-less orphan for the SAME key; remove it, then take the id.
+            occ_uid = (occupant.unique_id or "").lower()
+            is_dongleless_orphan = (
+                occ_uid.startswith(f"{entry.entry_id}_".lower())
+                and not occ_uid.startswith(dongle_seg)
+            )
+            if not is_dongleless_orphan:
+                LOGGER.debug(
+                    "Not reclaiming %s -> %s: base id held by %s (uid %s)",
+                    reg_entry.entity_id, base_id, occupant.entity_id, occupant.unique_id,
+                )
+                continue
+            audit(
+                hass,
+                f"REMOVE orphan {occupant.entity_id} (uid {occupant.unique_id}) "
+                f"to free {base_id}",
+            )
+            ent_reg.async_remove(occupant.entity_id)
+            by_entity_id.pop(occupant.entity_id, None)
+
+        # Base id is now free — rename the correct entity down onto it.
+        try:
+            ent_reg.async_update_entity(reg_entry.entity_id, new_entity_id=base_id)
+            audit(
+                hass,
+                f"RECLAIM {reg_entry.entity_id} -> {base_id} (uid {reg_entry.unique_id})",
+            )
+            by_entity_id.pop(reg_entry.entity_id, None)
+            by_entity_id[base_id] = reg_entry
+            reclaimed += 1
+        except ValueError as err:
+            audit(hass, f"RECLAIM FAIL {reg_entry.entity_id} -> {base_id}: {err}")
+
+    audit(hass, f"reclaim suffixed entity_ids: {reclaimed} change(s)")
+    return reclaimed
+
+
+def list_restorable_entities(hass: HomeAssistant, entry) -> list[dict]:
+    """List this entry's entities that a plain reload won't bring back.
+
+    Two blocked states:
+      - DISABLED: the registry entry still exists but disabled_by is set. HA
+        won't create the state until it's re-enabled.
+      - DELETED: the user removed the entity from the UI. HA keeps the unique_id
+        in the registry's deleted set (for a grace period) and refuses to
+        re-add it on setup — a reload/reboot will NOT restore it. Clearing that
+        record frees the unique_id so the next setup recreates the entity.
+
+    Returns a list of {"key", "entity_id", "name", "state"} where `key` encodes
+    how to restore it: "disabled:<entity_id>" or "deleted:<entity_id>".
+    """
+    ent_reg = er.async_get(hass)
+    items: list[dict] = []
+
+    # Disabled (but still-registered) entities for this config entry.
+    for reg_entry in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
+        if reg_entry.disabled_by is not None:
+            items.append({
+                "key": f"disabled:{reg_entry.entity_id}",
+                "entity_id": reg_entry.entity_id,
+                "name": reg_entry.name or reg_entry.original_name or reg_entry.entity_id,
+                "state": "disabled",
+            })
+
+    # Deleted entities live in a separate registry structure keyed by entity_id.
+    # Filter to this config entry. The attribute name has been stable across HA
+    # versions, but guard so a rename can't crash the options flow.
+    deleted = getattr(ent_reg, "deleted_entities", {}) or {}
+    for entity_id, del_entry in deleted.items():
+        if getattr(del_entry, "config_entry_id", None) != entry.entry_id:
+            continue
+        items.append({
+            "key": f"deleted:{entity_id}",
+            "entity_id": entity_id,
+            "name": getattr(del_entry, "name", None)
+                    or getattr(del_entry, "original_name", None)
+                    or entity_id,
+            "state": "deleted",
+        })
+
+    items.sort(key=lambda i: i["entity_id"])
+    return items
+
+
+async def async_restore_entities(hass: HomeAssistant, entry, keys: list[str]) -> int:
+    """Restore the entities identified by keys from list_restorable_entities().
+
+    - "disabled:<entity_id>" -> clear disabled_by so HA activates it.
+    - "deleted:<entity_id>"  -> drop the deleted-registry record so the
+      unique_id is free; the next platform setup recreates the entity fresh
+      from the catalog. Caller should reload the config entry afterwards.
+
+    Returns the number of entities actioned.
+    """
+    ent_reg = er.async_get(hass)
+    restored = 0
+
+    for key in keys:
+        kind, _, entity_id = key.partition(":")
+        if not entity_id:
+            continue
+        if kind == "disabled":
+            reg_entry = ent_reg.async_get(entity_id)
+            if reg_entry and reg_entry.disabled_by is not None:
+                ent_reg.async_update_entity(entity_id, disabled_by=None)
+                LOGGER.info("Restored (re-enabled) entity %s", entity_id)
+                restored += 1
+        elif kind == "deleted":
+            # Purge the deleted record so the unique_id is reclaimable. Prefer a
+            # public API if present; fall back to popping the internal dict.
+            purged = False
+            remover = getattr(ent_reg, "async_purge_deleted_entity", None)
+            if callable(remover):
+                try:
+                    remover(entity_id)
+                    purged = True
+                except Exception as err:  # pragma: no cover - version drift
+                    LOGGER.debug("purge API failed for %s: %s", entity_id, err)
+            if not purged:
+                deleted = getattr(ent_reg, "deleted_entities", None)
+                if isinstance(deleted, dict) and entity_id in deleted:
+                    deleted.pop(entity_id, None)
+                    # Persist the registry change.
+                    if hasattr(ent_reg, "async_schedule_save"):
+                        ent_reg.async_schedule_save()
+                    purged = True
+            if purged:
+                LOGGER.info(
+                    "Cleared deleted record for %s — will be recreated on reload",
+                    entity_id,
+                )
+                restored += 1
+
+    if restored:
+        LOGGER.info("Monitor My Solar: restored %d entity(ies)", restored)
+    return restored

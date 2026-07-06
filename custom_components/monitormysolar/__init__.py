@@ -8,6 +8,8 @@ from .migration import (
     async_migrate_entity_ids,
     async_cleanup_orphan_devices,
     async_migrate_dongleless_unique_ids,
+    async_reclaim_suffixed_entity_ids,
+    audit,
 )
 
 async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
@@ -16,6 +18,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
     dongle_ids = entry.data.get('dongle_ids', [entry.data.get('dongle_id')])
     
     LOGGER.info(f"Setting up Monitor My Solar for {inverter_brand} with {len(dongle_ids)} dongles")
+    audit(hass, f"########## SETUP START v4.0.7 | brand={inverter_brand} | dongles={dongle_ids} ##########")
 
     # Step 1: Initialize the coordinator with minimal setup
     coordinator = MonitorMySolar(hass, entry)
@@ -97,13 +100,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
         LOGGER.error(error_msg)
         coordinator._setup_errors.append(error_msg)
 
+    # Step 3.7: Reclaim clean entity_ids for correct entities left stuck on `_2`
+    # (Shape B of the duplicate bug — the live dongle-scoped entity got a `_2`
+    # id because the slot was taken at creation, and the base id is now free).
+    # Runs AFTER the dongle-less removal above so freed base ids are available,
+    # and BEFORE platforms so the reclaimed ids exist before entity creation.
+    try:
+        await async_reclaim_suffixed_entity_ids(hass, entry, coordinator)
+    except Exception as e:
+        error_msg = f"Error reclaiming suffixed entity ids: {e}"
+        LOGGER.error(error_msg)
+        coordinator._setup_errors.append(error_msg)
+
     # Step 4: Now that we have tried to get firmware codes, set up the platforms
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except Exception as e:
         LOGGER.error(f"Error setting up platforms: {e}")
+        audit(hass, f"SETUP FAIL forwarding platforms: {e}")
         return False
-    
+
+    # Audit: report the entity registry state for this entry after platform setup,
+    # including any that still carry a `_N` suffix (should be zero post-migration).
+    try:
+        import re as _re
+        from homeassistant.helpers import entity_registry as _er
+        _reg = _er.async_get(hass)
+        _entries = _er.async_entries_for_config_entry(_reg, entry.entry_id)
+        # Flag the HA de-dup suffix (_2, _3, ...). It's always >= 2, so a legit
+        # trailing _0 / _1 (e.g. battery_0_voltage has _0 mid-id, not trailing)
+        # won't false-positive; we match _<2-9 or multi-digit> at the very end.
+        _dup_re = _re.compile(r"_([2-9]|\d{2,})$")
+        _suffixed = [e.entity_id for e in _entries if _dup_re.search(e.entity_id)]
+        audit(hass, f"post-setup: {len(_entries)} registry entities; "
+                    f"{len(_suffixed)} still _N-suffixed"
+                    + (f" -> {_suffixed}" if _suffixed else ""))
+    except Exception as e:
+        audit(hass, f"post-setup audit failed: {e}")
+
     # Step 5: Mark setup as complete
     LOGGER.info(f"Monitor My Solar setup completed successfully for {len(dongle_ids)} dongles")
     
