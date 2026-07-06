@@ -307,28 +307,61 @@ async def async_migrate_dongleless_unique_ids(hass: HomeAssistant, entry, coordi
     existing entity is REUSED (history kept) and its clean entity_id is reclaimed —
     instead of a fresh duplicate appearing on the next start.
 
-    Only safe/meaningful for single-dongle installs (we can't know which dongle a
-    dongle-less uid belonged to when there are several). Multi-dongle installs never
-    had the dongle-less form for these classes in practice.
+    Works for any dongle count. A single dongle in a GridBoss/FlexBoss combo is no
+    different from a standalone one — a duplicate is always wrong. When there are
+    several dongles, a bare uid `{entry}_tbat` is ambiguous on its own, so we
+    resolve the owning dongle from the orphan's ENTITY_ID (which always names its
+    dongle, e.g. sensor.dongle_40_4c_.._tbat_2). Combined/aggregate uids are the
+    only ones legitimately dongle-less and are skipped.
     """
-    if len(coordinator._dongle_ids) != 1:
+    if not coordinator._dongle_ids:
         return 0
 
-    dongle_id = coordinator._dongle_ids[0]
     ent_reg = er.async_get(hass)
     prefix = f"{entry.entry_id}_".lower()
-    dongle_seg = f"{entry.entry_id}_{dongle_id}_".lower()
+
+    # Map each dongle to (uid-segment, formatted entity_id fragment) so we can
+    # identify which dongle a dongle-less orphan belongs to FROM ITS ENTITY_ID.
+    # This is what makes multi-dongle safe: a bare uid `{entry}_tbat` is
+    # ambiguous, but the entity_id `sensor.dongle_40_4c_..._tbat_2` names its
+    # dongle. formatted id: dongle-40:4C:.. -> dongle_40_4c_.. (entity_id form).
+    dongle_info = []
+    for d in coordinator._dongle_ids:
+        seg = f"{entry.entry_id}_{d}_".lower()
+        formatted = coordinator.get_formatted_dongle_id(d).lower()  # dongle_40_4c_..
+        dongle_info.append((d, seg, formatted))
+    dongle_segs = tuple(seg for _d, seg, _f in dongle_info)
+
+    def _resolve_dongle_seg(entity_id: str):
+        """Find the dongle segment whose formatted id appears in this entity_id."""
+        eid = entity_id.split(".", 1)[-1].lower()
+        for _d, seg, formatted in dongle_info:
+            if formatted and formatted in eid:
+                return seg
+        # Single-dongle fallback: unambiguous.
+        if len(dongle_info) == 1:
+            return dongle_info[0][1]
+        return None
 
     audit_session(hass, entry, coordinator, "dongle-less unique_id migration")
     migrated = 0
     for reg_entry in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
-        uid = reg_entry.unique_id
+        uid = reg_entry.unique_id or ""
+        uid_l = uid.lower()  # uids are stored with the dongle MAC in UPPERCASE
         # Skip if already dongle-scoped, or not one of our prefixed uids.
-        if not uid.startswith(prefix) or uid.startswith(dongle_seg):
+        # ALL comparisons are lowercased — prefix/dongle_segs are lowercase but
+        # the uid contains an uppercase MAC, so a raw startswith would wrongly
+        # treat a correct entity as dongle-less and double-prefix it.
+        if not uid_l.startswith(prefix) or any(uid_l.startswith(s) for s in dongle_segs):
             continue
         # Skip combined/aggregate uids (they legitimately have no single dongle).
-        key = uid[len(prefix):]
+        key = uid_l[len(prefix):]
         if key.startswith("combined") or key == "sync_status":
+            continue
+
+        dongle_seg = _resolve_dongle_seg(reg_entry.entity_id)
+        if dongle_seg is None:
+            audit(hass, f"SKIP {reg_entry.entity_id} (uid {uid}): cannot resolve dongle")
             continue
 
         new_uid = f"{dongle_seg}{key}"
@@ -385,14 +418,23 @@ async def async_reclaim_suffixed_entity_ids(hass: HomeAssistant, entry, coordina
     to the clean id. History is preserved (anchored to the unchanged unique_id).
 
     Runs BEFORE platforms are set up so the reclaimed ids exist before creation.
-    Single-dongle only (mirrors the other uid migrations). Returns count renamed.
+    Dongle-count-agnostic — a duplicate is always wrong whether the box has one
+    dongle or a GridBoss/FlexBoss combo. Every entity carries its own dongle in
+    the unique_id, so we never guess which dongle a stuck id belongs to. Returns
+    count renamed.
     """
-    if len(coordinator._dongle_ids) != 1:
+    if not coordinator._dongle_ids:
         return 0
 
-    dongle_id = coordinator._dongle_ids[0]
     ent_reg = er.async_get(hass)
-    dongle_seg = f"{entry.entry_id}_{dongle_id}_".lower()
+    entry_prefix = f"{entry.entry_id}_".lower()
+    # A uid is "correct/dongle-scoped" if it starts with {entry}_{any-dongle}_.
+    dongle_segs = tuple(
+        f"{entry.entry_id}_{d}_".lower() for d in coordinator._dongle_ids
+    )
+
+    def _is_dongle_scoped(uid: str) -> bool:
+        return any(uid.startswith(seg) for seg in dongle_segs)
 
     audit_session(hass, entry, coordinator, "reclaim suffixed entity_ids")
 
@@ -405,10 +447,10 @@ async def async_reclaim_suffixed_entity_ids(hass: HomeAssistant, entry, coordina
         m = _SUFFIX_RE.match(reg_entry.entity_id)
         if not m:
             continue
-        # Only reclaim for entities that ALREADY hold the correct dongle-scoped
+        # Only reclaim for entities that ALREADY hold a correct dongle-scoped
         # uid — i.e. this is the live entity, just on the wrong id. Leave anything
         # else (a genuine dongle-less orphan) to the uid migration.
-        if not (reg_entry.unique_id or "").lower().startswith(dongle_seg):
+        if not _is_dongle_scoped((reg_entry.unique_id or "").lower()):
             continue
 
         base_id = m.group("base")
@@ -419,8 +461,8 @@ async def async_reclaim_suffixed_entity_ids(hass: HomeAssistant, entry, coordina
             # dongle-less orphan for the SAME key; remove it, then take the id.
             occ_uid = (occupant.unique_id or "").lower()
             is_dongleless_orphan = (
-                occ_uid.startswith(f"{entry.entry_id}_".lower())
-                and not occ_uid.startswith(dongle_seg)
+                occ_uid.startswith(entry_prefix)
+                and not _is_dongle_scoped(occ_uid)
             )
             if not is_dongleless_orphan:
                 LOGGER.debug(
