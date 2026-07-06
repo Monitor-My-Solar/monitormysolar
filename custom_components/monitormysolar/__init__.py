@@ -18,7 +18,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry):
     dongle_ids = entry.data.get('dongle_ids', [entry.data.get('dongle_id')])
     
     LOGGER.info(f"Setting up Monitor My Solar for {inverter_brand} with {len(dongle_ids)} dongles")
-    audit(hass, f"########## SETUP START v4.0.7 | brand={inverter_brand} | dongles={dongle_ids} ##########")
+    audit(hass, f"########## SETUP START v4.0.0 | brand={inverter_brand} | dongles={dongle_ids} ##########")
 
     # Step 1: Initialize the coordinator with minimal setup
     coordinator = MonitorMySolar(hass, entry)

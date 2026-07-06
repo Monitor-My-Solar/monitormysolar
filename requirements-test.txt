@@ -1,0 +1,7 @@
+# Test-only dependencies for the pytest suite (see tests/).
+# The suite stubs most of Home Assistant in conftest.py, but a few tests import
+# the integration package (which does `from homeassistant.core import ...`), so
+# a real homeassistant install is required for collection to succeed.
+pytest
+pytest-asyncio
+homeassistant

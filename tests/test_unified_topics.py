@@ -382,7 +382,8 @@ def test_setting_updated_bitfield_per_bit_event(coordinator, monkeypatch):
             "ts":      1717000000,
         }),
     ))
-    assert coordinator.entities["switch.dongle_test_accharge"] == "1"
+    # Value is normalized from the string "1" to the switch's native bit 1.
+    assert coordinator.entities["switch.dongle_test_accharge"] == 1
 
     # EPS bit flipped on (a separate event for the same write that toggled it).
     _run(coordinator.process_message(
@@ -394,7 +395,7 @@ def test_setting_updated_bitfield_per_bit_event(coordinator, monkeypatch):
             "ts":      1717000000,
         }),
     ))
-    assert coordinator.entities["switch.dongle_test_eps"] == "1"
+    assert coordinator.entities["switch.dongle_test_eps"] == 1
 
 
 def test_setting_updated_envelope_without_reg_field(coordinator, monkeypatch):
@@ -415,7 +416,8 @@ def test_setting_updated_envelope_without_reg_field(coordinator, monkeypatch):
     })
     _run(coordinator.process_message(
         "dongle-test", "dongle-test/setting/updated", payload))
-    assert coordinator.entities["number.dongle_test_chargepowerpercentcmd"] == "60"
+    # "60" is normalized to the number's native int 60.
+    assert coordinator.entities["number.dongle_test_chargepowerpercentcmd"] == 60
 
 
 def test_setting_updated_handles_missing_fields(coordinator):

@@ -1,13 +1,21 @@
 # Monitor My Solar - Home Assistant Integration
 
-[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)](https://github.com/Monitor-My-Solar/monitormysolar)
+[![Version](https://img.shields.io/badge/version-4.0.0-blue.svg)](https://github.com/Monitor-My-Solar/monitormysolar)
+[![Tests](https://github.com/Monitor-My-Solar/monitormysolar/actions/workflows/tests.yaml/badge.svg?branch=main)](https://github.com/Monitor-My-Solar/monitormysolar/actions/workflows/tests.yaml)
 [![HACS](https://img.shields.io/badge/HACS-Default-orange.svg)](https://github.com/hacs/integration)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 A powerful Home Assistant integration for solar inverter monitoring and control through Monitor My Solar hardware dongles.
 
-## Dongles are required to be on Version 3.0.0 for all the features below to work.
-- Dongles that do not update to Version 3.0.0 before 02/07/2025 will no longer receive OTA updates and you will need to contact Monitor My Solar to get a upgrade path
+## Dongle firmware 4.3.0+ recommended for v4.0.0.
+- The integration still works with older dongle firmware, but the best experience
+  (change-only data streaming, instant write confirmation, and over-the-air
+  firmware updates) needs **firmware 4.3.0 or newer**.
+- **Firmware updates from Home Assistant now require firmware 4.3.0+.** If your
+  dongle is older, update it to 4.3.0 by the previous method or mobile app first.
+- The dongle's IP address is **no longer needed** for anything in v4.0.0.
+
+See the [CHANGELOG](custom_components/monitormysolar/CHANGELOG.md) for the full v4.0.0 notes.
 
 
 ## 🌟 Features
@@ -15,16 +23,17 @@ A powerful Home Assistant integration for solar inverter monitoring and control 
 - **Real-time monitoring** of all inverter parameters
 - **Full control** over inverter settings
 - **Multi-inverter support** with automatic synchronization
-- **GridBoss support** (NEW in v3.0.0) for advanced distribution monitoring
+- **GridBoss support** for advanced distribution monitoring
 - **Conditional Entity System** - Smart entity availability based on configuration
-- **Firmware updates** with progress tracking
+- **Over-the-air firmware updates over MQTT** with live progress (firmware 4.3.0+)
 - **No cloud dependency** - fully local control
 
 ## 📋 Supported Inverters
 
 | Brand | Status | GridBoss Support |
 |-------|--------|------------------|
-| LuxPower | ✅ Fully Supported | ✅ IAAB Firmware |
+| LuxPower | ✅ Fully Supported | ✅ GridBoss (I-family firmware) |
+| Deye / SunSynk / SolArk / NeoVolta | ✅ Supported | ❌ |
 | Solis | 🔜 Coming Soon | ❌ |
 | Solax | 🔜 Coming Soon | ❌ |
 | Growatt | 🔜 Coming Soon | ❌ |
@@ -109,17 +118,17 @@ Configure your dongle(s) based on setup type:
 | Field | Description | Example |
 |-------|-------------|---------|
 | Dongle ID | From dongle web interface | dongle-12:34:56:78:90:ab |
-| Dongle IP | For firmware updates (optional) | 192.168.1.150 |
+
+> Note: The dongle IP address is no longer collected. Firmware updates and admin
+> actions run over MQTT in v4.0.0.
 
 **Parallel Inverters:**
 - Master dongle ID (required)
 - Up to 5 slave dongle IDs (optional)
-- IP addresses for each dongle (optional)
 
 **GridBoss Setup:**
 - GridBoss dongle ID (required)
 - Up to 3 slave dongle IDs (optional)
-- IP addresses for each dongle (optional)
 
 <p align="center">
   <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/page1.png?raw=true" target="_blank">
@@ -132,9 +141,11 @@ Configure your dongle(s) based on setup type:
   </a>
 </p>
 
-## 🆕 GridBoss Configuration (v3.0.0)
+## 🆕 GridBoss Configuration
 
-GridBoss support is available for LuxPower inverters with firmware code **IAAB**.
+GridBoss support is available for LuxPower GridBoss units (I-family firmware). A
+GridBoss unit is detected automatically from its firmware, so it appears as its own
+device with only its relevant entities.
 
 ### GridBoss Setup Types
 
@@ -148,12 +159,11 @@ GridBoss support is available for LuxPower inverters with firmware code **IAAB**
 - Ideal for larger commercial installations
 - Provides 8 SmartLoads and 8 AC Coupling ports total
 
-### Enabling GridBoss for Existing Installations
+### GridBoss detection
 
-1. Go to integration → **Configure**
-2. Select **Update Settings**
-3. Check **"GridBoss Connected"**
-4. Click **Submit**
+GridBoss units are detected from their firmware, so there is no manual "GridBoss
+Connected" toggle to set. Choose the Single GridBoss or Dual GridBoss setup type
+when adding the integration, and enter the GridBoss dongle ID(s).
 
 
 
@@ -182,7 +192,11 @@ Access via **Configure** button on the integration:
 ### 1. Manage Dongles
 - Add parallel inverters
 - Remove dongles
-- Update IP addresses
+- Replace a dongle (transfers all entities and history to the new one)
+
+### Restore Deleted Entities
+- Bring back entities that were deleted or disabled, without deleting and re-adding
+  the whole integration.
 
 <p align="center">
   <a href="https://github.com/Monitor-My-Solar/monitormysolar/images/configflow.png" target="_blank">
@@ -191,8 +205,10 @@ Access via **Configure** button on the integration:
 </p>
 
 ### 2. Update Settings
-- Database write intervals
-- GridBoss enable/disable
+- Use input box for numbers (instead of sliders)
+- Enable device grouping (organise entities into sub-devices)
+- Add the dongle ID to entity names (single-dongle installs)
+- Use Beta Firmware track
 
 <p align="center">
   <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/updateSettings.png?raw=true" target="_blank">
@@ -213,11 +229,13 @@ Access via **Configure** button on the integration:
 
 ## 🔄 Firmware Updates
 
-1. Ensure dongle IP is configured
-2. Click on the update entity
-3. View available updates and release notes
-4. Click **Install** to update
-5. Monitor real-time progress
+Firmware updates run **over MQTT** (firmware 4.3.0+ required), no dongle IP needed.
+
+1. Click on the update entity
+2. View available updates and release notes
+3. Click **Install** to update
+4. Monitor real-time progress; the dongle reboots during the update
+5. Optional: choose the prod or beta track via the **Use Beta Firmware** setting
 
 <p align="center">
   <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/firmware.png?raw=true" target="_blank">
@@ -251,9 +269,11 @@ sensor.combined_sync_status    # Monitor sync status
 | No entities created | Check MQTT connection and logs |
 | Firmware timeout | Verify dongle ID is lowercase |
 | Time settings not saving | Switch to 24-hour format |
-| GridBoss entities missing | Verify firmware code IAAB |
+| GridBoss entities missing | Verify the unit is a GridBoss (I-family firmware) |
 | Entities grayed out | Check conditional entity configuration |
 | Port settings unavailable | Set port mode first, then configure settings |
+| Duplicate `_2` entities after upgrade | Cleaned up automatically on first start; see `monitormysolar_migration.log` in your config folder |
+| An entity is stuck "unavailable" | Your unit may not report it (varies by family); remove it, or use Options → Restore Deleted Entities |
 
 
 ### Debug Tools
