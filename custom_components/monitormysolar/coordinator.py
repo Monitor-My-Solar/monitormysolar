@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import time
 from typing import Any, cast, Set, List, Dict
 from propcache import cached_property
 
@@ -48,23 +49,21 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         if not self._dongle_data:
             # Create dongle_data from old structure
             dongle_ids = entry.data.get("dongle_ids", [entry.data.get("dongle_id")])
-            dongle_ips = entry.data.get("dongle_ips", [""] * len(dongle_ids))
             self._dongle_data = []
-            for i, (dongle_id, dongle_ip) in enumerate(zip(dongle_ids, dongle_ips)):
+            for i, dongle_id in enumerate(dongle_ids):
                 self._dongle_data.append({
                     "dongle_id": dongle_id,
-                    "dongle_ip": dongle_ip,
                     "is_master": i == 0,  # First dongle is master
                     "is_slave": i > 0,    # Others are slaves
                     "is_gridboss": False,
                     "is_gridboss_slave": False,
                     "gridboss_bundle": None
                 })
-        
-        # Extract dongle IDs and IPs for backward compatibility
+
+        # Extract dongle IDs (dongle IP was removed in 4.0.0 — OTA and all admin
+        # actions go over MQTT now, so no IP is needed).
         self._dongle_ids: List[str] = [d["dongle_id"] for d in self._dongle_data]
-        self._dongle_ips: List[str] = [d["dongle_ip"] for d in self._dongle_data]
-        
+
         # Initialize per-dongle data structures
         # Load saved firmware codes from config entry
         saved_firmware_codes = entry.data.get("firmware_codes", {})
@@ -82,6 +81,19 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._setting_history = {}  # Track setting changes with timestamps
         self._max_history_entries = 100  # Limit history size per setting
         self._setup_errors = []  # Track errors during setup
+        self._drop_dongle_id = entry.data.get("drop_dongle_id", False)  # Optional: omit dongle id from entity_ids (single-dongle only)
+        self._snapshot_requested: Set[str] = set()  # Dongles we've requested a full snapshot from this session
+        self._dongle_availability: Dict[str, bool] = {}  # Track LWT online/offline per dongle
+        self._dongle_boot_count: Dict[str, int] = {}  # Last-seen boot.count per dongle (detect silent reboots)
+        # Recovery bookkeeping (monotonic seconds): last time we saw ANY message
+        # from a dongle, and last time we sent it a recovery snapshot (for debounce).
+        self._dongle_last_seen: Dict[str, float] = {}
+        self._last_recovery_snapshot: Dict[str, float] = {}
+        # A dongle that has been silent longer than this is considered "gone dark";
+        # the next message it sends triggers a recovery snapshot.
+        self._dongle_stale_after = 90.0
+        # Don't send more than one recovery snapshot per dongle within this window.
+        self._recovery_snapshot_debounce = 30.0
         self._has_gridboss = entry.data.get("has_gridboss", False)  # Track if GridBoss is enabled
         self._gridboss_dongle = entry.data.get("gridboss_dongle", "")  # Track which dongle is GridBoss
         self._last_fault_warning_data = {}  # Track last fault/warning data to prevent duplicate processing
@@ -89,6 +101,17 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._smart_soc_volt_bits = {}  # Track SmartSOCVoltBits for each dongle
         self._smartload_bits = {}  # Track SmartLoad Bits for each dongle
         self._port_modes = {}  # Track Port Mode settings for each dongle
+
+        # Self-write ledger for de-duplicating the FW >= 4.3.0 dual confirmation.
+        # A HA write is acked on BOTH <dongle>/response (legacy, drives the
+        # send lock + revert) AND <dongle>/setting/updated (durable echo). Both
+        # carry the same value. We record what WE just wrote here; when the
+        # matching /setting/updated echo arrives within the window we skip its
+        # redundant refresh. Echoes for writes we DIDN'T make (Lux server, web
+        # UI, HA TCP) have no ledger entry and still apply. Key: (dongle_id,
+        # setting_suffix) -> (normalized_value, monotonic_ts).
+        self._self_write_ledger: Dict[tuple, tuple] = {}
+        self._self_write_dedup_window = 10.0  # seconds
 
         # Battery extended data tracking
         self._battery_data: Dict[str, Dict] = {}  # {dongle_id: battery payload data}
@@ -110,6 +133,137 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     def get_formatted_dongle_id(self, dongle_id: str) -> str:
         """Convert a dongle ID to the formatted version used in entity IDs."""
         return dongle_id.lower().replace("-", "_").replace(":", "_")
+
+    @staticmethod
+    def parse_fw_version(version: str):
+        """Parse a dongle /status version string into a (major, minor, patch) tuple.
+
+        Versions look like '4.3.0.111S3' — major.minor.patch.build + chip suffix.
+        Returns the first three dotted integers, or None if they can't be parsed.
+        """
+        if not version:
+            return None
+        parts = version.strip().split(".")
+        nums = []
+        for part in parts[:3]:
+            # Strip any trailing non-digits (e.g. the 'S3' chip suffix on the build field).
+            digits = ""
+            for ch in part:
+                if ch.isdigit():
+                    digits += ch
+                else:
+                    break
+            if not digits:
+                return None
+            nums.append(int(digits))
+        if len(nums) < 3:
+            return None
+        return tuple(nums)
+
+    def _needs_snapshot(self, version: str) -> bool:
+        """Whether a dongle on this firmware needs an explicit full-data snapshot.
+
+        FW >= 4.3.0 only streams change-data, so it must be asked for a full
+        snapshot on connect. Fail-open: if the version can't be parsed, request
+        anyway — older firmware simply ignores the snapshot topic.
+        """
+        parsed = self.parse_fw_version(version)
+        if parsed is None:
+            return True
+        return parsed >= (4, 3, 0)
+
+    async def request_snapshot(self, dongle_id: str, version: str = "", force: bool = False) -> None:
+        """Ask a dongle for a full /input + /hold snapshot (once per session).
+
+        Dongles on FW >= 4.3.0 only publish change-data, so without this the
+        entities stay 'unknown' until each value happens to change. Gated to fire
+        once per dongle per HA session unless force=True (e.g. a reconnect).
+        """
+        if not force and dongle_id in self._snapshot_requested:
+            return
+        if not self._needs_snapshot(version):
+            return
+        try:
+            await mqtt.async_publish(
+                self.hass,
+                f"{dongle_id}/snapshot/request",
+                '{"what":"all"}',
+                qos=1,
+                retain=False,
+            )
+            self._snapshot_requested.add(dongle_id)
+            LOGGER.info(
+                "Requested full snapshot from %s (version=%s)", dongle_id, version or "unknown"
+            )
+        except Exception as e:
+            LOGGER.debug(f"Snapshot request publish failed for {dongle_id} (non-fatal): {e}")
+
+    async def request_recovery_snapshot(self, dongle_id: str, reason: str) -> None:
+        """Force a snapshot after a dongle recovers, debounced per dongle.
+
+        Called from the recovery triggers (availability 'online', silent-reboot,
+        or a data gap). Debounced so a burst of triggers (e.g. availability +
+        first status arriving together) only sends one request.
+        """
+        now = time.monotonic()
+        last = self._last_recovery_snapshot.get(dongle_id, 0.0)
+        if now - last < self._recovery_snapshot_debounce:
+            return
+        self._last_recovery_snapshot[dongle_id] = now
+        LOGGER.info("Recovery snapshot for %s (%s)", dongle_id, reason)
+        await self.request_snapshot(
+            dongle_id, self.current_fw_versions.get(dongle_id, ""), force=True
+        )
+
+    async def mark_dongle_seen(self, dongle_id: str) -> None:
+        """Record that a message arrived from a dongle and detect gap recovery.
+
+        If the dongle had been silent past the stale threshold (it went dark, e.g.
+        a restart whose LWT 'offline' we never received), its next message triggers
+        a recovery snapshot so entities repopulate instead of staying unavailable.
+        """
+        now = time.monotonic()
+        previous = self._dongle_last_seen.get(dongle_id)
+        self._dongle_last_seen[dongle_id] = now
+        if previous is not None and (now - previous) > self._dongle_stale_after:
+            await self.request_recovery_snapshot(
+                dongle_id, f"data resumed after {int(now - previous)}s gap"
+            )
+
+    def get_entity_prefix(self, dongle_id: str) -> str:
+        """Return the per-dongle entity_id prefix, or "" for none.
+
+        Sourced from the dongle's `entity_prefix` in dongle_data (set during setup:
+        empty on single-dongle installs, mandatory dongle-id-or-custom on
+        multi/parallel/gridboss). Falls back to the legacy behaviour for entries
+        created before entity_prefix existed:
+          - single dongle + drop_dongle_id flag -> "" (clean)
+          - otherwise -> the formatted dongle id (never risk a real collision).
+        The unique_id is unaffected by this, so entity_id renames preserve history.
+        """
+        info = self.get_dongle_info(dongle_id)
+        if info is not None and "entity_prefix" in info:
+            prefix = (info.get("entity_prefix") or "").strip()
+            # Explicitly configured (may be intentionally empty on single dongle).
+            return self.get_formatted_dongle_id(prefix) if prefix else ""
+
+        # Legacy entries without entity_prefix: preserve prior behaviour.
+        if getattr(self, "_drop_dongle_id", False) and len(self._dongle_ids) == 1:
+            return ""
+        return self.get_formatted_dongle_id(dongle_id)
+
+    def build_entity_id(self, platform: str, dongle_id: str, type_suffix: str) -> str:
+        """Build an entity_id using the dongle's entity_prefix.
+
+        prefix set -> "<platform>.<prefix>_<suffix>"; empty -> "<platform>.<suffix>".
+        The unique_id is separate and always dongle-scoped, so history follows across
+        any entity_id naming change.
+        """
+        suffix = type_suffix.lower()
+        prefix = self.get_entity_prefix(dongle_id)
+        if prefix:
+            return f"{platform}.{prefix}_{suffix}"
+        return f"{platform}.{suffix}"
     
 
     @property
@@ -122,11 +276,32 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Check if GridBoss is enabled."""
         return self._has_gridboss
     
+    def get_firmware_group(self, dongle_id: str) -> str:
+        """Return the firmware group (midbox/GEN/legacy/threephase/offgrid) for a dongle."""
+        from .const import firmware_group
+        return firmware_group(self.get_firmware_code(dongle_id))
+
+    def entity_allowed_for_dongle(self, dongle_id: str, entity_def: dict) -> bool:
+        """Whether an entity definition should be created for this dongle.
+
+        Group-based gating, replacing the old exact `allowed_firmware_codes` lists:
+        - An entity with `allowed_groups` is created only when the dongle's firmware
+          group is listed.
+        - An entity WITHOUT `allowed_groups` is a generic entity available to every
+          group EXCEPT midbox. midbox (GridBoss) is a distinct device that only gets
+          entities explicitly tagged with the 'midbox' group — matching the old rule
+          where GridBoss dongles required an explicit allow-list entry.
+        """
+        group = self.get_firmware_group(dongle_id)
+        allowed_groups = entity_def.get("allowed_groups")
+        if not allowed_groups:
+            return group != "midbox"
+        return group in allowed_groups
+
     def is_gridboss_dongle(self, dongle_id: str) -> bool:
         """Check if a specific dongle is the GridBoss dongle."""
-        # First check if firmware code indicates GridBoss (IAAB)
-        firmware_code = self.get_firmware_code(dongle_id)
-        if firmware_code == "IAAB":
+        # Firmware group 'midbox' (any I*** code) indicates GridBoss.
+        if self.get_firmware_group(dongle_id) == "midbox":
             return True
         
         # Use the new dongle data structure to check if this dongle is marked as GridBoss
@@ -303,22 +478,24 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     
     def update_charge_type_setting(self, dongle_id: str, charge_type):
         """Update the charge type setting for a dongle."""
-        # Convert integer to string option if needed
-        # ACChargeType options vary by firmware (0-based indexing):
-        # AAAA/AAAB/BAAA/BAAB/ccaa/EAAA/EAAB/ceaa: 0="Disabled", 1="Time According To", 2="According To Voltage", 3="According To SOC", 4="According To Time and Voltage", 5="According To Time and SOC"
-        # FAAB/FAAA/HAAA: 0="According To Time", 1="According To SOC/VOLT", 2="According To Time and SOC/VOLT"
+        # Convert integer to string option if needed. ACChargeType's option list
+        # varies by firmware group (0-based indexing) — these MUST stay in lockstep
+        # with the three ACChargeType select entries in const.py:
+        #   offgrid (C***):            6 options (0-5)
+        #   GEN (12K, F/H/E):          3 options (According To Time / SOC-Volt / both)
+        #   legacy (A) + ac_coupled (B): 3 options (Off / Time / SOC-Volt)
         if isinstance(charge_type, int):
-            firmware_code = self.get_firmware_code(dongle_id)
+            group = self.get_firmware_group(dongle_id)
 
-            # Determine which option list to use based on firmware code
-            if firmware_code in ["AAAA", "AAAB", "BAAA", "BAAB", "ccaa", "EAAA", "EAAB", "ceaa"]:
+            if group == "offgrid":
                 options = ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"]
-            elif firmware_code in ["FAAB", "FAAA", "HAAA"]:
+            elif group == "GEN":
                 options = ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
+            elif group in ("legacy", "ac_coupled"):
+                options = ["Off", "Time According To", "SOC/Volt According To"]
             else:
-                # Default fallback for unknown firmware codes
-                LOGGER.warning(f"Unknown firmware code {firmware_code} for ACChargeType, using default option list")
-                options = ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"]
+                LOGGER.warning(f"No ACChargeType option list for group {group!r} (dongle {dongle_id}), using legacy list")
+                options = ["Off", "Time According To", "SOC/Volt According To"]
 
             charge_type = options[charge_type] if charge_type < len(options) else charge_type
 
@@ -675,15 +852,8 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # Update the config entry
             self.hass.config_entries.async_update_entry(self.entry, data=current_data)
             LOGGER.info(f"Saved firmware code {firmware_code} for dongle {dongle_id}")
-    
-    def get_dongle_ip(self, dongle_id: str) -> str:
-        """Get IP address for a specific dongle."""
-        try:
-            index = self._dongle_ids.index(dongle_id)
-            return self._dongle_ips[index] if index < len(self._dongle_ips) else ""
-        except ValueError:
-            return ""
-    
+
+
     def get_dongle_info(self, dongle_id: str) -> Dict[str, Any]:
         """Get complete dongle information including bundle tracking."""
         for dongle_info in self._dongle_data:
@@ -1038,7 +1208,13 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         try:
             dongle_id = topic.split('/')[0]
             #LOGGER.debug(f"Received MQTT message on topic {topic} from dongle {dongle_id}")
-            
+
+            # Record liveness and recover from a silent gap. The snapshot reply
+            # topics are excluded so the recovery snapshot doesn't re-arm itself
+            # from its own reply.
+            if not topic.endswith("/snap/input") and not topic.endswith("/snap/hold"):
+                await self.mark_dongle_seen(dongle_id)
+
             # Always process firmware code responses as they're needed for setup
             if topic.endswith("/firmwarecode/response"):
                 await self._handle_firmware_code_response(dongle_id, msg)
@@ -1049,6 +1225,23 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # Handle battery extended data topic
             elif topic.endswith("/batteries"):
                 await self._handle_battery_data(dongle_id, msg.payload)
+            # Always process /status and /availability, even during startup: they
+            # carry the firmware version and connection state that drive the
+            # full-snapshot bootstrap (FW >= 4.3.0 streams change-data only).
+            elif topic.endswith("/status"):
+                await self.process_status_message(dongle_id, msg.payload)
+            elif topic.endswith("/availability"):
+                await self.process_message(dongle_id, topic, msg.payload)
+            # Always process the snapshot reply, even during startup. The snapshot
+            # IS the connect-time bootstrap: it arrives within ~1s of the request
+            # we send in start_mqtt_subscription, which is well inside the ~30s
+            # startup window. If we dropped it (as the generic pre-startup branch
+            # below would), entities would stay empty until the next change-data —
+            # which on FW >= 4.3.0 (change-data only) may be a long time. The
+            # firmware publishes it on <dongle>/snap/input and <dongle>/snap/hold.
+            elif topic.endswith("/snap/input") or topic.endswith("/snap/hold"):
+                await self.process_message(dongle_id, topic, msg.payload)
+                self.async_set_updated_data(self.entities)
             # Skip other message processing during startup to prevent excessive updates
             elif not self._hass_startup_complete:
                 # Just store the message for later processing if needed
@@ -1056,12 +1249,19 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             else:
                 # Process messages normally after startup is complete
                 if topic.endswith("/response"):
-                    await self.mqtt_handler.response_received(msg)
+                    # /response is owned by the dedicated subscription created in
+                    # MQTTHandler._process_command for the in-flight write (it
+                    # drives the send lock, revert-on-failure and confirm). The
+                    # wildcard {dongle}/# sub also delivers it here — calling
+                    # response_received again would double-process the same ack.
+                    # Skip it; when no write is in flight there's nothing to do
+                    # anyway (current_entity is None -> early return).
+                    pass
                 elif topic.endswith("/status"):
                     await self.process_status_message(dongle_id, msg.payload)
                 else:
                     await self.process_message(dongle_id, topic, msg.payload)
-                    
+
                 self.async_set_updated_data(self.entities)
         except Exception as e:
             LOGGER.error(f"Error processing MQTT message on topic {msg.topic}: {e}")
@@ -1153,20 +1353,32 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # Store battery data
         self._battery_data[dongle_id] = battery_payload
 
-        # Update entity states for existing battery sensors
-        formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
-        for battery in batteries:
-            bat_index = battery.get("batIndex", 0)
+        # Update entity states for existing battery sensors.
+        # NOTE: the firmware's batIndex is unreliable — multiple batteries in the
+        # same payload can all report batIndex == 0. Use the list position as the
+        # stable per-battery index instead, matching _create_battery_entities().
+        for position, battery in enumerate(batteries):
             for key, value in battery.items():
                 if key in ("batIndex",):
                     continue
-                entity_id = f"sensor.{formatted_dongle_id}_battery_{bat_index}_{key.lower()}"
+                entity_id = self.build_entity_id(
+                    "sensor", dongle_id, f"battery_{position}_{key}"
+                )
                 self.entities[entity_id] = value
 
-        # If we haven't created battery entities for this dongle yet, fire an event
-        if dongle_id not in self._battery_entities_created:
-            self._battery_entities_created.add(dongle_id)
-            LOGGER.info(f"First battery data received for {dongle_id} - triggering entity creation")
+        # Fire the creation event whenever we see more batteries than we've already
+        # built entities for (the count can grow, and the firmware's batIndex can't
+        # be trusted to distinguish them). Tracked per (dongle, position).
+        created = self._battery_entities_created
+        new_positions = [
+            f"{dongle_id}:{pos}" for pos in range(len(batteries))
+            if f"{dongle_id}:{pos}" not in created
+        ]
+        if new_positions:
+            LOGGER.info(
+                f"Battery data for {dongle_id}: {len(batteries)} batteries, "
+                f"{len(new_positions)} new - triggering entity creation"
+            )
             self.hass.bus.async_fire(
                 f"{DOMAIN}_battery_data_received",
                 {"dongle_id": dongle_id, "battery_count": len(batteries)}
@@ -1180,8 +1392,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
 
     def _process_gridboss_nested_data(self, dongle_id: str, payload_data):
         """Process GridBoss nested payload structure - now simplified since payload has correct entity names."""
-        formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
-        
+
         # Recursively process all nested data, flattening it to match entity unique_ids
         def flatten_nested_data(data, prefix=""):
             """Recursively flatten nested data structure."""
@@ -1221,12 +1432,11 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 
             formatted_entity_id_suffix = entity_id_suffix.lower().replace("-", "_").replace(":", "_")
             entity_type = self.determine_entity_type(formatted_entity_id_suffix)
-            entity_id = f"{entity_type}.{formatted_dongle_id}_{formatted_entity_id_suffix}"
+            entity_id = self.build_entity_id(entity_type, dongle_id, formatted_entity_id_suffix)
             self.entities[entity_id] = state
 
     async def _create_entities_for_dongle(self, dongle_id: str):
         """Create entities for a specific dongle after firmware code is received."""
-        formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
         is_gridboss = self.is_gridboss_dongle(dongle_id)
         
         # Get brand entities
@@ -1237,6 +1447,18 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         
         entities_created = 0
         for entityTypeName, entityTypes in brand_entities.items():
+            # Defensive: some brand registries have legacy flat-list
+            # entries (e.g. ENTITIES["Lux"]["calculated"] is a list, not
+            # a dict-of-lists like ENTITIES["Lux"]["sensor"]). Skip those
+            # — they're either dead code or get created via a different
+            # path. Without this guard `.items()` below crashes the
+            # entire firmware-code-response handler with
+            # "'list' object has no attribute 'items'".
+            if not isinstance(entityTypes, dict):
+                LOGGER.debug(
+                    f"Skipping legacy flat-list entry {self.inverter_brand}.{entityTypeName}"
+                )
+                continue
             for typeName, entities in entityTypes.items():
                 for entity in entities:
                     # Use the source field if present, otherwise fall back to the bank name (typeName)
@@ -1248,7 +1470,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                     elif not is_gridboss and source.startswith("gridboss_"):
                         continue
                         
-                    entity_id: str = f"{entityTypeName}.{formatted_dongle_id}_{entity['unique_id'].lower()}"
+                    entity_id: str = self.build_entity_id(entityTypeName, dongle_id, entity['unique_id'])
                     self.entities[entity_id] = None
                     entities_created += 1
         
@@ -1418,10 +1640,47 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         
         if not subscription_success:
             LOGGER.warning("One or more MQTT subscriptions failed, some functionality may be limited")
-        
+
         # Log all active subscriptions
         LOGGER.debug(f"Active MQTT subscriptions after setup: {list(self._mqtt_unsubscribe_callbacks.keys())}")
-        
+
+        # Full-data snapshot bootstrap (FW >= 4.3.0 streams change-data only).
+        #
+        # We must NOT request the snapshot here: at this point the platforms have
+        # been forwarded but each entity's async_added_to_hass (where it subscribes
+        # to the coordinator) is only *scheduled*, not yet run. The snap/input reply
+        # comes back within ~1s; if it lands before the input sensors have finished
+        # subscribing, their async_set_updated_data fan-out misses them and they sit
+        # at 'unknown' until a later change-data delta happens to carry that key —
+        # which for static fields (SOC when idle, settings, etc.) may be never.
+        # (Verified on a live dongle: hold populated but input did not, and the
+        # difference was purely this timing window.)
+        #
+        # So defer the request to a short settle delay, by which point every
+        # entity's coordinator subscription is live. fail-open: request_snapshot()
+        # with no version requests anyway, and old firmware ignores the topic.
+        # force=True bypasses the per-session dedup but still records the dongle, so
+        # the later /status-driven call won't double-send on this same connect.
+        #
+        # The /status (version-confirmed) and /availability offline->online paths
+        # remain the triggers for reconnect/reboot recovery — see
+        # process_status_message() and request_snapshot().
+        async def _request_initial_snapshots(*_):
+            for dongle_id in self._dongle_ids:
+                await self.request_snapshot(dongle_id, version="", force=True)
+
+        # Fire once HA has fully started (async_at_started runs immediately if HA
+        # is already running, e.g. a config-entry reload), then a short settle so
+        # the just-added entities have finished subscribing to the coordinator
+        # before the snapshot reply lands.
+        from homeassistant.helpers.start import async_at_started
+
+        @callback
+        def _schedule_snapshot(_event):
+            async_call_later(self.hass, 2, _request_initial_snapshots)
+
+        async_at_started(self.hass, _schedule_snapshot)
+
         # Schedule a one-time log of ignored entity counts after 2 minutes
         async def log_ignored_entities(_):
             ignored_count = len(self._ignored_entity_suffixes)
@@ -1460,7 +1719,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         try:
             data = json.loads(payload)
         except ValueError:
-            LOGGER.error(f"Invalid JSON payload received for status message from {dongle_id} on topic {msg.topic}: {payload}")
+            LOGGER.error(f"Invalid JSON payload received for status message from {dongle_id}: {payload}")
             return
 
         # Check if the message follows the new structure with 'Serialnumber' and 'payload'
@@ -1471,27 +1730,129 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             serial_number = None  # For backward compatibility
             status_data = data  # Old format
 
-        formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
-        entity_id = f"sensor.{formatted_dongle_id}_uptime"
+        entity_id = self.build_entity_id("sensor", dongle_id, "uptime")
         self.entities[entity_id] = status_data
-        
-        # Don't update coordinator data for status messages - they're too frequent
-        # The main message processing will handle coordinator updates
+
+        # The /status payload carries the real dongle firmware version (e.g.
+        # "4.3.0.111S3"). Record it and, on the first status seen this session,
+        # ask FW >= 4.3.0 dongles for a full snapshot — they only stream
+        # change-data, so entities stay 'unknown' until this bootstrap runs.
+        version = ""
+        boot_count = None
+        if isinstance(status_data, dict):
+            version = status_data.get("version", "") or ""
+            boot = status_data.get("boot")
+            if isinstance(boot, dict):
+                boot_count = boot.get("count")
+        if version:
+            self.current_fw_versions[dongle_id] = version
+
+        # Detect a silent reboot: if boot.count changed since we last saw it (and
+        # this isn't the first sighting), the dongle restarted without dropping its
+        # MQTT session, so /availability never flipped. Force a fresh snapshot —
+        # its in-memory change-data baseline reset on reboot.
+        reboot_detected = False
+        if isinstance(boot_count, int):
+            previous = self._dongle_boot_count.get(dongle_id)
+            if previous is not None and boot_count != previous:
+                reboot_detected = True
+                LOGGER.info(
+                    "Detected reboot of %s (boot.count %s -> %s), refreshing snapshot",
+                    dongle_id, previous, boot_count,
+                )
+            self._dongle_boot_count[dongle_id] = boot_count
+
+        if reboot_detected:
+            # A reboot (even one that kept the MQTT session, so /availability never
+            # flipped) resets the dongle's change-data baseline — recover.
+            await self.request_recovery_snapshot(dongle_id, "reboot detected")
+        else:
+            # First-status bootstrap (deduped once per session).
+            await self.request_snapshot(dongle_id, version)
+
+        # Push the update so status-derived sensors (uptime + the /status
+        # diagnostic sensors) refresh. /status arrives ~every 30s — far less often
+        # than the /input + /hold change-data that already drives this same push —
+        # so the extra fan-out is marginal. Not gated on _hass_startup_complete so
+        # the diagnostic sensors populate on the very first status, rather than
+        # waiting up to a full heartbeat after startup finishes.
+        self.async_set_updated_data(self.entities)
 
     async def process_message(self, dongle_id: str, topic, payload):
         """Process incoming MQTT message and update entity states."""
         if payload is None or len(payload.strip()) == 0:
             return
-        
+
+        # LWT/birth on <dongle>/availability is a plain "online"/"offline"
+        # string, not JSON. Track it and skip the JSON decoder.
+        if topic.endswith("/availability"):
+            state = payload.strip().lower()
+            was_online = self._dongle_availability.get(dongle_id)
+            is_online = (state == "online")
+            self._dongle_availability[dongle_id] = is_online
+            LOGGER.debug(f"availability {dongle_id}={state}")
+            # Force a fresh snapshot on ANY 'online' message except the very first
+            # one we ever see (was_online is None -> the /status bootstrap handles
+            # the initial populate). We can't rely on a clean offline->online
+            # transition: on a fast restart the LWT 'offline' is often missed (or
+            # the birth message is retained), so the state would read online->online
+            # and entities would stay unavailable. request_recovery_snapshot is
+            # debounced, so repeated 'online' messages don't spam the dongle.
+            if is_online and was_online is not None:
+                await self.request_recovery_snapshot(dongle_id, "availability online")
+            return
+
         try:
             data = json.loads(payload)
             bank_name = topic.split('/')[-1]  # Gets 'inputbank1', 'holdbank2', etc.
             self.hass.bus.async_fire(f"{DOMAIN}_bank_updated", {"bank_name": bank_name, "dongle_id": dongle_id})
         except ValueError:
-            LOGGER.error(f"Invalid JSON payload received from {dongle_id} on topic {msg.topic}: {payload}")
+            LOGGER.error(f"Invalid JSON payload received from {dongle_id} on topic {topic}: {payload}")
             return
 
-        formatted_dongle_id = self.get_formatted_dongle_id(dongle_id)
+        # Durable write-confirmation channel (dongle FW >= 4.3.0):
+        # <dongle>/setting/updated arrives on every successful write
+        # regardless of who initiated it (HA itself, MMS, Lux server, HA
+        # TCP, the local web UI). Envelope: {setting, value, reg, from, ts}.
+        # We mirror the new value to the matching entity so HA's state
+        # converges within ~1 ms instead of waiting for the next /hold
+        # cycle. `from` lets us self-dedup if we just wrote it ourselves
+        # (avoids overwriting an optimistic in-flight write).
+        if topic.endswith("/setting/updated") and isinstance(data, dict):
+            setting = data.get("setting")
+            value = data.get("value")
+            from_who = data.get("from") or ""
+            if setting and value is not None:
+                formatted_suffix = setting.lower().replace("-", "_").replace(":", "_")
+                # Resolve the platform AND catalog entry so we can coerce the
+                # value (FW >= 4.3.0 sends it as a string like "1.00") to the
+                # entity's native type — an int index for selects, float for
+                # numbers, etc. Without this a select lands a raw "1.00" that
+                # matches no option and renders 'unknown'.
+                entity_type, entry = self.find_catalog_entry(formatted_suffix)
+                if entity_type is None:
+                    entity_type = self.determine_entity_type(formatted_suffix)
+                normalized = self.normalize_setting_value(entity_type, entry, value)
+                entity_id = self.build_entity_id(entity_type, dongle_id, formatted_suffix)
+
+                # Dedup the dual FW >= 4.3.0 confirmation: if HA itself just
+                # wrote this same value, /response already applied it (and drove
+                # the optimistic state). Skip the redundant refresh here so we
+                # don't process the same write twice. Echoes for writes we didn't
+                # make have no ledger entry and fall through normally.
+                if self._is_own_recent_write(dongle_id, formatted_suffix, normalized):
+                    LOGGER.debug(
+                        f"setting/updated deduped (own write): {entity_id}={normalized!r}"
+                    )
+                    return
+
+                self.entities[entity_id] = normalized
+                self.async_set_updated_data(self.entities)
+                LOGGER.debug(
+                    f"setting/updated routed: {entity_id}={normalized!r} "
+                    f"(raw={value!r}, type={entity_type}, from={from_who})"
+                )
+            return
 
         # Handle new payload structure while maintaining backward compatibility
         serial_number = None
@@ -1520,8 +1881,32 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             fw_version = payload_data["SW_VERSION"]
             self.current_fw_versions[dongle_id] = fw_version
             # Set entity value
-            entity_id = f"update.{formatted_dongle_id}_firmware_update"
+            entity_id = self.build_entity_id("update", dongle_id, "firmware_update")
             self.entities[entity_id] = fw_version
+
+        # Inverter FWCode fallback path. v4.3+ dongles no longer publish
+        # `holdbank1` so the legacy /firmwarecode/request → /response
+        # handshake can race the dongle boot and time out at HA's 15s
+        # firmware_timeout. The unified /hold topic carries FWCode in
+        # every payload (it's part of the standard hold superset), so
+        # scrape it here and feed it through save_firmware_code which
+        # also persists it to the config entry.
+        if "FWCode" in payload_data:
+            fw_code = payload_data["FWCode"]
+            if fw_code and self._firmware_codes.get(dongle_id) != fw_code:
+                # Fire-and-forget — save_firmware_code is async but we're
+                # already inside an async handler so schedule it.
+                self.hass.async_create_task(
+                    self.save_firmware_code(dongle_id, fw_code)
+                )
+                # If this dongle was waiting for the legacy handshake,
+                # clear it from the pending set so the 15s timeout
+                # doesn't fire the "default entities" warning.
+                if hasattr(self, "_pending_dongles") and dongle_id in self._pending_dongles:
+                    self._pending_dongles.discard(dongle_id)
+                    LOGGER.debug(
+                        f"FWCode {fw_code!r} resolved for {dongle_id} via /hold payload — pending cleared"
+                    )
 
         # Update UI version - commented out as UI update entity has been removed
         # if "UI_VERSION" in payload_data:
@@ -1543,7 +1928,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 # LOGGER.debug(f"Processing fault data for {dongle_id}: {fault_data}")
                 self._last_fault_warning_data[fault_key] = fault_data
                 fault_value = fault_data.get("value", 0)
-                entity_id = f"sensor.{formatted_dongle_id}_fault_status"
+                entity_id = self.build_entity_id("sensor", dongle_id, "fault_status")
 
                 if fault_value == 0:
                     self.entities[entity_id] = {
@@ -1571,7 +1956,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 # LOGGER.debug(f"Processing warning data for {dongle_id}: {warning_data}")
                 self._last_fault_warning_data[warning_key] = warning_data
                 warning_value = warning_data.get("value", 0)
-                entity_id = f"sensor.{formatted_dongle_id}_warning_status"
+                entity_id = self.build_entity_id("sensor", dongle_id, "warning_status")
 
                 if warning_value == 0:
                     self.entities[entity_id] = {
@@ -1611,23 +1996,128 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                     
                 formatted_entity_id_suffix = entity_id_suffix.lower().replace("-", "_").replace(":", "_")
                 entity_type = self.determine_entity_type(formatted_entity_id_suffix)
-                entity_id = f"{entity_type}.{formatted_dongle_id}_{formatted_entity_id_suffix}"
+                entity_id = self.build_entity_id(entity_type, dongle_id, formatted_entity_id_suffix)
                 self.entities[entity_id] = state
-            
+
         # Process events data if present (new format)
         if events_data:
             for event_id, event_state in events_data.items():
                 # Skip fault and warning which are handled separately
                 if event_id in ("fault", "warning"):
                     continue
-                    
+
                 formatted_event_id = event_id.lower().replace("-", "_").replace(":", "_")
-                entity_id = f"binary_sensor.{formatted_dongle_id}_{formatted_event_id}"
+                entity_id = self.build_entity_id("binary_sensor", dongle_id, formatted_event_id)
                 self.entities[entity_id] = event_state
         
         # Update coordinator data after processing all entities
         self.async_set_updated_data(self.entities)
     
+
+    def find_catalog_entry(self, entity_id_suffix):
+        """Return (entity_type, entry_dict) for a setting key, or (None, None).
+
+        Used by the /setting/updated durable-confirmation channel to learn a
+        setting's platform AND its metadata (e.g. a select's option list) so the
+        raw value can be normalized to the entity's native representation before
+        it lands in the coordinator.
+        """
+        suffix_lower = entity_id_suffix.lower()
+        brand_entities = ENTITIES.get(self.inverter_brand, {})
+        if not brand_entities:
+            return None, None
+        for entity_type in ["sensor", "switch", "number", "time", "time_hhmm", "button", "select"]:
+            if entity_type in brand_entities:
+                for _bank, entries in brand_entities[entity_type].items():
+                    for entry in entries:
+                        if entry["unique_id"].lower() == suffix_lower:
+                            resolved = "time" if entity_type == "time_hhmm" else entity_type
+                            return resolved, entry
+        return None, None
+
+    def normalize_setting_value(self, entity_type, entry, value):
+        """Coerce a /setting/updated raw value to the entity's native type.
+
+        FW >= 4.3.0 emits every write on <dongle>/setting/updated with the value
+        formatted as a STRING (e.g. "1.00" for a numeric register). Each platform
+        expects a specific Python type in coordinator.entities:
+          - select : int option index (decoded from "1.00" -> 1)
+          - number : float (or int)
+          - switch : int/bool 0/1
+          - time   : string, left as-is
+        Anything we can't confidently coerce is returned unchanged so the caller
+        (and the entity's _handle_coordinator_update) can fall back safely.
+        """
+        if value is None:
+            return None
+
+        # A numeric-looking string like "1.00" -> number. Keep the parsed float
+        # around for the int-index / float paths below.
+        num = None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            num = float(value)
+        elif isinstance(value, str):
+            try:
+                num = float(value.strip())
+            except (ValueError, AttributeError):
+                num = None
+
+        if entity_type == "select":
+            options = (entry or {}).get("options") or []
+            # Already a valid option label? Leave it.
+            if value in options:
+                return value
+            if num is not None:
+                idx = int(round(num))
+                if 0 <= idx < len(options):
+                    return idx  # int index -> select decodes to the label
+            return value  # unknown form; let the entity decide
+        if entity_type == "number":
+            if num is not None:
+                # Preserve integers as int where the value is whole.
+                return int(num) if num.is_integer() else num
+            return value
+        if entity_type == "switch":
+            if num is not None:
+                return 1 if num != 0 else 0
+            return value
+        # time / sensor / anything else: pass through untouched.
+        return value
+
+    def record_self_write(self, dongle_id: str, setting: str, value) -> None:
+        """Note a value HA just wrote, so its /setting/updated echo can be deduped.
+
+        `setting` is normalized to the same suffix form used when routing the
+        echo. Called from the MQTT handler right after publishing a write.
+        """
+        suffix = setting.lower().replace("-", "_").replace(":", "_")
+        entity_type, entry = self.find_catalog_entry(suffix)
+        if entity_type is None:
+            entity_type = self.determine_entity_type(suffix)
+        normalized = self.normalize_setting_value(entity_type, entry, value)
+        if not hasattr(self, "_self_write_ledger"):
+            self._self_write_ledger = {}
+        self._self_write_ledger[(dongle_id, suffix)] = (normalized, time.monotonic())
+
+    def _is_own_recent_write(self, dongle_id: str, suffix: str, normalized_value) -> bool:
+        """True if HA just wrote this exact (setting, value) within the window."""
+        ledger = getattr(self, "_self_write_ledger", None)
+        if ledger is None:
+            return False
+        entry = ledger.get((dongle_id, suffix))
+        if not entry:
+            return False
+        recorded_value, ts = entry
+        window = getattr(self, "_self_write_dedup_window", 10.0)
+        if (time.monotonic() - ts) > window:
+            # Stale — drop it so a later external write isn't wrongly deduped.
+            ledger.pop((dongle_id, suffix), None)
+            return False
+        if recorded_value == normalized_value:
+            # Consume it: the echo has now been accounted for.
+            ledger.pop((dongle_id, suffix), None)
+            return True
+        return False
 
     def determine_entity_type(self, entity_id_suffix):
         """Determine the entity type based on the entity_id_suffix."""

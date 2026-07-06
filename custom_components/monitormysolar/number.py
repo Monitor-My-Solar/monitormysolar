@@ -41,18 +41,10 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                 continue
                 
             for number in numbers:
-                allowed_firmware_codes = number.get("allowed_firmware_codes", [])
-                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
-                if coordinator.is_gridboss_dongle(dongle_id):
-                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
-                        continue
-                else:
-                    # For regular dongles, use the original logic
-                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                        pass  # Continue to entity creation
-                    else:
-                        continue  # Skip this entity
-                
+                # Group-based firmware gating (replaces exact allowed_firmware_codes).
+                if not coordinator.entity_allowed_for_dongle(dongle_id, number):
+                    continue
+
                 try:
                     entities.append(
                         InverterNumber(number, hass, entry, bank_name, dongle_id)
@@ -96,7 +88,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"number.{self._formatted_dongle_id}_{self._entity_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("number", self._dongle_id, self._entity_type)
         self.hass = hass
 
         # Get firmware-specific max value if available
@@ -116,6 +108,11 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         self._attr_device_class = entity_info.get("class", None)
         self._manufacturer = entry.data.get("inverter_brand")
         self._mqtt_multiplier = entity_info.get("mqtt_multiplier", 1)
+        # Two-way display scale: some registers arrive RAW and are 10x the real
+        # engineering value (e.g. the dongle sends 80 for 8.0 kW). Unlike
+        # mqtt_multiplier (send-only, for registers that already arrive pre-scaled),
+        # display_scale divides on display AND multiplies on send.
+        self._display_scale = entity_info.get("display_scale", 1)
         self._user_initiated_change = False
 
         super().__init__(self.coordinator)
@@ -156,15 +153,24 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         # Save old value in case we need to revert
         old_value = self._attr_native_value
 
+        # `value` is the displayed/engineering value (e.g. 8.0 kW). The raw register
+        # value the dongle uses is value * display_scale (e.g. 80). The coordinator
+        # stores raw values (that's what the dongle reports back), so store raw there
+        # while showing the divided value in the UI.
+        raw_value = value * self._display_scale if self._display_scale != 1 else value
+
         # Set the new value optimistically for immediate UI feedback
         self._attr_native_value = value
         self._user_initiated_change = True
         # Update coordinator's stored value so it doesn't overwrite us
-        self.coordinator.entities[self.entity_id] = value
+        self.coordinator.entities[self.entity_id] = raw_value
         self.throttled_async_write_ha_state()
 
-        # Apply multiplier for registers that need integer values (e.g. 46.1V -> 461)
-        mqtt_value = int(value * self._mqtt_multiplier) if self._mqtt_multiplier > 1 else value
+        # Apply multiplier for registers that need integer values (e.g. 46.1V -> 461).
+        # display_scale-scaled registers send the raw integer value.
+        mqtt_value = int(value * self._mqtt_multiplier) if self._mqtt_multiplier > 1 else raw_value
+        if self._display_scale != 1:
+            mqtt_value = int(raw_value)
 
         # Send the update via MQTT and wait for response
         success = await mqtt_handler.send_update(
@@ -179,7 +185,9 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
             LOGGER.error(f"Failed to update {self.entity_id} to {value}, reverting to {old_value}")
             self._user_initiated_change = False
             self._attr_native_value = old_value
-            self.coordinator.entities[self.entity_id] = old_value
+            # Coordinator holds raw values, so restore the raw form of old_value.
+            old_raw = old_value * self._display_scale if (self._display_scale != 1 and old_value is not None) else old_value
+            self.coordinator.entities[self.entity_id] = old_raw
             self.throttled_async_write_ha_state()
             raise HomeAssistantError(f"Failed to update {self.entity_id} - no response from inverter")
 
@@ -192,8 +200,11 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
         if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
-            if value is not None:
+            raw = self.coordinator.entities[self.entity_id]
+            if raw is not None:
+                # Coordinator holds the raw register value; divide to the displayed
+                # engineering value (e.g. 80 -> 8.0 kW).
+                value = raw / self._display_scale if self._display_scale != 1 else raw
                 # If this is a user-initiated change, don't override with stale coordinator data
                 if self._user_initiated_change:
                     if value == self._attr_native_value:
@@ -226,7 +237,7 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
         self._source_entity = entity_info.get("source_entity", "")
         # Remove 'combined_' prefix from unique_id for entity_id
         entity_suffix = self._entity_type.lower().replace("combined_", "", 1)
-        self.entity_id = f"number.{self._formatted_dongle_id}_{entity_suffix}"
+        self.entity_id = self.coordinator.build_entity_id("number", self._dongle_id, entity_suffix)
         self.hass = hass
         self._attr_native_min_value = entity_info.get("min", None)
         self._attr_native_max_value = entity_info.get("max", None)
@@ -245,8 +256,7 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
         self._tracked_entities = []
         self._source_values = {}
         for dongle_id in dongle_ids:
-            formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
-            source_entity_id = f"number.{formatted_id}_{self._source_entity.lower()}"
+            source_entity_id = self.coordinator.build_entity_id("number", dongle_id, self._source_entity)
             self._tracked_entities.append(source_entity_id)
             self._source_values[source_entity_id] = None
             

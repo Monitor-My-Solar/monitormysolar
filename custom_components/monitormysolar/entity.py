@@ -179,15 +179,32 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
 
         return device_info
 
+    async def async_added_to_hass(self) -> None:
+        """Seed initial state from the coordinator store when added.
+
+        HA's CoordinatorEntity does NOT call _handle_coordinator_update on add — an
+        entity only updates on the *next* coordinator refresh after it subscribes.
+        The connect-time snapshot is a one-shot: it writes every value into
+        coordinator.entities once, often before this entity is added. On FW >= 4.3.0
+        (change-data only) a value that doesn't change again — every hold/setting and
+        many static input fields — would otherwise never reach the entity and it
+        would sit empty forever. So pull whatever is already stored, right now.
+        """
+        await super().async_added_to_hass()
+        # Every subclass's _handle_coordinator_update guards internally (it no-ops
+        # if there's nothing stored for this entity), so calling it unconditionally
+        # is safe and seeds whatever the snapshot already delivered.
+        self._handle_coordinator_update()
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
         # This method is called by your DataUpdateCoordinator when a successful update runs.
         if self.entity_id in self.coordinator.entities:
             self._state = self.coordinator.entities[self.entity_id]
-        else:
-            LOGGER.warning(f"entity {self.entity_id} key not found")
-        self.throttled_async_write_ha_state()
+            self.throttled_async_write_ha_state()
+        # No stored value yet (e.g. seeded at add-time before any data arrived) —
+        # nothing to write. Avoid the spurious "key not found" warning + state write.
     
     def reload_integration(self) -> None:
         """Reload the integration."""

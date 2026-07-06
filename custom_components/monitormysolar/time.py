@@ -35,18 +35,10 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
         time_config = brand_entities.get("time", {})
         for bank_name, time_entities in time_config.items():
             for time_entity in time_entities:
-                allowed_firmware_codes = time_entity.get("allowed_firmware_codes", [])
-                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
-                if coordinator.is_gridboss_dongle(dongle_id):
-                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
-                        continue
-                else:
-                    # For regular dongles, use the original logic
-                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                        pass  # Continue to entity creation
-                    else:
-                        continue  # Skip this entity
-                
+                # Group-based firmware gating (replaces exact allowed_firmware_codes).
+                if not coordinator.entity_allowed_for_dongle(dongle_id, time_entity):
+                    continue
+
                 entities.append(InverterTime(time_entity, hass, entry, dongle_id))
 
     async_add_entities(entities, True)
@@ -63,7 +55,7 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
-        self.entity_id = f"time.{self._formatted_dongle_id}_{self._entity_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("time", self._dongle_id, self._entity_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._last_mqtt_update = None

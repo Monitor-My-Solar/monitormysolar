@@ -43,18 +43,10 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                 continue
                 
             for switch in switches:
-                allowed_firmware_codes = switch.get("allowed_firmware_codes", [])
-                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
-                if coordinator.is_gridboss_dongle(dongle_id):
-                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
-                        continue
-                else:
-                    # For regular dongles, use the original logic
-                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                        pass  # Continue to entity creation
-                    else:
-                        continue  # Skip this entity
-                
+                # Group-based firmware gating (replaces exact allowed_firmware_codes).
+                if not coordinator.entity_allowed_for_dongle(dongle_id, switch):
+                    continue
+
                 try:
                     entities.append(
                         InverterSwitch(switch, hass, entry, bank_name, dongle_id)
@@ -105,7 +97,7 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"switch.{self._formatted_dongle_id}_{self._entity_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("switch", self._dongle_id, self._entity_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._previous_state = None
@@ -206,7 +198,18 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
         if self.entity_id in self.coordinator.entities:
             value = self.coordinator.entities[self.entity_id]
             if value is not None:
-                new_state = bool(value)
+                # CRITICAL: setting/updated payloads ship value as a STRING
+                # ("0" / "1"), and bool("0") in Python is True because any
+                # non-empty string is truthy. Coerce via int() so the actual
+                # numeric value drives the switch state.
+                try:
+                    if isinstance(value, str):
+                        new_state = bool(int(value))
+                    else:
+                        new_state = bool(value)
+                except (TypeError, ValueError):
+                    _LOGGER.debug(f"Switch {self.entity_id}: ignoring uncoercible value {value!r}")
+                    return
                 # If this is a user-initiated change, don't override with stale coordinator data
                 if self._user_initiated_change:
                     if new_state == self._state:
@@ -236,7 +239,7 @@ class CombinedSwitch(MonitorMySolarEntity, SwitchEntity):
         self._source_entity = entity_info.get("source_entity", "")
         # Remove 'combined_' prefix from unique_id for entity_id
         entity_suffix = self._entity_type.lower().replace("combined_", "", 1)
-        self.entity_id = f"switch.{self._formatted_dongle_id}_{entity_suffix}"
+        self.entity_id = self.coordinator.build_entity_id("switch", self._dongle_id, entity_suffix)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._previous_state = None
@@ -248,8 +251,7 @@ class CombinedSwitch(MonitorMySolarEntity, SwitchEntity):
         self._tracked_entities = []
         self._source_values = {}
         for dongle_id in dongle_ids:
-            formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
-            source_entity_id = f"switch.{formatted_id}_{self._source_entity.lower()}"
+            source_entity_id = self.coordinator.build_entity_id("switch", dongle_id, self._source_entity)
             self._tracked_entities.append(source_entity_id)
             self._source_values[source_entity_id] = None
             _LOGGER.debug(f"Combined switch {self._name} will track: {source_entity_id}")
@@ -468,7 +470,7 @@ class CombinedSyncSwitch(MonitorMySolarEntity, SwitchEntity):
         self._entity_type = entity_info["unique_id"]
         # Remove 'combined_' prefix from unique_id if it exists for sync switch
         entity_suffix = self._entity_type.lower().replace("combined_", "", 1)
-        self.entity_id = f"switch.{self._formatted_dongle_id}_{entity_suffix}"
+        self.entity_id = self.coordinator.build_entity_id("switch", self._dongle_id, entity_suffix)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._icon = entity_info.get("icon", "mdi:sync")

@@ -1,4 +1,211 @@
 # Changelog
+## Version 4.0.0
+### Best with dongle firmware 4.3.0+. Some features below REQUIRE 4.3.0.
+
+This is a big release. The headline is that firmware 4.3.0 changes how the dongle
+talks to Home Assistant — it now streams only what changed and confirms every
+setting write on its own, and it no longer needs the dongle's IP address for
+anything. The integration has been reworked to take advantage of that while
+staying fully backward compatible with older dongles.
+
+**Upgrading?** Please read the two ⚠️ sections below (dongle IP removed, and the
+one-off entity clean-up on first start). Your history and settings are preserved.
+
+#### New Entities added
+- Ac Couple Enable
+- Smart Load Enable
+- RSD Disable
+- Grid Peak Shaving Enable
+- Gen Peak Shaving Enable
+- Smart Load On/Off Voltage
+- Smart Load On/off SOC
+- Start PV Power (Smart Load)
+- Ac Couple Start/stop Voltage
+- Ac Couple Start/stop SOC
+
+##### Offgrid only 
+- AC First Start and end 
+
+##### Changed Entities
+- Some battery/temperature sensors differ by inverter family. For example on
+  LuxPower units, battery temperature is reported as **Max/Min Cell Temperature
+  (BMS)** rather than a single "Battery Temperature"; on Deye-family units the
+  single "Battery Temperature" is provided. You only get the entities your unit
+  actually reports — anything left over from an older version that your unit
+  doesn't provide will simply show as unavailable and can be removed (see the new
+  Restore/clean-up tool below).
+
+#### ⚠️ Breaking change — Dongle IP address removed
+- The dongle IP address is **no longer collected or used**. Firmware updates and
+  all admin actions now run over MQTT, so an IP is never needed.
+- The "Update dongle IPs" option and all IP input fields have been removed from
+  setup and options. Existing IP values in your config are ignored.
+- **Firmware updates now require dongle firmware 4.3.0 or newer** (the MQTT admin
+  command surface). Dongles older than 4.3.0 can no longer be updated from Home
+  Assistant — update them once to 4.3.0 by the previous method / app first.
+
+#### Firmware updates over MQTT
+- The firmware update entity now triggers OTA via the dongle's MQTT admin command
+  (`<dongle_id>/admin {"cmd":"ota"}`) and streams live progress over MQTT
+  (`<dongle_id>/ota/progress`), with a final pass/fail on `<dongle_id>/ota/result`.
+  No dongle IP, HTTP, or WebSocket involved.
+- Added a **Use Beta Firmware** option (Settings) to choose the prod or beta
+  track. Updates are selected by track only — since firmware 4.3.0 the version is
+  CI-stamped from the build, so the dongle always installs the current build on the
+  chosen track (no version targeting).
+- The installed-version display strips the chip suffix (e.g. `S3`/`C6`) so it
+  compares correctly against the published build version.
+
+#### Optional dongle ID in entity names (with history kept)
+- New single-dongle installs get clean entity names without the dongle ID. Existing
+  installs are unchanged; opt in via Settings. History (states + statistics) is
+  preserved across the change.
+- Setup asks whether this is a fresh install or a reconnect so existing history
+  lines up automatically.
+
+#### Replace a dongle (transfer history)
+- New "Replace a dongle" action (Options → Manage Dongles) moves all entities and
+  their full history from a failed/swapped dongle to its replacement.
+
+#### Status diagnostic entities
+- The dongle `/status` payload now drives individual diagnostic sensors (firmware
+  version, chip type, MQTT/server connection states, memory, boot/crash counts, SD
+  health, last reset reason).
+
+#### Deye / SunSynk / SolArk / NeoVolta support
+- Added the **Deye** inverter family as a selectable brand (labelled
+  "Deye / SunSynk / SolArk / NeoVolta") with a full entity catalog (114 entities:
+  84 sensors, 30 numbers, 6 selects, 4 switches), unique_ids mapping 1:1 with the
+  dongle's Deye catalog keys.
+- Deye TimeSlots (a nested array) currently lands as a single opaque,
+  disabled-by-default sensor; per-slot entities are a documented follow-up.
+
+#### Unified `/input` + `/hold` topics (firmware 4.3.0+)
+- Firmware 4.3.0+ publishes consolidated `<dongle>/input` and `<dongle>/hold`
+  payloads. The coordinator routes these the same way as the legacy per-bank
+  topics (the per-key lookup is bank-agnostic), so the same value updates the same
+  entity whichever topic it arrives on.
+- On connect the integration requests a full snapshot (`<dongle>/snapshot/request`)
+  so entities populate immediately. Older firmware ignores the request and keeps
+  using the per-bank topics — fully backward compatible.
+
+#### Durable write confirmation (firmware 4.3.0+)
+- Firmware 4.3.0+ publishes `<dongle>/setting/updated` on every successful write,
+  no matter who initiated it (Home Assistant, the mobile app, the local web UI,
+  the Lux server). The integration mirrors that value onto the matching entity so
+  Home Assistant converges in ~1 ms instead of waiting for the next `/hold` cycle.
+  No-op on older firmware.
+- **Values are now normalised to each control's type.** The dongle reports values
+  as text (e.g. `"1.00"`); the integration converts them to the right form for the
+  entity — a number for a slider, an option for a dropdown, on/off for a switch —
+  so controls no longer land on a stray value.
+- **The two confirmation channels no longer fight.** On 4.3.0 a Home-Assistant
+  write is confirmed on both the classic reply and the new durable channel. The
+  integration now recognises its own write and applies it once, instead of
+  processing the same change twice.
+
+#### Settings apply cleanly and stay put
+- **Fixed dropdowns (selects) briefly going blank / "unknown" after a change.**
+  When you set something like a GridBoss Smart Port mode, it now commits to the
+  value you chose the moment the dongle confirms success — no flicker, no revert,
+  no "unknown".
+- The rule is simple now: **a successful write means the value you sent is the
+  value.** Home Assistant no longer second-guesses it or reads a stale value back
+  over the top. This applies to selects, numbers, switches and time entities.
+- Out-of-range or unexpected values coming back from the dongle can no longer blank
+  a control — it keeps its current option instead.
+
+#### Entities recover automatically after a dongle restart
+- If a dongle reboots or drops off and comes back, Home Assistant now
+  automatically re-requests a full snapshot so its entities repopulate instead of
+  sitting at "unavailable". This is triggered on any of: the dongle coming back
+  online, a detected reboot, or data resuming after a silent gap — and it's
+  debounced so a burst of those only sends one request. Fixes entities going
+  unavailable and staying that way after a dongle restart.
+
+#### Firmware-group based entity selection
+- Which entities a unit gets is now decided by its **firmware group**, derived from
+  the firmware code, instead of brittle per-entity allow-lists of exact codes. The
+  groups are: **legacy** (A-family hybrids), **ac_coupled** (B units), **GEN**
+  (E/F/H — incl. 12K and 8-10K), **threephase** (G), **offgrid** (C — incl. SNA
+  6000/12000XP), and **midbox** (GridBoss / I units).
+- Each entity declares the groups it applies to; a unit is given an entity when its
+  group matches. Membership in a group *is* validity — there's no separate "valid
+  codes" list to maintain, and new codes within a known family are handled
+  automatically. Matching is case-insensitive, fixing units whose code differed only
+  in case.
+- GridBoss (midbox) remains a distinct device that only receives its own
+  midbox-tagged entities.
+
+#### ⚠️ One-off entity clean-up on first start (no more `_2` duplicates)
+- Upgrading from older versions (especially if you'd previously downgraded and come
+  back) could leave **duplicate entities with a `_2` on the end** — because the way
+  an entity is identified internally changed between versions.
+- On the first start after updating, the integration now **automatically cleans
+  these up**: it removes the leftover duplicates and moves the live entity back onto
+  its clean name, keeping its full history. You should no longer have to rename or
+  delete anything by hand.
+- This works for **single- and multi-dongle setups alike** (a dongle in a
+  GridBoss/FlexBoss combo is treated the same as a standalone one).
+- Everything the clean-up does is written to a plain-English log file,
+  `monitormysolar_migration.log`, in your Home Assistant config folder — so if
+  anything looks off it's easy to see exactly what happened.
+
+#### Restore deleted entities (Options)
+- New **"Restore Deleted Entities"** action under the integration's Options. If you
+  (or a clean-up) removed or disabled an entity and want it back, this lists them
+  and recreates the ones you pick — no need to delete and re-add the whole
+  integration. Home Assistant normally refuses to bring a deleted entity back on a
+  reload; this handles that for you.
+
+#### Fixes
+- **Snapshot now reliably populates all entities on connect.** The full-data
+  snapshot (the `{"what":"all"}` reply on `<dongle>/snap/input` and
+  `<dongle>/snap/hold`) was being requested before entities had finished
+  subscribing, so the reply could land in a window where input sensors missed it —
+  leaving values like SOC and other static fields stuck at `unknown` until a later
+  change happened to carry that key. The snapshot is now requested once Home
+  Assistant has started and entities are subscribed, so every value lands. Entities
+  also seed their initial state from the latest snapshot when added, so a value that
+  never changes again still shows.
+- The snapshot reply (`snap/input` / `snap/hold`) is processed even during the
+  startup window rather than being dropped.
+- **Multiple batteries**: when a `/batteries` payload contains more than one
+  battery, all of them now get their own entities (previously only the first was
+  created, because the firmware reports the same battery index for each). A battery
+  position is only registered once its sensors are actually built, so a partial
+  first payload no longer permanently hides a battery.
+- **Duplicate / `_2` entities fixed.** Several sensors (PV power/voltage/current,
+  PV energy, temperatures, charge-rate controls, and the "Charge Based on"
+  selector) had two catalog definitions that resolved to the same entity, which
+  forced Home Assistant to suffix the second with `_2`. Definitions are now scoped
+  to the firmware group they apply to, so each unit gets exactly one of each.
+- The "Charge Based on" (ACChargeType) selector now shows the correct option set
+  per family: offgrid units get the 6-option list, GEN (12K) units the 3-option
+  list, and legacy/AC-coupled units their own 3-option list — and the value→label
+  mapping follows the same split.
+- Firmware updates over MQTT: progress now ignores stale/retained progress
+  messages, accepts both `success` and `ok` as a successful result, and the
+  installed-version comparison no longer perpetually shows an update available.
+- Status diagnostic sensors refresh on the first `/status` after startup; the noisy
+  raw-byte memory sensors (heap/PSRAM) are disabled by default to avoid bloating the
+  recorder.
+- `<dongle>/availability` (the LWT online/offline message) is no longer mis-parsed
+  as JSON — it stopped spamming "Invalid JSON" warnings.
+- Entity creation no longer aborts on brand registries that contain legacy
+  flat-list entries (an `isinstance` guard was added).
+- Switch states given as the strings `"0"`/`"1"` are now coerced correctly
+  (previously `"0"` evaluated truthy and showed switches as on).
+- **kW charge/discharge rate controls now scale correctly.** The AC charge rate
+  and forced charge/discharge kW controls display in real kW and send the value the
+  dongle expects (e.g. show 8.0 kW, send 80), instead of being off by 10x.
+- **SD card sensors only appear where there's an SD card.** SD Health / SD Write
+  Failures are shown for S3-chip dongles and are hidden (and disabled by default)
+  on C6 dongles, which have no SD card — no more permanently-unknown SD sensors.
+- Device grouping: turning grouping **off** now removes the empty sub-devices it
+  created, instead of leaving stale, empty devices behind.
+- Battery, switch, select and binary-sensor entities are now gated by firmware
+  group consistently, so units only get the controls that apply to them.
 
 ## Version 3.2.0
 

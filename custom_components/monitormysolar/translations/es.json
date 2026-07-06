@@ -1,22 +1,41 @@
 {
-"es": {
-        "title": "Configuración de Inverter MQTT",
-        "step": {
-            "user": {
-                "data": {
-                    "inverter_brand": "Marca del Inversor",
-                    "mqtt_server": "Servidor MQTT",
-                    "mqtt_port": "Puerto MQTT",
-                    "mqtt_username": "Nombre de usuario MQTT",
-                    "mqtt_password": "Contraseña MQTT",
-                    "dongle_id": "ID del Dongle"
-                },
-                "description": "Por favor, ingrese la siguiente información para configurar su inversor.",
-                "title": "Configuración de Inverter MQTT"
-            }
+  "es": {
+    "title": "Configuración de Inverter MQTT",
+    "step": {
+      "user": {
+        "data": {
+          "inverter_brand": "Marca del Inversor",
+          "mqtt_server": "Servidor MQTT",
+          "mqtt_port": "Puerto MQTT",
+          "mqtt_username": "Nombre de usuario MQTT",
+          "mqtt_password": "Contraseña MQTT",
+          "dongle_id": "ID del Dongle"
         },
-        "error": {
-            "cannot_connect": "No se puede conectar al servidor MQTT. Por favor, revise sus configuraciones."
-        }
+        "description": "Por favor, ingrese la siguiente información para configurar su inversor.",
+        "title": "Configuración de Inverter MQTT"
+      }
+    },
+    "error": {
+      "cannot_connect": "No se puede conectar al servidor MQTT. Por favor, revise sus configuraciones."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "restore_entities": "Restaurar entidades eliminadas"
+        }
+      },
+      "restore_entities": {
+        "title": "Restaurar entidades",
+        "description": "{count} entidad(es) se pueden restaurar. Fueron eliminadas o deshabilitadas y no volverán con una recarga normal. Seleccione las que desea recuperar; se recrearán desde el catálogo.",
+        "data": {
+          "entities": "Entidades a restaurar"
+        }
+      }
+    },
+    "abort": {
+      "no_restorable_entities": "No hay entidades eliminadas o deshabilitadas para restaurar."
+    }
+  }
 }

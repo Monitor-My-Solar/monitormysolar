@@ -33,18 +33,10 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
         # Process selects for this dongle
         for bank_name, selects in select_config.items():
             for select in selects:
-                allowed_firmware_codes = select.get("allowed_firmware_codes", [])
-                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
-                if coordinator.is_gridboss_dongle(dongle_id):
-                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
-                        continue
-                else:
-                    # For regular dongles, use the original logic
-                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                        pass  # Continue to entity creation
-                    else:
-                        continue  # Skip this entity
-                
+                # Group-based firmware gating (replaces exact allowed_firmware_codes).
+                if not coordinator.entity_allowed_for_dongle(dongle_id, select):
+                    continue
+
                 try:
                     sensor_class_key = select.get("sensor_class", bank_name)
                     if sensor_class_key == "holdbank6":
@@ -68,7 +60,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
-        self.entity_id = f"select.{self._formatted_dongle_id}_{self._entity_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("select", self._dongle_id, self._entity_type)
         self.hass = hass
         self._options = entity_info["options"]
         self._manufacturer = entry.data.get("inverter_brand")
@@ -218,12 +210,37 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
             self.throttled_async_write_ha_state()
         else:
             LOGGER.warning(f"No previous state to revert to for {self.entity_id}")
-    
+
+    def confirm_option(self):
+        """Commit the option the user just sent, after the dongle replied success.
+
+        The dongle's `success` reply is authoritative: the value we sent IS the
+        value now. We keep `_state` on the sent option and mirror it into the
+        coordinator as the option INDEX (the same int representation a /hold
+        register carries), so a later coordinator refresh re-derives the same
+        option instead of a stale/out-of-range value that renders as 'unknown'.
+        The user_initiated guard stays UP so no in-flight stale payload can
+        clobber the confirmed value.
+        """
+        option = getattr(self, "_state", None)
+        if option not in self._options:
+            LOGGER.warning(f"Select {self.entity_id}: confirm_option got non-option {option!r}; ignoring")
+            return
+        index = self._options.index(option)
+        # Mirror as int so _handle_coordinator_update decodes it back to the option.
+        self.coordinator.entities[self.entity_id] = index
+        LOGGER.debug(f"Select {self.entity_id}: confirmed option {option!r} (index {index})")
+        self.throttled_async_write_ha_state()
+
     def clear_user_initiated_flag(self):
-        """Clear the user-initiated change flag when MQTT response is successful."""
-        if hasattr(self, '_user_initiated_change'):
-            LOGGER.debug(f"Select {self.entity_id}: Clearing user_initiated flag after successful MQTT response")
-            self._user_initiated_change = False
+        """Deprecated: retained for compatibility.
+
+        We no longer drop the user_initiated guard on the success reply — the
+        dongle's echo of the register (or a matching coordinator value) clears
+        it in _handle_coordinator_update once the two agree. Clearing it here
+        opened a window where a stale in-flight payload reverted the entity.
+        """
+        return
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -244,11 +261,20 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
                         new_state = value
                 else:
                     # For other selects (like Port Mode), value is typically int
-                    new_state = (
-                        self._options[value]
-                        if isinstance(value, int) and value < len(self._options)
-                        else value
-                    )
+                    idx = int(value) if isinstance(value, (bool, int)) else None
+                    if idx is not None and 0 <= idx < len(self._options):
+                        new_state = self._options[idx]
+                    elif value in self._options:
+                        # Already an option label (e.g. mirrored back as a string).
+                        new_state = value
+                    else:
+                        # Unknown/out-of-range value: don't render as-is (that shows
+                        # 'unknown' in HA). Keep our current option instead.
+                        LOGGER.debug(
+                            f"Select {self.entity_id}: coordinator value {value!r} is not a valid "
+                            f"option/index; keeping current state {self._state!r}"
+                        )
+                        return
                 
                 # Debug logging to see what's happening
                 # LOGGER.info(f"Select {self.entity_id}: Coordinator update - current state: {self._state}, coordinator value: {value}, new state: {new_state}, user_initiated: {getattr(self, '_user_initiated_change', False)}")
@@ -292,7 +318,7 @@ class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
-        self.entity_id = f"select.{self._formatted_dongle_id}_{self._entity_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("select", self._dongle_id, self._entity_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._additional_payload = entity_info.get("additional_payload")

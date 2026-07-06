@@ -18,14 +18,22 @@ from __future__ import annotations
 
 import aiohttp
 import asyncio
+import json
+import uuid
 from datetime import timedelta
 from homeassistant.components import mqtt
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature, UpdateDeviceClass
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
-from .const import DOMAIN, ENTITIES, LOGGER
+from .const import DOMAIN, ENTITIES, LOGGER, CONF_USE_BETA, DEFAULT_USE_BETA
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
+
+# How long to wait for the dongle to ACK the OTA admin command, and the overall
+# ceiling on watching progress before we stop monitoring (the dongle reboots into
+# the new firmware and reports a final result on <id>/ota/result).
+OTA_ACK_TIMEOUT = 30  # seconds to wait for <id>/admin/response
+OTA_OVERALL_TIMEOUT = 600  # seconds to watch progress/result before giving up
 
 UPDATE_URL = "https://monitoring.monitormy.solar/version"
 UPDATE_CHECK_INTERVAL = timedelta(hours=6)  # Check every 6 hours
@@ -89,7 +97,7 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._unique_id = f"{entry.entry_id}_{dongle_id}_firmware_update"
         self._manufacturer = "MonitorMySolar"
-        self.entity_id = f"update.{self._formatted_dongle_id}_firmware_update"
+        self.entity_id = self.coordinator.build_entity_id("update", self._dongle_id, "firmware_update")
         self._attr_in_progress = False
         self._attr_progress = None
         self._unsubscribe_timer = None
@@ -116,34 +124,65 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         """Return a unique ID."""
         return self._unique_id
 
+    @staticmethod
+    def _strip_chip_suffix(version: str) -> str:
+        """Strip the trailing chip designator (e.g. S3 / C6) from a version string.
+
+        The dongle reports versions like "4.3.0.111S3" or "4.3.0C6", but the
+        update server publishes the bare version ("4.3.0.111" / "4.3.0"). Without
+        stripping the chip suffix the installed vs latest comparison never matches
+        and HA would always show an update available. Removes a trailing run of
+        letters+digits that isn't part of the dotted numeric version.
+        """
+        if not version:
+            return version
+        # Split on dots; the chip suffix is glued onto the last numeric segment,
+        # e.g. "111S3" -> keep "111". Trim trailing chars from the last part once a
+        # non-digit is hit.
+        parts = version.split(".")
+        last = parts[-1]
+        trimmed = ""
+        for ch in last:
+            if ch.isdigit():
+                trimmed += ch
+            else:
+                break
+        parts[-1] = trimmed
+        # Drop any now-empty trailing segment (e.g. version was just "4.3.0S3" with
+        # nothing numeric after — shouldn't happen, but be safe).
+        while parts and parts[-1] == "":
+            parts.pop()
+        return ".".join(parts)
+
     @property
     def installed_version(self) -> str | None:
-        """Version currently installed."""
+        """Version currently installed (chip suffix stripped to match the server)."""
         version = self.coordinator.current_fw_versions.get(self._dongle_id)
-        
+
         if version in [None, "", "Waiting...", "Unknown"]:
             return None
-            
-        return str(version)
+
+        return self._strip_chip_suffix(str(version))
 
     @property
     def latest_version(self) -> str | None:
         """Latest version available."""
         server_versions = self.coordinator.server_versions or {}
-        
-        # Check if we should use beta version
-        # You might want to add a config option for this later
-        use_beta = False  # For now, default to stable
-        
-        if use_beta:
+
+        if self._use_beta:
             version = server_versions.get("betaFwVersion")
         else:
             version = server_versions.get("latestFwVersion")
-            
+
         if version in [None, ""]:
             return None
-            
+
         return str(version)
+
+    @property
+    def _use_beta(self) -> bool:
+        """Whether this install should track the beta firmware channel."""
+        return self.coordinator.entry.data.get(CONF_USE_BETA, DEFAULT_USE_BETA)
     
     def release_notes(self) -> str | None:
         """Return the release notes."""
@@ -180,132 +219,148 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         return self._attr_progress
     
     async def async_install(self, version: str | None, backup: bool, **kwargs) -> None:
-        """Install an update."""
-        dongle_ip = self.coordinator.get_dongle_ip(self._dongle_id)
-        if not dongle_ip:
-            raise Exception("No IP address configured for this dongle. Please configure the dongle IP in the integration settings.")
-        
-        # Use the provided version or latest version
-        target_version = version or self.latest_version
-        
-        if not target_version:
-            raise Exception("No target version specified and no latest version available")
-        
-        LOGGER.info(f"Installing firmware version {target_version} on {self._dongle_id} at IP {dongle_ip}")
-        
-        # Set update in progress
+        """Install an update via the MQTT admin OTA command.
+
+        Publishes {"cmd":"ota"} to <dongle_id>/admin and watches progress on
+        <dongle_id>/ota/progress, finishing on <dongle_id>/ota/result. No dongle
+        IP / HTTP / WebSocket involved — the whole flow is MQTT. Requires dongle
+        firmware >= 4.3.0 (the /admin command surface).
+
+        Version selection is by *track* only. Since firmware 4.3.0 the dongle's
+        version is CI-stamped from the build (the build number in e.g.
+        "4.3.0.111S3"), so HA never specifies a target version — it just asks for
+        the current build on prod or beta. The `version` argument from HA is
+        ignored.
+        """
+        track = "beta" if self._use_beta else "prod"
+
+        request_id = uuid.uuid4().hex[:12]
+        command = {"cmd": "ota", "id": request_id, "args": {"track": track}}
+
+        LOGGER.info(
+            f"Requesting OTA for {self._dongle_id}: track={track} (id={request_id})"
+        )
+
         self._attr_in_progress = True
         self._attr_progress = 0
         self.async_write_ha_state()
-        
+
+        # Events/holders the MQTT callbacks fill in.
+        ack = {"received": False, "ok": False, "detail": ""}
+        ack_event = asyncio.Event()
+        result = {"status": None, "detail": ""}
+        result_event = asyncio.Event()
+        loop = self.hass.loop
+
+        @callback
+        def _on_response(msg):
+            try:
+                data = json.loads(msg.payload)
+            except (ValueError, TypeError):
+                return
+            if data.get("id") != request_id or data.get("cmd") != "ota":
+                return
+            ack["received"] = True
+            ack["ok"] = data.get("status") == "ok"
+            ack["detail"] = data.get("detail", "")
+            loop.call_soon_threadsafe(ack_event.set)
+
+        @callback
+        def _on_progress(msg):
+            # Ignore retained messages: a progress message retained from a previous
+            # OTA is delivered immediately on subscribe and would jump the bar to a
+            # stale value. Only act on live progress for this install.
+            if getattr(msg, "retain", False):
+                return
+            try:
+                data = json.loads(msg.payload)
+            except (ValueError, TypeError):
+                return
+            # If the dongle echoes the request id on progress, honour it; otherwise
+            # accept (the topic is dongle-specific and only subscribed during this
+            # install).
+            msg_id = data.get("id")
+            if msg_id is not None and msg_id != request_id:
+                return
+            pct = data.get("progress")
+            if isinstance(pct, (int, float)) and 0 <= pct <= 100:
+                self._attr_progress = int(pct)
+                self.async_write_ha_state()
+
+        @callback
+        def _on_result(msg):
+            try:
+                data = json.loads(msg.payload)
+            except (ValueError, TypeError):
+                return
+            result["status"] = data.get("status")
+            result["detail"] = data.get("detail", "")
+            loop.call_soon_threadsafe(result_event.set)
+
+        unsub_response = await mqtt.async_subscribe(
+            self.hass, f"{self._dongle_id}/admin/response", _on_response
+        )
+        unsub_progress = await mqtt.async_subscribe(
+            self.hass, f"{self._dongle_id}/ota/progress", _on_progress
+        )
+        unsub_result = await mqtt.async_subscribe(
+            self.hass, f"{self._dongle_id}/ota/result", _on_result
+        )
+
         try:
-            # First, trigger the update
-            async with aiohttp.ClientSession() as session:
-                update_url = f"http://{dongle_ip}/api/perform-update"
-                payload = {
-                    "update": "FW_update",
-                    "fwVersion": target_version
-                }
-                
-                LOGGER.debug(f"Sending update request to {update_url} with payload: {payload}")
-                
-                async with session.post(update_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                    if response.status == 200:
-                        result = await response.text()
-                        LOGGER.info(f"Update initiated successfully: {result}")
-                        # Dongle will reboot, so we need to wait and monitor progress
-                        await self._monitor_update_progress(dongle_ip)
-                    else:
-                        error_text = await response.text()
-                        raise Exception(f"Update failed with status {response.status}: {error_text}")
-                        
+            await mqtt.async_publish(
+                self.hass, f"{self._dongle_id}/admin", json.dumps(command), qos=1
+            )
+
+            # 1. Wait for the dongle to ACK the command.
+            try:
+                await asyncio.wait_for(ack_event.wait(), timeout=OTA_ACK_TIMEOUT)
+            except asyncio.TimeoutError:
+                raise Exception(
+                    "Dongle did not acknowledge the OTA command. "
+                    "Ensure the dongle is online and running firmware 4.3.0 or newer."
+                )
+            if not ack["ok"]:
+                raise Exception(f"Dongle rejected the OTA command: {ack['detail'] or 'unknown error'}")
+
+            LOGGER.info(f"OTA accepted by {self._dongle_id}: {ack['detail']}")
+
+            # 2. Watch progress until the dongle reboots into the new firmware and
+            #    publishes a final result (or we hit the overall ceiling).
+            try:
+                await asyncio.wait_for(result_event.wait(), timeout=OTA_OVERALL_TIMEOUT)
+            except asyncio.TimeoutError:
+                # The dongle reboots mid-update and may reconnect after our ceiling.
+                # Don't hard-fail: clear progress and let the post-boot version
+                # refresh confirm the outcome.
+                LOGGER.warning(
+                    f"No OTA result from {self._dongle_id} within {OTA_OVERALL_TIMEOUT}s; "
+                    "the dongle may still be updating/rebooting."
+                )
+                await self._refresh_firmware_version()
+                return
+
+            # Accept both "success" (the documented OTA result token) and "ok"
+            # (the admin-command ACK vocabulary) so a firmware that reuses "ok" on
+            # the result topic isn't reported as a spurious failure.
+            if result["status"] in ("success", "ok"):
+                LOGGER.info(f"OTA succeeded for {self._dongle_id}")
+                self._attr_progress = 100
+                self.async_write_ha_state()
+                await self._refresh_firmware_version()
+            else:
+                raise Exception(f"OTA failed: {result['detail'] or 'unknown error'}")
+
         except Exception as e:
-            LOGGER.error(f"Error installing update: {e}")
+            LOGGER.error(f"Error installing update for {self._dongle_id}: {e}")
+            raise
+        finally:
+            unsub_response()
+            unsub_progress()
+            unsub_result()
             self._attr_in_progress = False
             self._attr_progress = None
             self.async_write_ha_state()
-            raise
-            
-    async def _monitor_update_progress(self, dongle_ip: str) -> None:
-        """Monitor update progress via WebSocket."""
-        # Wait for dongle to reboot and start update
-        await asyncio.sleep(10)
-        
-        ws_url = f"ws://{dongle_ip}/ws"
-        retry_count = 0
-        max_retries = 30  # 5 minutes with 10 second intervals
-        
-        while retry_count < max_retries:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=300)) as ws:
-                        LOGGER.info("Connected to dongle WebSocket for update monitoring")
-                        
-                        async for msg in ws:
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                try:
-                                    import json
-                                    data = json.loads(msg.data)
-                                    
-                                    if data.get("event") == "ota_status":
-                                        status = data.get("data", "")
-                                        LOGGER.debug(f"OTA Status: {status}")
-                                        
-                                        # Parse progress from message
-                                        if "Progress:" in status and "%" in status:
-                                            import re
-                                            match = re.search(r'(\d+)%', status)
-                                            if match:
-                                                progress = int(match.group(1))
-                                                self._attr_progress = progress
-                                                self.async_write_ha_state()
-                                                
-                                        # Check for completion
-                                        if "Update complete" in status or "rebooting" in status:
-                                            LOGGER.info("Update completed successfully")
-                                            self._attr_in_progress = False
-                                            self._attr_progress = 100
-                                            self.async_write_ha_state()
-                                            
-                                            # Wait for dongle to reboot and update the firmware version
-                                            await asyncio.sleep(30)  # Give dongle time to reboot
-                                            
-                                            # Force a refresh of the firmware version
-                                            await self._refresh_firmware_version()
-                                            return
-                                            
-                                        # Check for errors
-                                        if "failed" in status.lower() or "error" in status.lower():
-                                            raise Exception(f"Update failed: {status}")
-                                            
-                                except json.JSONDecodeError:
-                                    LOGGER.debug(f"Non-JSON WebSocket message: {msg.data}")
-                                    
-                            elif msg.type == aiohttp.WSMsgType.ERROR:
-                                LOGGER.error(f'WebSocket error: {ws.exception()}')
-                                break
-                            elif msg.type == aiohttp.WSMsgType.CLOSED:
-                                LOGGER.info("WebSocket closed")
-                                break
-                                
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                retry_count += 1
-                LOGGER.warning(f"WebSocket connection failed (attempt {retry_count}/{max_retries}): {e}")
-                if retry_count < max_retries:
-                    await asyncio.sleep(10)
-                else:
-                    # Assume update completed if we can't connect after many retries
-                    LOGGER.info("Could not monitor update progress, assuming success")
-                    self._attr_in_progress = False
-                    self._attr_progress = None
-                    self.async_write_ha_state()
-                    
-                    # Wait additional time for dongle to fully reboot
-                    await asyncio.sleep(60)
-                    
-                    # Force a refresh of the firmware version
-                    await self._refresh_firmware_version()
-                    return
                     
     async def async_added_to_hass(self) -> None:
         """When entity is added to hass."""
