@@ -1,0 +1,300 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Get full history to see what changed
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          # Use sticky comments so Claude updates the same comment
+          use_sticky_comment: false
+
+          # track_progress enables tracking comments like v0.x agent mode
+          track_progress: true
+
+          # Enhanced prompt that makes Claude track and verify fixes
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are reviewing a pull request. Check your previous comment to see the previous issues and make sure these have been fixed before highlighting new ones.
+
+            IMPORTANT INSTRUCTIONS:
+            1. If this is a subsequent review (synchronize event), check what changed since your last review
+            2. Track each issue with a unique identifier like [ISSUE-001], [ISSUE-002], etc.
+            3. Mark issues that have been fixed as ✅ FIXED
+            4. Mark unresolved issues as ⚠️ STILL OPEN
+            5. Mark new issues as 🔍 NEW
+
+            Review this pull request and provide feedback on:
+            - Code quality and best practices
+            - Potential bugs or issues
+            - Performance considerations
+            - Security concerns
+            - Test coverage
+
+            Format your response like this:
+
+            ## Code Review Status
+
+            ### Issues Found:
+
+            [ISSUE-001] ⚠️ STILL OPEN - Service mode confusion
+            - File: dist/index.js:341
+            - Problem: this.mode is undefined
+            - Suggestion: Remove the check since only writer mode runs this
+
+            [ISSUE-002] ✅ FIXED - Missing error handling
+            - File: socketMapping.js:234
+            - Status: Fixed in latest commit
+
+            [ISSUE-003] 🔍 NEW - Unused variable
+            - File: someFile.js:123
+            - Problem: Variable declared but never used
+
+            ### Summary:
+            - Total Issues: 3
+            - Fixed: 1
+            - Still Open: 1
+            - New: 1
+
+            Be constructive and helpful. When an issue is fixed, acknowledge it positively!
+
+      - name: Manage GitHub Issues from Review
+        if: steps.claude-review.outputs.comment != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Save review comment to temp file for parsing
+          cat > /tmp/review.txt << 'REVIEW_EOF'
+          ${{ steps.claude-review.outputs.comment }}
+          REVIEW_EOF
+
+          # Initialize counters
+          new_count=0
+          still_open_count=0
+          closed_count=0
+
+          echo "## Issue Management Summary" > /tmp/issue_summary.txt
+          echo "" >> /tmp/issue_summary.txt
+
+          # First pass: Handle FIXED issues (close them)
+          echo "### ✅ Closed Issues" >> /tmp/issue_summary.txt
+          awk '
+          /^\[ISSUE-[0-9]+\] ✅ FIXED/ {
+            match($0, /\[ISSUE-[0-9]+\]/, arr)
+            issue_id = arr[0]
+            sub(/^\[ISSUE-[0-9]+\] ✅ FIXED - /, "", $0)
+            title = $0
+            print issue_id "|" title
+          }
+          ' /tmp/review.txt | while IFS='|' read -r issue_id title; do
+            if [ -z "$issue_id" ]; then
+              continue
+            fi
+
+            # Convert [ISSUE-001] to issue-id:ISSUE-001 for label search
+            label_id=$(echo "$issue_id" | tr -d '[]' | sed 's/^/issue-id:/')
+
+            # Search for existing issue with this label
+            existing_issue=$(gh issue list --label "$label_id" --state open --json number --jq '.[0].number' --repo "${REPO}" 2>/dev/null)
+
+            if [ -n "$existing_issue" ]; then
+              echo "Closing issue #${existing_issue} for ${issue_id}: ${title}"
+              gh issue close "$existing_issue" \
+                --comment "✅ This issue has been resolved and verified in PR #${PR_NUMBER}" \
+                --repo "${REPO}"
+              echo "- ${issue_id}: ${title} (Issue #${existing_issue})" >> /tmp/issue_summary.txt
+              closed_count=$((closed_count + 1))
+            else
+              echo "No open issue found for ${issue_id} (already closed or never created)"
+            fi
+          done
+
+          if [ "$closed_count" -eq 0 ]; then
+            echo "- None" >> /tmp/issue_summary.txt
+          fi
+          echo "" >> /tmp/issue_summary.txt
+
+          # Second pass: Handle NEW and STILL OPEN issues
+          echo "### 🔍 New Issues Created" >> /tmp/issue_summary.txt
+          awk '
+          /^\[ISSUE-[0-9]+\] (🔍 NEW|⚠️ STILL OPEN)/ {
+            if (issue_id) {
+              print issue_id "|" status "|" title "|" details
+            }
+            match($0, /\[ISSUE-[0-9]+\]/, arr)
+            issue_id = arr[0]
+            if ($0 ~ /🔍 NEW/) status = "new"
+            else if ($0 ~ /⚠️ STILL OPEN/) status = "open"
+            sub(/^\[ISSUE-[0-9]+\] (🔍 NEW|⚠️ STILL OPEN) - /, "", $0)
+            title = $0
+            details = ""
+            next
+          }
+          /^- File:/ || /^- Problem:/ || /^- Suggestion:/ || /^- Status:/ {
+            if (details) details = details "\n" $0
+            else details = $0
+            next
+          }
+          /^\[ISSUE-[0-9]+\]/ || /^###/ || /^##/ {
+            if (issue_id) {
+              print issue_id "|" status "|" title "|" details
+              issue_id = ""
+            }
+          }
+          END {
+            if (issue_id) {
+              print issue_id "|" status "|" title "|" details
+            }
+          }
+          ' /tmp/review.txt | while IFS='|' read -r issue_id status title details; do
+            if [ -z "$issue_id" ]; then
+              continue
+            fi
+
+            # Convert [ISSUE-001] to issue-id:ISSUE-001 for label
+            label_id=$(echo "$issue_id" | tr -d '[]' | sed 's/^/issue-id:/')
+
+            # Check if issue already exists
+            existing_issue=$(gh issue list --label "$label_id" --state open --json number --jq '.[0].number' --repo "${REPO}" 2>/dev/null)
+
+            if [ "$status" = "new" ]; then
+              status_emoji="🔍 NEW"
+              base_labels="code-review,automated,new-finding"
+            else
+              status_emoji="⚠️ STILL OPEN"
+              base_labels="code-review,automated,needs-attention"
+            fi
+
+            if [ -n "$existing_issue" ]; then
+              # Issue exists and is still open - update it
+              echo "Updating existing issue #${existing_issue} for ${issue_id}"
+
+              cat > /tmp/issue_comment.txt << 'COMMENT_EOF'
+          **Still present in PR #${PR_NUMBER}**
+
+          ${status_emoji} This issue is still open.
+
+          ## Latest Details
+          ${details}
+
+          *Updated: $(date -u +"%Y-%m-%d %H:%M:%S UTC")*
+          COMMENT_EOF
+
+              # Replace variables in the comment
+              sed -i "s|\${PR_NUMBER}|${PR_NUMBER}|g" /tmp/issue_comment.txt
+              sed -i "s|\${status_emoji}|${status_emoji}|g" /tmp/issue_comment.txt
+              sed -i "s|\${details}|${details}|g" /tmp/issue_comment.txt
+
+              gh issue comment "$existing_issue" --body "$(cat /tmp/issue_comment.txt)" --repo "${REPO}"
+
+              if [ "$status" = "open" ]; then
+                still_open_count=$((still_open_count + 1))
+              fi
+            else
+              # Create new issue
+              cat > /tmp/issue_body.txt << 'ISSUE_EOF'
+          **Found in PR #${PR_NUMBER}**: ${PR_TITLE}
+
+          **Status**: ${status_emoji}
+          **Issue ID**: ${issue_id}
+
+          ## Details
+          ${details}
+
+          ---
+          *This issue was automatically identified during code review.*
+          *For full context, see the [code review comment](https://github.com/${REPO}/pull/${PR_NUMBER}).*
+          ISSUE_EOF
+
+              # Replace variables in the issue body
+              sed -i "s|\${PR_NUMBER}|${PR_NUMBER}|g" /tmp/issue_body.txt
+              sed -i "s|\${PR_TITLE}|${PR_TITLE}|g" /tmp/issue_body.txt
+              sed -i "s|\${status_emoji}|${status_emoji}|g" /tmp/issue_body.txt
+              sed -i "s|\${issue_id}|${issue_id}|g" /tmp/issue_body.txt
+              sed -i "s|\${details}|${details}|g" /tmp/issue_body.txt
+              sed -i "s|\${REPO}|${REPO}|g" /tmp/issue_body.txt
+
+              echo "Creating new issue for ${issue_id}: ${title}"
+              new_issue=$(gh issue create \
+                --title "Code Review: ${title}" \
+                --body "$(cat /tmp/issue_body.txt)" \
+                --label "${base_labels},${label_id}" \
+                --repo "${REPO}" \
+                --json number --jq '.number' 2>/dev/null)
+
+              if [ -n "$new_issue" ]; then
+                echo "- ${issue_id}: ${title} (Issue #${new_issue})" >> /tmp/issue_summary.txt
+                new_count=$((new_count + 1))
+              fi
+            fi
+          done
+
+          if [ "$new_count" -eq 0 ]; then
+            echo "- None" >> /tmp/issue_summary.txt
+          fi
+          echo "" >> /tmp/issue_summary.txt
+
+          # Third pass: List still open issues
+          echo "### ⚠️ Still Open Issues" >> /tmp/issue_summary.txt
+          awk '
+          /^\[ISSUE-[0-9]+\] ⚠️ STILL OPEN/ {
+            match($0, /\[ISSUE-[0-9]+\]/, arr)
+            issue_id = arr[0]
+            sub(/^\[ISSUE-[0-9]+\] ⚠️ STILL OPEN - /, "", $0)
+            print issue_id "|" $0
+          }
+          ' /tmp/review.txt | while IFS='|' read -r issue_id title; do
+            if [ -z "$issue_id" ]; then
+              continue
+            fi
+
+            label_id=$(echo "$issue_id" | tr -d '[]' | sed 's/^/issue-id:/')
+            existing_issue=$(gh issue list --label "$label_id" --state open --json number --jq '.[0].number' --repo "${REPO}" 2>/dev/null)
+
+            if [ -n "$existing_issue" ]; then
+              echo "- ${issue_id}: ${title} (Issue #${existing_issue})" >> /tmp/issue_summary.txt
+            fi
+          done
+
+          if [ "$still_open_count" -eq 0 ]; then
+            echo "- None" >> /tmp/issue_summary.txt
+          fi
+          echo "" >> /tmp/issue_summary.txt
+
+          # Summary stats
+          echo "---" >> /tmp/issue_summary.txt
+          echo "**Summary**: ${new_count} new, ${still_open_count} still open, ${closed_count} closed" >> /tmp/issue_summary.txt
+
+          # Output summary
+          cat /tmp/issue_summary.txt
+
+          # Post summary as PR comment
+          gh pr comment "${PR_NUMBER}" \
+            --body "$(cat /tmp/issue_summary.txt)" \
+            --repo "${REPO}"
+
+          echo "Issue management completed: ${new_count} new, ${still_open_count} still open, ${closed_count} closed"
