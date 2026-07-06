@@ -65,6 +65,12 @@ class MQTTHandler:
         LOGGER.info(f"Sending MQTT update: {topic} - {payload} at {datetime.now()}")
         await mqtt.async_publish(self.hass, topic, payload)
 
+        # Record this write so the FW >= 4.3.0 /setting/updated echo of the same
+        # value can be deduped (we already apply it via /response). Guard for
+        # older coordinators that predate the ledger.
+        if hasattr(self.coordinator, "record_self_write"):
+            self.coordinator.record_self_write(dongle_id, unique_id, value)
+
         self.response_received_event.clear()  # Reset the event before sending the update
 
         # Clean up any existing subscription
@@ -276,37 +282,37 @@ class MQTTHandler:
             
             if response.get('status') == 'success':
                 LOGGER.info(f"Successfully updated state of entity {entity.entity_id}.")
-                
-                # Update coordinator's internal state with the new value for all entities
+
+                # The dongle's `success` reply is authoritative: the value we
+                # SENT is now the live value. Commit the entity's optimistic
+                # state — do not read anything back, do not re-derive. This is
+                # the crux: HA only cares that the write succeeded; it already
+                # knows the value it asked for.
                 setting_name = response.get('setting')
-                if setting_name and hasattr(entity, '_state'):
-                    # Get the dongle_id from the entity
-                    dongle_id = getattr(entity, '_dongle_id', None)
-                    if dongle_id:
-                        new_value = entity._state
-                        LOGGER.info(f"Updating coordinator's internal state for {setting_name} to: {new_value}")
-                        
-                        # Update the coordinator's entities dictionary with the new value
-                        # This ensures the coordinator has the most up-to-date state
-                        # The entity_id is the same as the entity's entity_id
-                        entity_id = entity.entity_id
-                        if entity_id in self.coordinator.entities:
-                            self.coordinator.entities[entity_id] = new_value
-                        
-                        # Special handling for conditional entity settings
-                        if setting_name == "ACChargeType":
-                            self.coordinator.update_charge_type_setting(dongle_id, new_value)
-                        elif setting_name == "ubBatChgcontrol":
-                            self.coordinator.update_charge_control_setting(dongle_id, new_value)
-                        elif setting_name == "ubBatDischgControl":
-                            self.coordinator.update_discharge_control_setting(dongle_id, new_value)
-                
-                # Keep the current state as it was already optimistically updated
-                self.hass.loop.call_soon_threadsafe(entity.async_write_ha_state)
-                # Clear user-initiated flag for select entities
-                if hasattr(entity, 'clear_user_initiated_flag'):
-                    LOGGER.info(f"Clearing user_initiated flag for {entity.entity_id}")
-                    self.hass.loop.call_soon_threadsafe(entity.clear_user_initiated_flag)
+                dongle_id = getattr(entity, '_dongle_id', None)
+
+                # Select entities own their commit logic (mirror the sent option
+                # into the coordinator as an index so later refreshes agree).
+                if hasattr(entity, 'confirm_option'):
+                    self.hass.loop.call_soon_threadsafe(entity.confirm_option)
+                elif hasattr(entity, '_state'):
+                    # Non-select entities: keep the optimistic state and mirror
+                    # it into the coordinator so a later refresh doesn't revert.
+                    entity_id = entity.entity_id
+                    self.coordinator.entities[entity_id] = entity._state
+                    self.hass.loop.call_soon_threadsafe(entity.async_write_ha_state)
+                else:
+                    self.hass.loop.call_soon_threadsafe(entity.async_write_ha_state)
+
+                # Special handling for conditional entity settings (availability logic).
+                if dongle_id and hasattr(entity, '_state'):
+                    new_value = entity._state
+                    if setting_name == "ACChargeType":
+                        self.coordinator.update_charge_type_setting(dongle_id, new_value)
+                    elif setting_name == "ubBatChgcontrol":
+                        self.coordinator.update_charge_control_setting(dongle_id, new_value)
+                    elif setting_name == "ubBatDischgControl":
+                        self.coordinator.update_discharge_control_setting(dongle_id, new_value)
             else:
                 LOGGER.error(f"Failed to update state for {entity.entity_id}, reverting state.")
                 self.hass.loop.call_soon_threadsafe(entity.revert_state)
@@ -391,22 +397,26 @@ class MQTTHandler:
         # Look through all entity types and banks to find if this unique_id is in a gridboss bank
         for entity_type, banks in ENTITIES.get("Lux", {}).items():
             for bank_name, entities in banks.items():
-                if bank_name.startswith("gridboss_"):
-                    for entity in entities:
-                        if entity.get("unique_id") == unique_id:
+                for entity in entities:
+                    if entity.get("unique_id") == unique_id:
+                        # Check the source field first, then fall back to bank_name
+                        source = entity.get("source", bank_name)
+                        if source.startswith("gridboss_"):
                             return True
         return False
-    
+
     def _get_gridboss_bank(self, unique_id):
         """Get the GridBoss bank name for a given unique_id."""
         # Look through all entity types and banks to find which gridboss bank this unique_id belongs to
         for entity_type, banks in ENTITIES.get("Lux", {}).items():
             for bank_name, entities in banks.items():
-                if bank_name.startswith("gridboss_"):
-                    for entity in entities:
-                        if entity.get("unique_id") == unique_id:
+                for entity in entities:
+                    if entity.get("unique_id") == unique_id:
+                        # Check the source field first, then fall back to bank_name
+                        source = entity.get("source", bank_name)
+                        if source.startswith("gridboss_"):
                             # Extract the bank part (e.g., "holdbank1" from "gridboss_holdbank1")
-                            return bank_name.replace("gridboss_", "")
-        
+                            return source.replace("gridboss_", "")
+
         # Default fallback
         return "holdbank1"

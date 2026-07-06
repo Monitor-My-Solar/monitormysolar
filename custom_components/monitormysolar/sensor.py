@@ -17,6 +17,7 @@ from homeassistant.const import (
     UnitOfPower,
     UnitOfTemperature,
     STATE_UNKNOWN,
+    EntityCategory,
 )
 from homeassistant.core import (
     Event,
@@ -30,9 +31,8 @@ from homeassistant.helpers.event import (
     async_track_time_change,
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util.unit_system import METRIC_SYSTEM, US_CUSTOMARY_SYSTEM
 
-from .const import DOMAIN, ENTITIES, FIRMWARE_CODES, LOGGER
+from .const import DOMAIN, ENTITIES, FIRMWARE_CODES, LOGGER, STATUS_DIAGNOSTIC_SENSORS
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
 
@@ -45,16 +45,14 @@ def _check_source_entities_exist(sensor_info, dongle_ids, coordinator):
     if source_entities:
         # Check multiple source entities (for NET calculations)
         for dongle_id in dongle_ids:
-            formatted_id = coordinator.get_formatted_dongle_id(dongle_id)
             for source_entity in source_entities:
-                entity_id = f"sensor.{formatted_id}_{source_entity.lower()}"
+                entity_id = coordinator.build_entity_id("sensor", dongle_id, source_entity)
                 if entity_id not in coordinator.entities:
                     return False
     else:
         # Check single source entity
         for dongle_id in dongle_ids:
-            formatted_id = coordinator.get_formatted_dongle_id(dongle_id)
-            entity_id = f"sensor.{formatted_id}_{source_entity}"
+            entity_id = coordinator.build_entity_id("sensor", dongle_id, source_entity)
             if entity_id not in coordinator.entities:
                 return False
     
@@ -87,45 +85,41 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                 continue
                 
             for sensor in sensors:
-                allowed_firmware_codes = sensor.get("allowed_firmware_codes", [])
-                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
-                if coordinator.is_gridboss_dongle(dongle_id):
-                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
-                        continue
-                else:
-                    # For regular dongles, use the original logic
-                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                        pass  # Continue to entity creation
-                    else:
-                        continue  # Skip this entity
-                
+                # Group-based firmware gating (replaces exact allowed_firmware_codes).
+                if not coordinator.entity_allowed_for_dongle(dongle_id, sensor):
+                    continue
+
                 try:
-                    # Check if the sensor is of type 'status' to create the StatusSensor class
-                    if bank_name == "status":
+                    sensor_class_key = sensor.get("sensor_class", bank_name)
+                    if sensor_class_key == "status":
                         entities.append(
                             StatusSensor(sensor, hass, entry, bank_name, dongle_id),
                         )
-                    elif bank_name == "powerflow":
+                    elif sensor_class_key == "status_field":
+                        entities.append(
+                            StatusFieldSensor(sensor, hass, entry, bank_name, dongle_id),
+                        )
+                    elif sensor_class_key == "powerflow":
                         entities.append(
                             PowerFlowSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "timestamp":
+                    elif sensor_class_key == "timestamp":
                         entities.append(
                             BankUpdateSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "warning":
+                    elif sensor_class_key == "warning":
                         entities.append(
                             FaultWarningSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "fault":
+                    elif sensor_class_key == "fault":
                         entities.append(
                             FaultWarningSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "calculated":
+                    elif sensor_class_key == "calculated":
                         entities.append(
                             CalculatedSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "temperature":
+                    elif sensor_class_key == "temperature":
                         entities.append(
                             TemperatureSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
@@ -135,6 +129,17 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                         )
                 except Exception as e:
                     LOGGER.error(f"Error setting up sensor {sensor} for dongle {dongle_id}: {e}")
+
+        # Diagnostic sensors from the firmware-level /status payload. These are
+        # brand- and firmware-agnostic (every dongle publishes /status), so they're
+        # created for every dongle outside the per-brand ENTITIES gating above.
+        for sensor in STATUS_DIAGNOSTIC_SENSORS:
+            try:
+                entities.append(
+                    StatusFieldSensor(sensor, hass, entry, "status", dongle_id)
+                )
+            except Exception as e:
+                LOGGER.error(f"Error setting up status diagnostic sensor {sensor} for dongle {dongle_id}: {e}")
 
     # Create combined parallel sensors if we have multiple dongles
     if len(dongle_ids) > 1:
@@ -169,6 +174,104 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
 
     async_add_entities(entities)
 
+    # Set up dynamic battery entity creation
+    _setup_battery_entity_listener(hass, entry, async_add_entities)
+
+    # Check if battery data already exists (from retained MQTT messages)
+    for dongle_id in dongle_ids:
+        battery_data = coordinator.get_battery_data(dongle_id)
+        if battery_data and battery_data.get("batteries"):
+            _create_battery_entities(hass, entry, async_add_entities, dongle_id, battery_data)
+
+
+def _setup_battery_entity_listener(hass, entry, async_add_entities):
+    """Set up listener for dynamic battery entity creation."""
+    coordinator = entry.runtime_data
+
+    @callback
+    def _on_battery_data_received(event):
+        """Handle battery data received event."""
+        dongle_id = event.data.get("dongle_id")
+        if not dongle_id:
+            return
+        battery_data = coordinator.get_battery_data(dongle_id)
+        if battery_data and battery_data.get("batteries"):
+            _create_battery_entities(hass, entry, async_add_entities, dongle_id, battery_data)
+
+    entry.async_on_unload(
+        hass.bus.async_listen(f"{DOMAIN}_battery_data_received", _on_battery_data_received)
+    )
+
+
+def _create_battery_entities(hass, entry, async_add_entities, dongle_id, battery_data):
+    """Create battery sensor entities for a dongle."""
+    coordinator = entry.runtime_data
+    batteries = battery_data.get("batteries", [])
+
+    if not batteries:
+        return
+
+    LOGGER.info(f"Creating battery detail sensors for {dongle_id}: {len(batteries)} batteries")
+
+    # Define which battery fields to create sensors for
+    battery_sensor_defs = [
+        {"key": "soc", "name": "SOC", "unit": "%", "device_class": "battery", "state_class": "measurement"},
+        {"key": "soh", "name": "SOH", "unit": "%", "state_class": "measurement"},
+        {"key": "totalVoltage", "name": "Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+        {"key": "current", "name": "Current", "unit": "A", "device_class": "current", "state_class": "measurement"},
+        {"key": "currentRemainCapacity", "name": "Remaining Capacity", "unit": "Ah", "state_class": "measurement"},
+        {"key": "currentFullCapacity", "name": "Full Capacity", "unit": "Ah", "state_class": "measurement"},
+        {"key": "batMaxCellVoltage", "name": "Max Cell Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+        {"key": "batMinCellVoltage", "name": "Min Cell Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+        {"key": "batMaxCellNumVolt", "name": "Max Cell Voltage Number", "state_class": "measurement"},
+        {"key": "batMinCellNumVolt", "name": "Min Cell Voltage Number", "state_class": "measurement"},
+        {"key": "batMaxCellTemp", "name": "Max Cell Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
+        {"key": "batMinCellTemp", "name": "Min Cell Temperature", "unit": "°C", "device_class": "temperature", "state_class": "measurement"},
+        {"key": "batMaxCellNumTemp", "name": "Max Cell Temp Number", "state_class": "measurement"},
+        {"key": "batMinCellNumTemp", "name": "Min Cell Temp Number", "state_class": "measurement"},
+        {"key": "batChargeVoltRef", "name": "Charge Voltage Reference", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+        {"key": "batChargeMaxCur", "name": "Max Charge Current", "unit": "A", "device_class": "current", "state_class": "measurement"},
+        {"key": "cycleCnt", "name": "Cycle Count", "state_class": "total_increasing"},
+        {"key": "batterySn", "name": "Serial Number"},
+        {"key": "fwVersionText", "name": "Firmware Version"},
+    ]
+
+    # The firmware's batIndex is unreliable — multiple batteries can all report
+    # batIndex == 0 — so use the list position as the stable per-battery index.
+    # Track per (dongle, position) so re-fired events don't recreate entities
+    # (which would raise "unique id already registered") but DO create entities
+    # for any new battery positions that appear later.
+    created = coordinator._battery_entities_created
+
+    entities = []
+    for position, battery in enumerate(batteries):
+        marker = f"{dongle_id}:{position}"
+        if marker in created:
+            continue
+        position_entities = []
+        for sensor_def in battery_sensor_defs:
+            key = sensor_def["key"]
+            if key not in battery:
+                continue
+            position_entities.append(
+                BatteryDetailSensor(
+                    hass, entry, dongle_id, position, key, sensor_def, battery.get(key)
+                )
+            )
+        # Only mark this position done once we've actually built its entities.
+        # A first payload that arrives before this position's fields are populated
+        # would otherwise burn the marker and the entities would never be created.
+        if position_entities:
+            created.add(marker)
+            entities.extend(position_entities)
+
+    if entities:
+        async_add_entities(entities)
+        LOGGER.info(
+            f"Created {len(entities)} battery detail sensors for {dongle_id} "
+            f"({len(batteries)} batteries)"
+        )
+
 
 class InverterSensor(MonitorMySolarEntity, SensorEntity):
     def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
@@ -183,7 +286,7 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id: str = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
+        self.entity_id: str = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._unsubscribe_midnight = None
@@ -239,7 +342,7 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -327,7 +430,7 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._expected_attributes = sensor_info.get("attributes", [])
@@ -380,7 +483,7 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -400,6 +503,113 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
 
                 self.throttled_async_write_ha_state()
 
+
+class StatusFieldSensor(MonitorMySolarEntity, SensorEntity):
+    """Diagnostic sensor exposing a single field from the /status payload.
+
+    The full /status blob is stored by the coordinator at the dongle's `_uptime`
+    entity_id. Rather than add new MQTT plumbing, each of these sensors reads that
+    shared blob and pulls out one (possibly nested) field by a dotted path, e.g.
+    "memory.heap_free" or "mqtt.ha_state".
+    """
+
+    def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
+        self.coordinator = entry.runtime_data
+        self.sensor_info = sensor_info
+        self._name = sensor_info["name"]
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
+        self._state = None
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+        self._sensor_type = sensor_info["unique_id"]
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
+        self.hass = hass
+        self._manufacturer = entry.data.get("inverter_brand")
+        # Dotted path into the /status blob, e.g. "memory.heap_free".
+        self._status_field = sensor_info["status_field"]
+        # Where the coordinator stores the raw /status blob for this dongle.
+        self._status_source_entity_id = self.coordinator.build_entity_id(
+            "sensor", self._dongle_id, "uptime"
+        )
+        # Honour per-sensor enabled-by-default (set False on noisy raw-byte
+        # diagnostics to keep them out of the recorder unless the user opts in).
+        # Set before super().__init__ so the base class doesn't override it.
+        self._attr_entity_registry_enabled_default = sensor_info.get(
+            "entity_registry_enabled_default", True
+        )
+
+        super().__init__(self.coordinator)
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def unique_id(self):
+        return self._unique_id
+
+    @property
+    def state(self):
+        return self._state
+
+    @property
+    def state_class(self):
+        return self.sensor_info.get("state_class")
+
+    @property
+    def unit_of_measurement(self):
+        return self.sensor_info.get("unit_of_measurement")
+
+    @property
+    def device_class(self):
+        return self.sensor_info.get("device_class")
+
+    @property
+    def entity_category(self):
+        return EntityCategory.DIAGNOSTIC
+
+    @property
+    def device_info(self):
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Pull this field's value out of the shared /status blob."""
+        value = self._extract_field()
+        if value is not None:
+            self._state = round(value, 2) if isinstance(value, float) else value
+            self.throttled_async_write_ha_state()
+
+    def _extract_field(self):
+        """Return this sensor's field from the shared /status blob, or None."""
+        blob = self.coordinator.entities.get(self._status_source_entity_id)
+        if not isinstance(blob, dict):
+            return None
+        value = blob
+        for part in self._status_field.split("."):
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            else:
+                return None
+        return value
+
+    @property
+    def available(self) -> bool:
+        """Availability.
+
+        Fields that are optional per chip (e.g. the SD-card sensors, which don't
+        exist on C6 / littlefs units) are marked with require_field=True: they are
+        only available once the field actually appears in a /status payload, so a
+        C6 unit shows them as unavailable rather than a stuck 'unknown'. All other
+        status sensors follow the coordinator's normal availability.
+        """
+        if self.sensor_info.get("require_field"):
+            # Only available once we've seen the field in a /status payload AND it's
+            # currently present (absent on the wrong chip).
+            return self._extract_field() is not None
+        return True
+
+
 class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
     def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
         """Initialize the Power Flow sensor."""
@@ -411,7 +621,7 @@ class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
-        self.entity_id = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._attribute1 = sensor_info.get("attribute1")
@@ -469,13 +679,13 @@ class PowerFlowSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        attr1_entity_id = f"sensor.{self._formatted_dongle_id}_{self._attribute1.lower()}"
-        attr2_entity_id = f"sensor.{self._formatted_dongle_id}_{self._attribute2.lower()}"
+        attr1_entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._attribute1)
+        attr2_entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._attribute2)
         if attr1_entity_id in self.coordinator.entities:
             attr1_value = self.coordinator.entities[attr1_entity_id]
             if attr1_value is not None:
@@ -578,7 +788,7 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._sensor_type = sensor_info["unique_id"]
-        self.entity_id = f"sensor.{self._formatted_dongle_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         
@@ -627,7 +837,7 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     @callback
     def _handle_bank_update(self, event):
@@ -656,6 +866,7 @@ class BankUpdateSensor(MonitorMySolarEntity, SensorEntity):
 
     async def async_added_to_hass(self):
         """Subscribe to events when added to hass."""
+        await super().async_added_to_hass()
         LOGGER.debug(f"Subscribing to bank update event for {self.entity_id}")
         self.async_on_remove(
             self.hass.bus.async_listen(f"{DOMAIN}_bank_updated", self._handle_bank_update)
@@ -667,12 +878,12 @@ class FaultWarningSensor(MonitorMySolarEntity, SensorEntity):
         self.coordinator = entry.runtime_data
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
-        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
         self._state = None
         self._dongle_id = dongle_id
         self._device_id = dongle_id
         self._sensor_type = sensor_info["unique_id"]
-        self.entity_id = f"sensor.{self._device_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._bank_name = bank_name
@@ -708,7 +919,7 @@ class FaultWarningSensor(MonitorMySolarEntity, SensorEntity):
         return attrs
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
 
     @callback
@@ -756,7 +967,10 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
         self.entry = entry  # Store the entry for use in event handling
-        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        # Per-dongle entity: unique_id MUST include the dongle_id so it stays
+        # distinct across dongles and never collides with the plain-sensor form
+        # of the same key (which caused _2 duplicates).
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
         self._state = None
 
         # Store the formatted IDs
@@ -764,7 +978,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
         self._formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)   # For sensor entity matching
 
         self._sensor_type = sensor_info["unique_id"]
-        self.entity_id = f"sensor.{self._formatted_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
         self._bank_name = bank_name
@@ -810,7 +1024,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     def _calculate_state(self):
         """Calculate the state based on the operation and sensor values."""
@@ -875,7 +1089,7 @@ class CalculatedSensor(MonitorMySolarEntity, SensorEntity):
         """Update sensor with latest data from coordinator."""
         # Get our source sensor IDs using the entry ID format
         source_entity_ids = {
-            f"sensor.{self._formatted_id}_{sensor.lower()}": sensor
+            self.coordinator.build_entity_id("sensor", self._dongle_id, sensor): sensor
             for sensor in self._source_sensors
         }
 
@@ -901,13 +1115,14 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
         self.coordinator = entry.runtime_data
         self.sensor_info = sensor_info
         self._name = sensor_info["name"]
-        self._unique_id = f"{entry.entry_id}_{sensor_info['unique_id']}".lower()
+        # Per-dongle entity: unique_id MUST include the dongle_id (see CalculatedSensor).
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
         self._state = None
         self._dongle_id = dongle_id
         self._device_id = dongle_id
         self._sensor_type = sensor_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"sensor.{self._device_id}_{self._sensor_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, self._sensor_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
 
@@ -924,7 +1139,7 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
         return self._unique_id
 
     @property
-    def state(self):
+    def native_value(self):
         return self._state
 
     @property
@@ -932,22 +1147,17 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
         return self.sensor_info.get("state_class")
 
     @property
-    def unit_of_measurement(self):
-        if self.hass.config.units is US_CUSTOMARY_SYSTEM:
-            return UnitOfTemperature.FAHRENHEIT
-        else:
-            return UnitOfTemperature.CELSIUS
+    def native_unit_of_measurement(self):
+        return UnitOfTemperature.CELSIUS
 
     @property
     def device_class(self):
         return self.sensor_info.get("device_class")
-    
+
     @property
     def suggested_display_precision(self):
-        """Return the suggested display precision for energy sensors."""
-        if self.device_class == SensorDeviceClass.ENERGY:
-            return 2
-        return None
+        """Return the suggested display precision."""
+        return 1
 
     @property
     def last_reset(self):
@@ -958,7 +1168,7 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -966,23 +1176,9 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
         if self.entity_id in self.coordinator.entities:
             value = self.coordinator.entities[self.entity_id]
             if value is not None:
-                # Default state to value sent in.
                 self._state = (
                     round(value, 2) if isinstance(value, (float, int)) else value
                 )
-                # Check for HA config values and convert if neccessary.
-                if self.hass.config.units is US_CUSTOMARY_SYSTEM:
-                    # Const defines Celsius but HA should show Fahrenheit.
-                    if UnitOfTemperature.FAHRENHEIT != self.sensor_info.get("unit_of_measurement"):
-                        self._state = (
-                            round( (((value)*9/5)+32), 2 ) if isinstance(value, (float, int)) else value
-                        )
-                else:
-                    # Const defines Fahrenheit but HA should show Celsius.
-                    if UnitOfTemperature.CELSIUS != self.sensor_info.get("unit_of_measurement"):
-                        self._state = (
-                            round( ((value)-32/(9/5)), 2 ) if isinstance(value, (float, int)) else value
-                        )
                 LOGGER.debug(f"Sensor {self.entity_id} state updated to {self._state}")
                 self.throttled_async_write_ha_state()
 
@@ -1017,16 +1213,14 @@ class CombinedParallelSensor(MonitorMySolarEntity, SensorEntity):
         if self._source_entities:
             # Handle multiple source entities (for NET calculations)
             for dongle_id in dongle_ids:
-                formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
                 for source_entity in self._source_entities:
-                    source_entity_id = f"sensor.{formatted_id}_{source_entity.lower()}"
+                    source_entity_id = self.coordinator.build_entity_id("sensor", dongle_id, source_entity)
                     self._tracked_entities.append(source_entity_id)
                     self._source_values[source_entity_id] = None
         else:
             # Handle single source entity (for standard combined calculations)
             for dongle_id in dongle_ids:
-                formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
-                source_entity_id = f"sensor.{formatted_id}_{self._source_entity}"
+                source_entity_id = self.coordinator.build_entity_id("sensor", dongle_id, self._source_entity)
                 self._tracked_entities.append(source_entity_id)
                 self._source_values[source_entity_id] = None
         
@@ -1278,13 +1472,11 @@ class SyncStatusSensor(MonitorMySolarEntity, SensorEntity):
             
             # Get values from all dongles for this setting
             for dongle_id in self._dongle_ids:
-                formatted_id = self.coordinator.get_formatted_dongle_id(dongle_id)
-                
                 # Determine entity ID based on type
                 if entity_type == "time_hhmm":
-                    entity_id = f"time.{formatted_id}_{unique_id.lower()}"
+                    entity_id = self.coordinator.build_entity_id("time", dongle_id, unique_id)
                 else:
-                    entity_id = f"{entity_type}.{formatted_id}_{unique_id.lower()}"
+                    entity_id = self.coordinator.build_entity_id(entity_type, dongle_id, unique_id)
                 
                 state = self.hass.states.get(entity_id)
                 if state and state.state not in [STATE_UNKNOWN, "unavailable"]:
@@ -1410,3 +1602,70 @@ class SyncStatusSensor(MonitorMySolarEntity, SensorEntity):
         """Override to prevent looking for entity in coordinator."""
         # This sensor doesn't receive direct MQTT updates
         pass
+
+
+class BatteryDetailSensor(MonitorMySolarEntity, SensorEntity):
+    """Sensor for extended battery data received on dongleid/batteries topic."""
+
+    def __init__(self, hass, entry, dongle_id, bat_index, key, sensor_def, initial_value):
+        """Initialize the battery detail sensor."""
+        self.coordinator = entry.runtime_data
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+        self._bat_index = bat_index
+        self._key = key
+        self._sensor_def = sensor_def
+        self._name = f"Battery {bat_index + 1} {sensor_def['name']}"
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_battery_{bat_index}_{key}".lower()
+        self._state = initial_value
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, f"battery_{bat_index}_{key}")
+        self.hass = hass
+        self._manufacturer = entry.data.get("inverter_brand")
+
+        super().__init__(self.coordinator)
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def unique_id(self):
+        return self._unique_id
+
+    @property
+    def state(self):
+        return self._state
+
+    @property
+    def state_class(self):
+        return self._sensor_def.get("state_class")
+
+    @property
+    def unit_of_measurement(self):
+        return self._sensor_def.get("unit")
+
+    @property
+    def device_class(self):
+        return self._sensor_def.get("device_class")
+
+    @property
+    def device_info(self):
+        """Return device info linking to a single battery device per dongle."""
+        return {
+            "identifiers": {(DOMAIN, f"{self._dongle_id}_batteries")},
+            "name": f"{self._dongle_id} - Batteries",
+            "manufacturer": self._manufacturer,
+            "model": "Extended Battery Data",
+            "via_device": (DOMAIN, self._dongle_id),
+        }
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Update sensor with latest data from coordinator."""
+        if self.entity_id in self.coordinator.entities:
+            value = self.coordinator.entities[self.entity_id]
+            if value is not None:
+                self._state = (
+                    round(value, 2) if isinstance(value, (float, int)) else value
+                )
+                self.throttled_async_write_ha_state()

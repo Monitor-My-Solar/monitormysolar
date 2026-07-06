@@ -31,24 +31,17 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
         # Process buttons for this dongle
         for bank_name, buttons in buttons_config.items():
             for button in buttons:
-                allowed_firmware_codes = button.get("allowed_firmware_codes", [])
-                # For GridBoss dongles (IAAB), only create entities that explicitly allow this firmware code
-                if coordinator.is_gridboss_dongle(dongle_id):
-                    if not allowed_firmware_codes or firmware_code not in allowed_firmware_codes:
-                        continue
-                else:
-                    # For regular dongles, use the original logic
-                    if not allowed_firmware_codes or firmware_code in allowed_firmware_codes:
-                        pass  # Continue to entity creation
-                    else:
-                        continue  # Skip this entity
+                # Group-based firmware gating (replaces exact allowed_firmware_codes).
+                if not coordinator.entity_allowed_for_dongle(dongle_id, button):
+                    continue
                 
                 try:
-                    if bank_name == "inputbank1": 
+                    sensor_class_key = button.get("sensor_class", bank_name)
+                    if sensor_class_key == "firmware_update":
                         entities.append(
                             FirmwareUpdateButton(button, hass, entry, bank_name, dongle_id)
                         )
-                    elif bank_name == "restart":
+                    elif sensor_class_key == "restart":
                         entities.append(
                             RestartButton(button, hass, entry, bank_name, dongle_id)
                         )
@@ -69,7 +62,7 @@ class FirmwareUpdateButton(MonitorMySolarEntity, ButtonEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._button_type = button_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"button.{self._formatted_dongle_id}_{self._button_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("button", self._dongle_id, self._button_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
 
@@ -85,14 +78,14 @@ class FirmwareUpdateButton(MonitorMySolarEntity, ButtonEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.button_info.get("device_group"))
 
     async def async_press(self):
         """Handle the button press."""
         formatted_dongle_id = self._formatted_dongle_id
 
-        sw_version_entity_id = f"sensor.{formatted_dongle_id}_sw_version"
-        latest_firmware_entity_id = f"sensor.{formatted_dongle_id}_latestfirmwareversion"
+        sw_version_entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, "sw_version")
+        latest_firmware_entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, "latestfirmwareversion")
 
         sw_version = self.hass.states.get(sw_version_entity_id)
         latest_firmware_version = self.hass.states.get(latest_firmware_entity_id)
@@ -127,7 +120,7 @@ class RestartButton(MonitorMySolarEntity, ButtonEntity):
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._button_type = button_info["unique_id"]
         self._bank_name = bank_name
-        self.entity_id = f"button.{self._formatted_dongle_id}_{self._button_type.lower()}"
+        self.entity_id = self.coordinator.build_entity_id("button", self._dongle_id, self._button_type)
         self.hass = hass
         self._manufacturer = entry.data.get("inverter_brand")
 
@@ -143,7 +136,7 @@ class RestartButton(MonitorMySolarEntity, ButtonEntity):
 
     @property
     def device_info(self):
-        return self.get_device_info(self._dongle_id, self._manufacturer)
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.button_info.get("device_group"))
 
     async def async_press(self):
         """Handle button press."""
