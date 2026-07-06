@@ -2,6 +2,24 @@
 ## Version 4.0.0
 ### Best with dongle firmware 4.3.0+. Some features below REQUIRE 4.3.0.
 
+#### New Entities added
+- Ac Couple Enable
+- Smart Load Enable
+- RSD Disable
+- Grid Peak Shaving Enable
+- Gen Peak Shaving Enable
+- Smart Load On/Off Voltage
+- Smart Load On/off SOC
+- Start PV Power (Smart Load)
+- Ac Couple Start/stop Voltage
+- Ac Couple Start/stop SOC
+
+##### Offgrid only 
+- AC First Start and end 
+
+##### Changed Entities
+- 
+
 #### ⚠️ Breaking change — Dongle IP address removed
 - The dongle IP address is **no longer collected or used**. Firmware updates and
   all admin actions now run over MQTT, so an IP is never needed.
