@@ -1,0 +1,15 @@
+2026-07-06 22:59:02 ########## SETUP START v4.0.7 | brand=Lux | dongles=['dongle-40:4C:CA:4E:90:01', 'dongle-40:4C:CA:4E:90:00'] ##########
+2026-07-06 22:59:13 ===== dongle-less unique_id migration | entry=01KWMZDG0QC52M0KYQYZJ8HWZ6 | dongles=[dongle-40:4C:CA:4E:90:01, dongle-40:4C:CA:4E:90:00] =====
+2026-07-06 22:59:13 REMOVE orphan sensor.dongle_40_4c_ca_4e_90_00_fault_status_2 (uid 01kwmzdg0qc52m0kyqyzj8hwz6_fault_status); sensor.dongle_40_4c_ca_4e_90_00_fault_status already holds uid 01kwmzdg0qc52m0kyqyzj8hwz6_dongle-40:4c:ca:4e:90:00_fault_status
+2026-07-06 22:59:13 REMOVE orphan sensor.dongle_40_4c_ca_4e_90_00_warning_status_2 (uid 01kwmzdg0qc52m0kyqyzj8hwz6_warning_status); sensor.dongle_40_4c_ca_4e_90_00_warning_status already holds uid 01kwmzdg0qc52m0kyqyzj8hwz6_dongle-40:4c:ca:4e:90:00_warning_status
+2026-07-06 22:59:13 REMOVE orphan sensor.dongle_40_4c_ca_4e_90_00_tinner_2 (uid 01kwmzdg0qc52m0kyqyzj8hwz6_tinner); sensor.dongle_40_4c_ca_4e_90_00_tinner already holds uid 01kwmzdg0qc52m0kyqyzj8hwz6_dongle-40:4c:ca:4e:90:00_tinner
+2026-07-06 22:59:13 REMOVE orphan sensor.dongle_40_4c_ca_4e_90_00_tradiator1_2 (uid 01kwmzdg0qc52m0kyqyzj8hwz6_tradiator1); sensor.dongle_40_4c_ca_4e_90_00_tradiator1 already holds uid 01kwmzdg0qc52m0kyqyzj8hwz6_dongle-40:4c:ca:4e:90:00_tradiator1
+2026-07-06 22:59:13 REMOVE orphan sensor.dongle_40_4c_ca_4e_90_00_maxcelltemp_bms_2 (uid 01kwmzdg0qc52m0kyqyzj8hwz6_maxcelltemp_bms); sensor.dongle_40_4c_ca_4e_90_00_maxcelltemp_bms already holds uid 01kwmzdg0qc52m0kyqyzj8hwz6_dongle-40:4c:ca:4e:90:00_maxcelltemp_bms
+2026-07-06 22:59:13 REMOVE orphan sensor.dongle_40_4c_ca_4e_90_00_mincelltemp_bms_2 (uid 01kwmzdg0qc52m0kyqyzj8hwz6_mincelltemp_bms); sensor.dongle_40_4c_ca_4e_90_00_mincelltemp_bms already holds uid 01kwmzdg0qc52m0kyqyzj8hwz6_dongle-40:4c:ca:4e:90:00_mincelltemp_bms
+2026-07-06 22:59:13 REMOVE orphan sensor.dongle_40_4c_ca_4e_90_00_tbat_2 (uid 01kwmzdg0qc52m0kyqyzj8hwz6_tbat); sensor.dongle_40_4c_ca_4e_90_00_tbat already holds uid 01kwmzdg0qc52m0kyqyzj8hwz6_dongle-40:4c:ca:4e:90:00_tbat
+2026-07-06 22:59:13 REMOVE orphan sensor.dongle_40_4c_ca_4e_90_00_battery_time_empty_2 (uid 01kwmzdg0qc52m0kyqyzj8hwz6_battery_time_empty); sensor.dongle_40_4c_ca_4e_90_00_battery_time_empty already holds uid 01kwmzdg0qc52m0kyqyzj8hwz6_dongle-40:4c:ca:4e:90:00_battery_time_empty
+2026-07-06 22:59:13 dongle-less unique_id migration: 8 change(s)
+2026-07-06 22:59:13 ===== reclaim suffixed entity_ids | entry=01KWMZDG0QC52M0KYQYZJ8HWZ6 | dongles=[dongle-40:4C:CA:4E:90:01, dongle-40:4C:CA:4E:90:00] =====
+2026-07-06 22:59:13 RECLAIM sensor.dongle_40_4c_ca_4e_90_00_t5_2 -> sensor.dongle_40_4c_ca_4e_90_00_t5 (uid 01kwmzdg0qc52m0kyqyzj8hwz6_dongle-40:4c:ca:4e:90:00_t5)
+2026-07-06 22:59:13 reclaim suffixed entity_ids: 1 change(s)
+2026-07-06 22:59:13 post-setup: 522 registry entities; 0 still _N-suffixed
