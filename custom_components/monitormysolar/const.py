@@ -632,6 +632,13 @@ ENTITIES = {
                 "holdbank4": [
                     {"name": "Half hour charge Switch", "type": "switch", "unique_id": "HalfHourACChrStartEn", "source": "holdbank4", "device_group": "Controls"},
                 ],
+                "hold": [
+                    {"name": "Ac Couple Enable", "type": "switch", "unique_id": "ubACcoupling", "device_group": "controls", ,"allowed_groups": ["GEN", "offgrid"] },
+                    {"name": "Smart Load Enable", "type": "switch", "unique_id": "ubSmartLoadEn", "device_group": "controls", ,"allowed_groups": ["GEN", "offgrid"] },
+                    {"name": "RSD Disable", "type": "switch", "unique_id": "ubRSDDisable", "device_group": "controls", ,"allowed_groups": ["GEN"] },
+                    {"name": "Grid Peak Shaving Enable", "type": "switch", "unique_id": "ubGridPeakShaving", "device_group": "controls", ,"allowed_groups": ["GEN", "offgrid"] },
+                    {"name": "Gen Peak Shaving Enable", "type": "switch", "unique_id": "ubGenPeakShaving", "device_group": "controls", ,"allowed_groups": ["GEN", "offgrid"] },
+                ]
             },
             "binary_sensor": {  # This should be the only place defining these sensors
                 "battery": [  # Only one bank for battery sensors
@@ -648,8 +655,19 @@ ENTITIES = {
                 ]
             },
             "number": {
+                "hold": [ 
+                    {"name": "Smart Load On Voltage", "type": "number", "unique_id": "SmartLoadOnVolt", "unit": "v", "min": 40, "max": 59 , "mode": "slider", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"]},
+                    {"name": "Smart Load Off Voltage", "type": "number", "unique_id": "SmartLoadOffVolt", "unit": "v", "min": 40, "max": 59 , "mode": "slider", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"]},
+                    {"name": "Smart Load On SOC", "type": "number", "unique_id": "SmartLoadOnSOC", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"]},
+                    {"name": "Smart Load Off SOC", "type": "number", "unique_id": "SmartLoadOffSOC", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"]},
+                    {"name": "Start PV Power (Smart Load)", "type": "number", "unique_id": "StartPVpower", "unit": "kW", "min": 0, "max": 25.5 , "step": 0.1 "mode": "slider", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"]},
+                    {"name": "Ac Couple Start Voltage", "type": "number", "unique_id": "ACCoupleStartVolt", "unit": "v", "min": 40, "max": 59 , "mode": "slider", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"]},
+                    {"name": "Ac Couple Stop Voltage", "type": "number", "unique_id": "ACCoupleEndVolt", "unit": "v", "min": 40, "max": 59 , "mode": "slider", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"]},
+                    {"name": "Ac Couple Start SOC", "type": "number", "unique_id": "ACCoupleStartSOC", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"]},
+                    {"name": "Ac Couple Stop SOC", "type": "number", "unique_id": "ACCoupleEndSOC", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"]},
+                ]
                 "holdbank2": [
-                    {"name": "Active Power", "type": "number", "unique_id": "ActivePowerPercentCMD", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank2", "device_group": "Controls", "allowed_groups": ["legacy", "ac_coupled"]},
+                    {"name": "Active Power (Max Output power)", "type": "number", "unique_id": "ActivePowerPercentCMD", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank2", "device_group": "Controls", "allowed_groups": ["legacy", "ac_coupled"]},
                     #{"name": "Charge Power Rate", "type": "number", "unique_id": "ChargePowerPercentCMD", "unit": "%", "min": 0, "max": 100, "mode": "slider", "source": "holdbank2", "device_group": "Controls", "allowed_groups": ["legacy", "ac_coupled"]},
                     {"name": "System Discharge Power Rate", "type": "number", "unique_id": "DischgPowerPercentCMD", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank2", "device_group": "Controls"}, # Always % no matter machine type All machines
                     {"name": "AC Charge Rate kW", "type": "number", "unique_id": "ACChgPowerCMD", "unit": "kW", "min": 0, "max": 24, "step": 0.1, "mode": "slider", "source": "holdbank2", "device_group": "Controls", "allowed_groups": ["GEN", "offgrid"], "display_scale": 10},
@@ -721,7 +739,7 @@ ENTITIES = {
                 "holdbank3": [
                     {"name": "Force Discharge Power Rate kW", "type": "number", "unique_id": "ForcedDischgPowerCMD", "unit": "kW", "min": 0, "max": 24 , "step": 0.1, "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"], "device_group": "Controls", "display_scale": 10}, # KW for GEN units % for Legcay A***/B*** These need to be Derrived not manually written
                     {"name": "Force Discharge Power Rate %", "type": "number", "unique_id": "ForcedDischgPowerCMD", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["legacy"], "device_group": "Controls"},
-                    {"name": "Force Discharge SOC Limit", "type": "number", "unique_id": "ForcedDischgSOCLimit", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank3", "device_group": "Controls"}, # Always % no matter the machine
+                    {"name": "Force Discharge SOC Limit", "type": "number", "unique_id": "ForcedDischgSOCLimit", "unit": "%", "min": 0, "max": 100 , "mode": "slider", "source": "holdbank3", "device_group": "Controls", "allowed_groups": ["GEN", "legacy", "ac_coupled"]}, # Always % no matter the machine
                     {"name": "Lead acid Charge Rate (A)", "type": "number", "unique_id": "ChargeRate", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
                     {"name": "Lead Acid Discharge Rate (A)", "type": "number", "unique_id": "DischgRate", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
                     {"name": "Battery Discharge Start Point (W)", "type": "number", "unique_id": "PtoUserStartdischg", "unit": "W", "min": 1, "max": 500 , "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
@@ -869,6 +887,14 @@ ENTITIES = {
                     {"name": "Force Discharge End1", "type": "time", "unique_id": "ForcedDischgEnd1", "source": "holdbank3", "device_group": "Controls","allowed_groups": ["GEN", "legacy", "ac_coupled"]},
                     {"name": "Force Discharge Start2", "type": "time", "unique_id": "ForcedDischgStart2", "source": "holdbank3", "device_group": "Controls","allowed_groups": ["GEN", "legacy", "ac_coupled"]},
                     {"name": "Force Discharge End2", "type": "time", "unique_id": "ForcedDischgEnd2", "source": "holdbank3", "device_group": "Controls","allowed_groups": ["GEN", "legacy", "ac_coupled"]},
+                    {"name": "AC First Start", "type": "time", "unique_id": "ACFirstStart", "device_group": "Controls","allowed_groups": ["offgrid"]},
+                    {"name": "AC First End", "type": "time", "unique_id": "ACFirstEnd", "device_group": "Controls","allowed_groups": ["offgrid"]},
+                    {"name": "AC First Start 1", "type": "time", "unique_id": "ACFirstStart1", "device_group": "Controls","allowed_groups": ["offgrid"]},
+                    {"name": "AC First End 1", "type": "time", "unique_id": "ACFirstEnd1", "device_group": "Controls","allowed_groups": ["offgrid"]},
+                    {"name": "AC First Start 2", "type": "time", "unique_id": "ACFirstStart2", "device_group": "Controls","allowed_groups": ["offgrid"]},
+                    {"name": "AC First End 2", "type": "time", "unique_id": "ACFirstEnd2", "device_group": "Controls","allowed_groups": ["offgrid"]},
+                    {"name": "AC First End 2", "type": "time", "unique_id": "ACFirstEnd2", "device_group": "Controls","allowed_groups": ["offgrid"]},
+
                 ],
                 "gridboss_holdbank3": [
                     {"name": "SmartLoad1 Start0", "type": "time", "unique_id": "SmartLoad1Start0", "allowed_groups": ["midbox"], "source": "gridboss_holdbank3", "device_group": "GridBoss Controls"},
