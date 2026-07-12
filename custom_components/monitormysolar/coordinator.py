@@ -83,6 +83,10 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._setup_errors = []  # Track errors during setup
         self._drop_dongle_id = entry.data.get("drop_dongle_id", False)  # Optional: omit dongle id from entity_ids (single-dongle only)
         self._snapshot_requested: Set[str] = set()  # Dongles we've requested a full snapshot from this session
+        # Dongles currently doing an MQTT OTA update. While a dongle is in OTA
+        # mode it has no snapshot queue allocated, so a {"what":"all"} request
+        # crashes it into a reboot loop. Every snapshot path checks this set.
+        self._ota_in_progress: Set[str] = set()
         self._dongle_availability: Dict[str, bool] = {}  # Track LWT online/offline per dongle
         self._dongle_boot_count: Dict[str, int] = {}  # Last-seen boot.count per dongle (detect silent reboots)
         # Recovery bookkeeping (monotonic seconds): last time we saw ANY message
@@ -172,6 +176,26 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             return True
         return parsed >= (4, 3, 0)
 
+    def set_ota_in_progress(self, dongle_id: str, in_progress: bool) -> None:
+        """Mark a dongle as (no longer) running an OTA update.
+
+        While marked, all snapshot requests to it are suppressed: in OTA mode
+        the dongle has no snapshot queue, and a {"what":"all"} request sends it
+        into a reboot loop.
+        """
+        # getattr: test coordinators are built via __new__ and skip __init__.
+        ota_set = getattr(self, "_ota_in_progress", None)
+        if ota_set is None:
+            ota_set = self._ota_in_progress = set()
+        if in_progress:
+            ota_set.add(dongle_id)
+        else:
+            ota_set.discard(dongle_id)
+
+    def is_ota_in_progress(self, dongle_id: str) -> bool:
+        """Whether a dongle is currently running an OTA update."""
+        return dongle_id in getattr(self, "_ota_in_progress", ())
+
     async def request_snapshot(self, dongle_id: str, version: str = "", force: bool = False) -> None:
         """Ask a dongle for a full /input + /hold snapshot (once per session).
 
@@ -179,6 +203,11 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         entities stay 'unknown' until each value happens to change. Gated to fire
         once per dongle per HA session unless force=True (e.g. a reconnect).
         """
+        if self.is_ota_in_progress(dongle_id):
+            LOGGER.info(
+                "Suppressing snapshot request for %s: OTA in progress", dongle_id
+            )
+            return
         if not force and dongle_id in self._snapshot_requested:
             return
         if not self._needs_snapshot(version):
@@ -205,6 +234,14 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         or a data gap). Debounced so a burst of triggers (e.g. availability +
         first status arriving together) only sends one request.
         """
+        if self.is_ota_in_progress(dongle_id):
+            # Don't burn the debounce window while suppressed — the post-OTA
+            # snapshot (or the next trigger after OTA ends) must not be swallowed.
+            LOGGER.debug(
+                "Suppressing recovery snapshot for %s (%s): OTA in progress",
+                dongle_id, reason,
+            )
+            return
         now = time.monotonic()
         last = self._last_recovery_snapshot.get(dongle_id, 0.0)
         if now - last < self._recovery_snapshot_debounce:
