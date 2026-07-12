@@ -307,6 +307,11 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
             self.hass, f"{self._dongle_id}/ota/result", _on_result
         )
 
+        # Suppress snapshot ({"what":"all"}) requests for the whole OTA window.
+        # In OTA mode the dongle has no snapshot queue allocated, so the
+        # reconnect-triggered snapshot request would crash it into a reboot loop.
+        self.coordinator.set_ota_in_progress(self._dongle_id, True)
+
         try:
             await mqtt.async_publish(
                 self.hass, f"{self._dongle_id}/admin", json.dumps(command), qos=1
@@ -358,6 +363,17 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
             unsub_response()
             unsub_progress()
             unsub_result()
+            self.coordinator.set_ota_in_progress(self._dongle_id, False)
+            if ack["ok"]:
+                # Reconnect snapshot triggers (availability online, boot-count
+                # change, data-gap recovery) that fired mid-OTA were suppressed
+                # and won't refire, so refresh the dongle's state ourselves now
+                # that OTA mode is over. request_snapshot swallows publish errors.
+                await self.coordinator.request_snapshot(
+                    self._dongle_id,
+                    self.coordinator.current_fw_versions.get(self._dongle_id, ""),
+                    force=True,
+                )
             self._attr_in_progress = False
             self._attr_progress = None
             self.async_write_ha_state()
