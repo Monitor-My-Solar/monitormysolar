@@ -195,8 +195,8 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 # CRITICAL: setting/updated payloads ship value as a STRING
                 # ("0" / "1"), and bool("0") in Python is True because any

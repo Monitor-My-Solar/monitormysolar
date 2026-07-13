@@ -226,8 +226,8 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
         # This method is called by your DataUpdateCoordinator when a successful update runs.
-        if self.entity_id in self.coordinator.entities:
-            self._state = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            self._state = self.coordinator.entities[self.data_key]
             self.throttled_async_write_ha_state()
         # No stored value yet (e.g. seeded at add-time before any data arrived) —
         # nothing to write. Avoid the spurious "key not found" warning + state write.

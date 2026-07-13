@@ -349,8 +349,8 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
         """Update sensor with latest data from coordinator."""
 
         # This method is called by your DataUpdateCoordinator when a successful update runs.
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 if self._sensor_type == "RunningTime" and isinstance(value, (float, int)):
                     # Convert seconds to HH:MM:SS format
@@ -369,7 +369,7 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
                     )
                 self.throttled_async_write_ha_state()
         else:
-            LOGGER.warning(f"entity {self.entity_id} key not found")
+            LOGGER.warning(f"entity {self.entity_id} data key {self.data_key} not found")
 
     async def async_added_to_hass(self) -> None:
         """When entity is added to hass."""
@@ -385,7 +385,7 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
                 self.async_write_ha_state()
                 
                 # Also reset in coordinator data
-                self.coordinator.entities[self.entity_id] = 0
+                self.coordinator.entities[self.data_key] = 0
             
             # Schedule reset at midnight (00:00:00)
             # For HourlyConsumption, also reset every hour
@@ -488,8 +488,8 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if isinstance(value, dict):
                 # Extract the 'uptime' for the sensor's state
                 self._state = value.get("uptime")
@@ -766,8 +766,8 @@ class CombinedSensor(MonitorMySolarEntity, SensorEntity):
         """Update sensor with latest data from coordinator."""
         LOGGER.warning(f"CombinedSensor id: {self.entity_id}")
         LOGGER.warning(f"sensor_values: {self._sensor_values}")
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
 
                 if self.entity_id in self._sensor_values:
@@ -925,8 +925,8 @@ class FaultWarningSensor(MonitorMySolarEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            value_data = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value_data = self.coordinator.entities[self.data_key]
             #LOGGER.debug(f"Value data: {value_data}")
             if isinstance(value_data, dict):
                 self._value = value_data.get("value", 0)
@@ -1173,8 +1173,8 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 self._state = (
                     round(value, 2) if isinstance(value, (float, int)) else value
@@ -1662,8 +1662,8 @@ class BatteryDetailSensor(MonitorMySolarEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 self._state = (
                     round(value, 2) if isinstance(value, (float, int)) else value

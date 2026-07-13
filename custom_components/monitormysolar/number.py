@@ -163,7 +163,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         self._attr_native_value = value
         self._user_initiated_change = True
         # Update coordinator's stored value so it doesn't overwrite us
-        self.coordinator.entities[self.entity_id] = raw_value
+        self.coordinator.entities[self.data_key] = raw_value
         self.throttled_async_write_ha_state()
 
         # Apply multiplier for registers that need integer values (e.g. 46.1V -> 461).
@@ -187,7 +187,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
             self._attr_native_value = old_value
             # Coordinator holds raw values, so restore the raw form of old_value.
             old_raw = old_value * self._display_scale if (self._display_scale != 1 and old_value is not None) else old_value
-            self.coordinator.entities[self.entity_id] = old_raw
+            self.coordinator.entities[self.data_key] = old_raw
             self.throttled_async_write_ha_state()
             raise HomeAssistantError(f"Failed to update {self.entity_id} - no response from inverter")
 
@@ -199,8 +199,8 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            raw = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            raw = self.coordinator.entities[self.data_key]
             if raw is not None:
                 # Coordinator holds the raw register value; divide to the displayed
                 # engineering value (e.g. 80 -> 8.0 kW).

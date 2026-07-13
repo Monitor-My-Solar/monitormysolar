@@ -298,7 +298,10 @@ class MQTTHandler:
                 elif hasattr(entity, '_state'):
                     # Non-select entities: keep the optimistic state and mirror
                     # it into the coordinator so a later refresh doesn't revert.
-                    entity_id = entity.entity_id
+                    # data_key (not entity_id): the registry may have renamed the
+                    # live entity_id, but the coordinator dict is keyed by the
+                    # computed id. TempEntity sync stubs have no data_key.
+                    entity_id = getattr(entity, "data_key", entity.entity_id)
                     self.coordinator.entities[entity_id] = entity._state
                     self.hass.loop.call_soon_threadsafe(entity.async_write_ha_state)
                 else:

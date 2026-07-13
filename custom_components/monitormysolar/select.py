@@ -228,7 +228,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
             return
         index = self._options.index(option)
         # Mirror as int so _handle_coordinator_update decodes it back to the option.
-        self.coordinator.entities[self.entity_id] = index
+        self.coordinator.entities[self.data_key] = index
         LOGGER.debug(f"Select {self.entity_id}: confirmed option {option!r} (index {index})")
         self.throttled_async_write_ha_state()
 
@@ -247,8 +247,8 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         """Update sensor with latest data from coordinator."""
 
         # This method is called by your DataUpdateCoordinator when a successful update runs.
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 # Handle different value types for different select types
                 if "SOC_Volt" in self.entity_info["unique_id"]:
@@ -366,8 +366,8 @@ class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
         """Update sensor with latest data from coordinator."""
 
         # This method is called by your DataUpdateCoordinator when a successful update runs.
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 if value in self._attr_options:
                     self._attr_current_option = value
