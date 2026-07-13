@@ -106,6 +106,22 @@ def firmware_group(code: str) -> str:
     return "legacy"
 
 
+def fw_code_get(mapping: dict, code: str, default=None):
+    """Case-insensitive lookup of a firmware code in a code-keyed table.
+
+    The tables mix casings ("FAAA" vs "ceaa") and dongles report mixed case
+    too ("Ceaa"), so exact-match dict access on a firmware code is never safe.
+    Every code-keyed lookup must go through here.
+    """
+    if not code or not mapping:
+        return default
+    wanted = code.strip().lower()
+    for key, value in mapping.items():
+        if key.lower() == wanted:
+            return value
+    return default
+
+
 FIRMWARE_CODES = {
     "a_3_6k_Hybrid": {
         "Device_Type": "A Standard model",

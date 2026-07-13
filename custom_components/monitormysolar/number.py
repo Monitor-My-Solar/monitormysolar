@@ -11,7 +11,7 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from typing import Dict, List, Optional
-from .const import DOMAIN, ENTITIES, LOGGER, CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX
+from .const import DOMAIN, ENTITIES, LOGGER, CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX, fw_code_get
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
 
@@ -96,7 +96,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         firmware_max_values = entity_info.get("firmware_max_values", {})
 
         self._attr_native_min_value = entity_info.get("min", None)
-        self._attr_native_max_value = firmware_max_values.get(firmware_code, entity_info.get("max", None))
+        self._attr_native_max_value = fw_code_get(firmware_max_values, firmware_code, entity_info.get("max", None))
         # Check if user prefers input box over slider
         use_input_box = entry.data.get(CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX)
         if use_input_box:

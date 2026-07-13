@@ -1,7 +1,7 @@
 """Tests for firmware-code grouping and group-based entity gating."""
 import pytest
 
-from custom_components.monitormysolar.const import firmware_group
+from custom_components.monitormysolar.const import firmware_group, fw_code_get
 
 
 @pytest.mark.parametrize("code,group", [
@@ -31,6 +31,32 @@ from custom_components.monitormysolar.const import firmware_group
 ])
 def test_firmware_group(code, group):
     assert firmware_group(code) == group
+
+
+# The code-keyed tables mix casings ("FAAA" vs "ceaa") and dongles report mixed
+# case too ("Ceaa") — every code-keyed lookup must go through fw_code_get.
+@pytest.mark.parametrize("code", ["ceaa", "Ceaa", "CEAA", " Ceaa "])
+def test_fw_code_get_case_and_whitespace_insensitive(code):
+    table = {"FAAA": 250, "ceaa": 250, "AAAA": 78}
+    assert fw_code_get(table, code) == 250
+
+
+def test_fw_code_get_matches_uppercase_keys_from_lowercase_code():
+    table = {"FAAA": 250}
+    assert fw_code_get(table, "faaa") == 250
+
+
+def test_fw_code_get_default_on_miss_or_empty():
+    table = {"ceaa": 250}
+    assert fw_code_get(table, "ZZZZ", 140) == 140
+    assert fw_code_get(table, "", 140) == 140
+    assert fw_code_get(table, None, 140) == 140
+    assert fw_code_get({}, "ceaa", 140) == 140
+
+
+def test_valid_firmware_codes_friendly_name_for_ceaa():
+    from custom_components.monitormysolar.const import VALID_FIRMWARE_CODES
+    assert fw_code_get(VALID_FIRMWARE_CODES, "Ceaa") == "Off Grid"
 
 
 def _set_fw(coordinator, code):
