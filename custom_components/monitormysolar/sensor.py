@@ -369,7 +369,18 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
                     )
                 self.throttled_async_write_ha_state()
         else:
-            LOGGER.warning(f"entity {self.entity_id} data key {self.data_key} not found")
+            # A missing key is normal until this sensor's dongle has reported the
+            # field (change-data firmware may never send static fields outside a
+            # snapshot, and a quiet dongle in a multi-dongle entry has no data at
+            # all). Every coordinator push runs this for every data-less sensor,
+            # so a per-push WARNING floods the log and trips HA's
+            # "logging too frequently" guard. Log once per entity, at DEBUG.
+            if not getattr(self, "_missing_key_logged", False):
+                self._missing_key_logged = True
+                LOGGER.debug(
+                    "entity %s data key %s not found (logged once per entity)",
+                    self.entity_id, self.data_key,
+                )
 
     async def async_added_to_hass(self) -> None:
         """When entity is added to hass."""

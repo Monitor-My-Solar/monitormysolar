@@ -12,7 +12,8 @@ and HA carries the history across for us.
 from __future__ import annotations
 
 import logging
-from logging.handlers import RotatingFileHandler
+import queue
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -29,11 +30,18 @@ from .const import DOMAIN, LOGGER, CONF_DROP_DONGLE_ID
 # audited after the fact — which the main HA log couldn't give us.
 _AUDIT_LOGGER_NAME = "monitormysolar.migration_audit"
 _audit_logger: logging.Logger | None = None
+_audit_listener: QueueListener | None = None  # keep a ref so it isn't GC'd
 
 
 def _get_audit_logger(hass: HomeAssistant) -> logging.Logger:
-    """Lazily build a file-backed audit logger in the HA config directory."""
-    global _audit_logger
+    """Lazily build a file-backed audit logger in the HA config directory.
+
+    audit() is called from the event loop, so no file I/O may happen there:
+    the logger emits into a queue (non-blocking) and a QueueListener thread
+    does the actual file writes. delay=True on the file handler defers even
+    the open() to the first write — which runs on the listener thread.
+    """
+    global _audit_logger, _audit_listener
     if _audit_logger is not None:
         return _audit_logger
 
@@ -41,17 +49,21 @@ def _get_audit_logger(hass: HomeAssistant) -> logging.Logger:
     logger.setLevel(logging.INFO)
     logger.propagate = False  # don't spam the main HA log
 
-    # Only attach the file handler once.
+    # Only attach the queue handler once.
     if not logger.handlers:
         try:
             path = hass.config.path("monitormysolar_migration.log")
-            handler = RotatingFileHandler(
-                path, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+            file_handler = RotatingFileHandler(
+                path, maxBytes=1_000_000, backupCount=3, encoding="utf-8",
+                delay=True,  # open on first write, on the listener thread
             )
-            handler.setFormatter(
+            file_handler.setFormatter(
                 logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S")
             )
-            logger.addHandler(handler)
+            log_queue: queue.SimpleQueue = queue.SimpleQueue()
+            logger.addHandler(QueueHandler(log_queue))
+            _audit_listener = QueueListener(log_queue, file_handler)
+            _audit_listener.start()  # daemon thread; won't block HA shutdown
         except Exception as err:  # pragma: no cover - fs edge cases
             LOGGER.warning("Could not open migration audit log: %s", err)
 

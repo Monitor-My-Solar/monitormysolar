@@ -106,6 +106,45 @@ def firmware_group(code: str) -> str:
     return "legacy"
 
 
+def version_tuple(version):
+    """Parse a dotted version into an int tuple ('4.3.2.2C6' -> (4, 3, 2, 2)).
+
+    Trailing non-digits per segment (chip suffixes like C6/S3) are stripped.
+    Returns None if any segment has no leading digits or the string is empty.
+    """
+    if not version:
+        return None
+    nums = []
+    for part in str(version).strip().split("."):
+        digits = ""
+        for ch in part:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if not digits:
+            return None
+        nums.append(int(digits))
+    return tuple(nums) or None
+
+
+def fw_version_is_newer(latest: str, installed: str) -> bool:
+    """Whether `latest` is strictly newer than `installed` (numeric compare).
+
+    Shorter tuples are zero-padded, so 4.3.2 == 4.3.2.0. Unparseable versions
+    fall back to plain inequality (any difference counts as an update) so a
+    malformed server version can hide behind equality but never crash.
+    """
+    latest_t = version_tuple(latest)
+    installed_t = version_tuple(installed)
+    if latest_t is None or installed_t is None:
+        return latest != installed
+    width = max(len(latest_t), len(installed_t))
+    return (latest_t + (0,) * (width - len(latest_t))) > (
+        installed_t + (0,) * (width - len(installed_t))
+    )
+
+
 def fw_code_get(mapping: dict, code: str, default=None):
     """Case-insensitive lookup of a firmware code in a code-keyed table.
 

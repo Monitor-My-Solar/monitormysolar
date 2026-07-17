@@ -36,6 +36,9 @@
     },
     "abort": {
       "no_restorable_entities": "No hay entidades eliminadas o deshabilitadas para restaurar."
+    },
+    "error": {
+      "raw_ids_taken": "Otra entrada de Monitor My Solar ya usa los nombres de entidad limpios (sin ID del dongle). Solo una entrada puede usarlos; mantenga el ID del dongle en los nombres de entidad de esta."
     }
   }
 }

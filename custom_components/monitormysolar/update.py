@@ -25,7 +25,7 @@ from homeassistant.components import mqtt
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature, UpdateDeviceClass
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
-from .const import DOMAIN, ENTITIES, LOGGER, CONF_USE_BETA, DEFAULT_USE_BETA
+from .const import DOMAIN, ENTITIES, LOGGER, CONF_USE_BETA, DEFAULT_USE_BETA, fw_version_is_newer
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
 
@@ -183,6 +183,18 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
     def _use_beta(self) -> bool:
         """Whether this install should track the beta firmware channel."""
         return self.coordinator.entry.data.get(CONF_USE_BETA, DEFAULT_USE_BETA)
+
+    def version_is_newer(self, latest_version: str, installed_version: str) -> bool:
+        """Offer an update only when the server version is strictly newer.
+
+        HA's default comparison is an inequality, so a unit running a build
+        NEWER than the server's published version (dev/beta units) would be
+        offered a 'downgrade'. Numeric tuple compare instead. Deliberate
+        consequence: a server-side rollback to an older version is not shown
+        in HA — rollbacks are pushed via the /admin OTA command, which does
+        not consult this comparison.
+        """
+        return fw_version_is_newer(latest_version, installed_version)
     
     def release_notes(self) -> str | None:
         """Return the release notes."""

@@ -10,6 +10,32 @@ from .const import DOMAIN, CONF_ENABLE_DEVICE_GROUPING, DEFAULT_ENABLE_DEVICE_GR
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _raw_entity_ids_in_use(hass, exclude_entry_id=None) -> bool:
+    """Whether an existing entry already owns un-prefixed (raw) entity_ids.
+
+    Raw entity_ids (sensor.soc instead of sensor.<dongle>_soc) are a singleton
+    across the whole HA instance: a second entry using them would compute the
+    same entity_ids, the registry would dedupe its entities to _2 suffixes, and
+    those entities would never receive data. Mirrors the effective-prefix rules
+    in coordinator.get_entity_prefix (explicit entity_prefix wins; legacy
+    entries fall back to the drop_dongle_id flag).
+    """
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry.entry_id == exclude_entry_id:
+            continue
+        dongle_data = entry.data.get("dongle_data") or []
+        for dongle in dongle_data:
+            if "entity_prefix" in dongle:
+                if not (dongle.get("entity_prefix") or "").strip():
+                    return True
+            elif entry.data.get(CONF_DROP_DONGLE_ID) and len(dongle_data) == 1:
+                return True
+        if not dongle_data and entry.data.get(CONF_DROP_DONGLE_ID):
+            return True
+    return False
+
+
 class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Inverter MQTT."""
 
@@ -110,17 +136,30 @@ class InverterMQTTFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             #             user can drop the dongle id later via the options flow, which
             #             performs a proper history-preserving registry rename.
             install_kind = user_input.pop("install_kind", "fresh")
-            user_input[CONF_DROP_DONGLE_ID] = install_kind == "fresh"
 
             # Merge with initial data
             data = {**self.initial_data, **user_input}
 
-            # Create dongle data structure for single inverter.
-            # Single-dongle installs get NO entity_id prefix (clean names like
-            # sensor.battery_soc) — we never ask. entity_prefix stays empty.
+            # Entity naming. Raw (un-prefixed) entity_ids are a singleton across
+            # the HA instance: if another entry already owns them, this entry's
+            # entities would be _2-deduped by the registry and never get data —
+            # so a second raw install is forced onto the dongle-id prefix.
+            entity_prefix = ""
+            if install_kind == "reconnect":
+                entity_prefix = data["dongle_id"]
+            elif _raw_entity_ids_in_use(self.hass):
+                entity_prefix = data["dongle_id"]
+                _LOGGER.warning(
+                    "Raw entity_ids already owned by another entry; forcing entity "
+                    "prefix %r for dongle %s", entity_prefix, data["dongle_id"],
+                )
+            # Keep the legacy flag consistent with the prefix actually in use
+            # (it drives the entity-registry rename migration).
+            data[CONF_DROP_DONGLE_ID] = entity_prefix == ""
+
             dongle_data = [{
                 "dongle_id": data["dongle_id"],
-                "entity_prefix": "",
+                "entity_prefix": entity_prefix,
                 "is_master": True,
                 "is_slave": False,
                 "is_gridboss": False,
@@ -879,6 +918,7 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
 
     async def async_step_update_settings(self, user_input=None):
         """Update general settings."""
+        errors = {}
         if user_input is not None:
             new_data = dict(self.config_entry.data)
 
@@ -902,20 +942,39 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
             # Changing this triggers a history-preserving entity-registry rename on
             # reload (see migration.async_migrate_entity_ids).
             if CONF_DROP_DONGLE_ID in user_input:
-                new_data[CONF_DROP_DONGLE_ID] = user_input[CONF_DROP_DONGLE_ID]
+                want_raw = user_input[CONF_DROP_DONGLE_ID]
+                # Raw entity_ids are a singleton across entries — refuse to
+                # switch to them while another entry owns them (the registry
+                # would _2-dedupe this entry's entities and they'd get no data).
+                if want_raw and _raw_entity_ids_in_use(
+                    self.hass, exclude_entry_id=self.config_entry.entry_id
+                ):
+                    errors["base"] = "raw_ids_taken"
+                else:
+                    new_data[CONF_DROP_DONGLE_ID] = want_raw
+                    # dongle_data.entity_prefix is the runtime source of truth
+                    # (it wins over the legacy flag) — keep it in sync so the
+                    # toggle takes effect on new-style entries too.
+                    dongle_data = [dict(d) for d in new_data.get("dongle_data", [])]
+                    if len(dongle_data) == 1 and "entity_prefix" in dongle_data[0]:
+                        dongle_data[0]["entity_prefix"] = (
+                            "" if want_raw else dongle_data[0]["dongle_id"]
+                        )
+                        new_data["dongle_data"] = dongle_data
 
             # Update firmware track (prod/beta) if provided.
             if CONF_USE_BETA in user_input:
                 new_data[CONF_USE_BETA] = user_input[CONF_USE_BETA]
 
-            self.hass.config_entries.async_update_entry(
-                self.config_entry, data=new_data
-            )
+            if not errors:
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
 
-            # Reload the integration so device grouping / naming changes take effect
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+                # Reload the integration so device grouping / naming changes take effect
+                await self.hass.config_entries.async_reload(self.config_entry.entry_id)
 
-            return self.async_create_entry(title="", data={})
+                return self.async_create_entry(title="", data={})
 
         current_update_interval = self.config_entry.data.get("update_interval", 60)
         current_has_gridboss = self.config_entry.data.get("has_gridboss", False)
@@ -951,7 +1010,8 @@ class InverterMQTTOptionsFlowHandler(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="update_settings",
-            data_schema=schema
+            data_schema=schema,
+            errors=errors,
         )
     
     async def async_step_check_status(self, user_input=None):

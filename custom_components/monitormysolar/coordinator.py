@@ -102,6 +102,12 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._gridboss_dongle = entry.data.get("gridboss_dongle", "")  # Track which dongle is GridBoss
         self._last_fault_warning_data = {}  # Track last fault/warning data to prevent duplicate processing
         self._hass_startup_complete = False  # Track if Home Assistant has finished starting up
+        # Failsafe for the startup gate: if the 30s mark_startup_complete timer
+        # never fires, force the gate open at this monotonic deadline instead of
+        # silently dropping data messages forever. 60s > the 30s timer so the
+        # timer always wins when it works.
+        self._gate_opened_deadline = time.monotonic() + 60.0
+        self._startup_dropped_count = 0  # Data messages dropped while gated (diagnostics)
         self._smart_soc_volt_bits = {}  # Track SmartSOCVoltBits for each dongle
         self._smartload_bits = {}  # Track SmartLoad Bits for each dongle
         self._port_modes = {}  # Track Port Mode settings for each dongle
@@ -1281,8 +1287,24 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 self.async_set_updated_data(self.entities)
             # Skip other message processing during startup to prevent excessive updates
             elif not self._hass_startup_complete:
-                # Just store the message for later processing if needed
-                pass
+                # Failsafe: the gate is opened by a 30s timer in async_setup. If
+                # that timer ever fails to fire, every data message would be
+                # silently dropped forever (entities populate once from the
+                # snapshot, then flatline). Never trust the timer alone: force
+                # the gate open once we're clearly past the startup window.
+                # getattr: test coordinators are built via __new__ and skip __init__.
+                deadline = getattr(self, "_gate_opened_deadline", None)
+                if deadline is not None and time.monotonic() >= deadline:
+                    LOGGER.warning(
+                        "Startup gate still closed past its deadline (%d data "
+                        "messages dropped so far) - forcing it open",
+                        getattr(self, "_startup_dropped_count", 0),
+                    )
+                    self._hass_startup_complete = True
+                    await self.process_message(dongle_id, topic, msg.payload)
+                    self.async_set_updated_data(self.entities)
+                else:
+                    self._startup_dropped_count = getattr(self, "_startup_dropped_count", 0) + 1
             else:
                 # Process messages normally after startup is complete
                 if topic.endswith("/response"):
@@ -1542,7 +1564,11 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # Schedule startup completion after a delay to allow Home Assistant to finish starting up
         async def mark_startup_complete(_):
             self._hass_startup_complete = True
-            LOGGER.info("Home Assistant startup complete - MQTT message processing enabled")
+            LOGGER.info(
+                "Home Assistant startup complete - MQTT message processing enabled "
+                "(%d data messages were dropped during the startup window)",
+                getattr(self, "_startup_dropped_count", 0),
+            )
             
             # Trigger entity availability updates for all dongles now that startup is complete
             for dongle_id in self._dongle_ids:

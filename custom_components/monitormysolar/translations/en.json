@@ -41,7 +41,8 @@
       "dongle_already_exists": "This dongle ID already exists",
       "dongle_not_responding": "Dongle is not responding. Please check the ID and ensure it's online.",
       "dongle_id_required": "A new dongle ID is required",
-      "dongle_not_found": "The selected dongle was not found in this configuration"
+      "dongle_not_found": "The selected dongle was not found in this configuration",
+      "raw_ids_taken": "Another Monitor My Solar entry already uses the clean (no dongle ID) entity names. Only one entry can use them - keep the dongle ID in entity names for this one."
     },
     "abort": {
       "cannot_remove_last_dongle": "Cannot remove the last dongle",
