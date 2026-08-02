@@ -202,22 +202,25 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Whether a dongle is currently running an OTA update."""
         return dongle_id in getattr(self, "_ota_in_progress", ())
 
-    async def request_snapshot(self, dongle_id: str, version: str = "", force: bool = False) -> None:
+    async def request_snapshot(self, dongle_id: str, version: str = "", force: bool = False) -> bool:
         """Ask a dongle for a full /input + /hold snapshot (once per session).
 
         Dongles on FW >= 4.3.0 only publish change-data, so without this the
         entities stay 'unknown' until each value happens to change. Gated to fire
         once per dongle per HA session unless force=True (e.g. a reconnect).
+
+        Returns True only if the request was actually published, so callers can
+        avoid recording a retry/debounce window against a request that never left.
         """
         if self.is_ota_in_progress(dongle_id):
             LOGGER.info(
                 "Suppressing snapshot request for %s: OTA in progress", dongle_id
             )
-            return
+            return False
         if not force and dongle_id in self._snapshot_requested:
-            return
+            return False
         if not self._needs_snapshot(version):
-            return
+            return False
         try:
             await mqtt.async_publish(
                 self.hass,
@@ -226,12 +229,14 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 qos=1,
                 retain=False,
             )
-            self._snapshot_requested.add(dongle_id)
-            LOGGER.info(
-                "Requested full snapshot from %s (version=%s)", dongle_id, version or "unknown"
-            )
         except Exception as e:
             LOGGER.debug(f"Snapshot request publish failed for {dongle_id} (non-fatal): {e}")
+            return False
+        self._snapshot_requested.add(dongle_id)
+        LOGGER.info(
+            "Requested full snapshot from %s (version=%s)", dongle_id, version or "unknown"
+        )
+        return True
 
     async def request_recovery_snapshot(self, dongle_id: str, reason: str) -> None:
         """Force a snapshot after a dongle recovers, debounced per dongle.
@@ -252,11 +257,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         last = self._last_recovery_snapshot.get(dongle_id, 0.0)
         if now - last < self._recovery_snapshot_debounce:
             return
-        self._last_recovery_snapshot[dongle_id] = now
         LOGGER.info("Recovery snapshot for %s (%s)", dongle_id, reason)
-        await self.request_snapshot(
+        # Only start the debounce window once the request has actually gone out.
+        # Recovery triggers fire while the dongle is rebooting, so a request can
+        # be lost before it is subscribed; stamping first would swallow the
+        # follow-up triggers and leave settings entities empty for the session.
+        if await self.request_snapshot(
             dongle_id, self.current_fw_versions.get(dongle_id, ""), force=True
-        )
+        ):
+            self._last_recovery_snapshot[dongle_id] = now
 
     async def mark_dongle_seen(self, dongle_id: str) -> None:
         """Record that a message arrived from a dongle and detect gap recovery.

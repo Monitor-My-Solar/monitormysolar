@@ -92,7 +92,7 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
         self.entity_info = entity_info
         self._name = entity_info["name"]
         self._unique_id = f"{entry.entry_id}_{dongle_id}_{entity_info['unique_id']}".lower()
-        self._state = False
+        self._state = None
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
@@ -231,7 +231,7 @@ class CombinedSwitch(MonitorMySolarEntity, SwitchEntity):
         self.entity_info = entity_info
         self._name = entity_info["name"]
         self._unique_id = f"{entry.entry_id}_{entity_info['unique_id']}".lower()
-        self._state = False
+        self._state = None
         self._dongle_ids = dongle_ids
         self._virtual_id = "combined_parallel"
         self._formatted_dongle_id = "combined"
