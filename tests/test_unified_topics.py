@@ -25,7 +25,7 @@ import pytest
 
 def _run(coro):
     """Tiny event-loop runner so each test can call async process_message."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 @pytest.fixture(autouse=True)

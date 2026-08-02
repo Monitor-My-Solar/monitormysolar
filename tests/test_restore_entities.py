@@ -90,7 +90,7 @@ def test_restore_reenables_disabled(monkeypatch):
     migration = _install_er(monkeypatch, reg, entries)
 
     import asyncio
-    n = asyncio.get_event_loop().run_until_complete(
+    n = asyncio.run(
         migration.async_restore_entities(MagicMock(), _Entry(), ["disabled:sensor.b"]))
     assert n == 1
     assert reg.async_get("sensor.b").disabled_by is None
@@ -102,7 +102,7 @@ def test_restore_purges_deleted(monkeypatch):
     migration = _install_er(monkeypatch, reg, [])
 
     import asyncio
-    n = asyncio.get_event_loop().run_until_complete(
+    n = asyncio.run(
         migration.async_restore_entities(MagicMock(), _Entry(), ["deleted:sensor.gone"]))
     assert n == 1
     assert "sensor.gone" not in reg.deleted_entities  # record cleared
@@ -113,7 +113,7 @@ def test_restore_ignores_unknown_keys(monkeypatch):
     reg = _FakeRegistry([], {})
     migration = _install_er(monkeypatch, reg, [])
     import asyncio
-    n = asyncio.get_event_loop().run_until_complete(
+    n = asyncio.run(
         migration.async_restore_entities(MagicMock(), _Entry(),
                                          ["deleted:sensor.nope", "bogus", "disabled:"]))
     assert n == 0
