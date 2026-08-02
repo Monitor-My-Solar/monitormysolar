@@ -83,7 +83,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         self.entity_info = entity_info
         self._attr_name = entity_info["name"]
         self._attr_unique_id = f"{entry.entry_id}_{dongle_id}_{entity_info['unique_id']}".lower()
-        self._attr_native_value = 0
+        self._attr_native_value = None
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
@@ -229,7 +229,7 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
         self.entity_info = entity_info
         self._name = entity_info["name"]
         self._unique_id = f"{entry.entry_id}_{entity_info['unique_id']}".lower()
-        self._attr_native_value = 0
+        self._attr_native_value = None
         self._dongle_ids = dongle_ids
         self._virtual_id = "combined_parallel"
         self._formatted_dongle_id = "combined"

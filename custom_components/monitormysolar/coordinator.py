@@ -98,6 +98,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._dongle_stale_after = 90.0
         # Don't send more than one recovery snapshot per dongle within this window.
         self._recovery_snapshot_debounce = 30.0
+        # A snapshot request can be lost: the recovery triggers fire while the
+        # dongle is still coming back, so it may not have resubscribed yet. On
+        # FW >= 4.3.0 nothing re-sends hold registers, so a lost request leaves
+        # every setting entity empty until the next reboot. Verify the reply
+        # (<dongle>/snap/hold) actually arrives and retry a bounded number of times.
+        self._snapshot_retry: Dict[str, Any] = {}  # dongle -> cancel callback
+        self._snapshot_retry_attempts: Dict[str, int] = {}
+        self._snapshot_retry_delay = 20.0
+        self._snapshot_max_retries = 3
         self._has_gridboss = entry.data.get("has_gridboss", False)  # Track if GridBoss is enabled
         self._gridboss_dongle = entry.data.get("gridboss_dongle", "")  # Track which dongle is GridBoss
         self._last_fault_warning_data = {}  # Track last fault/warning data to prevent duplicate processing
@@ -202,22 +211,25 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Whether a dongle is currently running an OTA update."""
         return dongle_id in getattr(self, "_ota_in_progress", ())
 
-    async def request_snapshot(self, dongle_id: str, version: str = "", force: bool = False) -> None:
+    async def request_snapshot(self, dongle_id: str, version: str = "", force: bool = False) -> bool:
         """Ask a dongle for a full /input + /hold snapshot (once per session).
 
         Dongles on FW >= 4.3.0 only publish change-data, so without this the
         entities stay 'unknown' until each value happens to change. Gated to fire
         once per dongle per HA session unless force=True (e.g. a reconnect).
+
+        Returns True only if the request was actually published, so callers can
+        avoid recording a retry/debounce window against a request that never left.
         """
         if self.is_ota_in_progress(dongle_id):
             LOGGER.info(
                 "Suppressing snapshot request for %s: OTA in progress", dongle_id
             )
-            return
+            return False
         if not force and dongle_id in self._snapshot_requested:
-            return
+            return False
         if not self._needs_snapshot(version):
-            return
+            return False
         try:
             await mqtt.async_publish(
                 self.hass,
@@ -226,12 +238,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 qos=1,
                 retain=False,
             )
-            self._snapshot_requested.add(dongle_id)
-            LOGGER.info(
-                "Requested full snapshot from %s (version=%s)", dongle_id, version or "unknown"
-            )
         except Exception as e:
             LOGGER.debug(f"Snapshot request publish failed for {dongle_id} (non-fatal): {e}")
+            return False
+        self._snapshot_requested.add(dongle_id)
+        LOGGER.info(
+            "Requested full snapshot from %s (version=%s)", dongle_id, version or "unknown"
+        )
+        self._arm_snapshot_retry(dongle_id, version)
+        return True
 
     async def request_recovery_snapshot(self, dongle_id: str, reason: str) -> None:
         """Force a snapshot after a dongle recovers, debounced per dongle.
@@ -252,11 +267,74 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         last = self._last_recovery_snapshot.get(dongle_id, 0.0)
         if now - last < self._recovery_snapshot_debounce:
             return
-        self._last_recovery_snapshot[dongle_id] = now
         LOGGER.info("Recovery snapshot for %s (%s)", dongle_id, reason)
-        await self.request_snapshot(
+        # Only start the debounce window once the request has actually gone out.
+        # Recovery triggers fire while the dongle is rebooting, so a request can
+        # be lost before it is subscribed; stamping first would swallow the
+        # follow-up triggers and leave settings entities empty for the session.
+        if await self.request_snapshot(
             dongle_id, self.current_fw_versions.get(dongle_id, ""), force=True
-        )
+        ):
+            self._last_recovery_snapshot[dongle_id] = now
+
+    def _cancel_snapshot_retry(self, dongle_id: str) -> None:
+        """Drop any armed retry timer for a dongle."""
+        # getattr: test coordinators are built via __new__ and skip __init__.
+        pending = getattr(self, "_snapshot_retry", None)
+        if not pending:
+            return
+        cancel = pending.pop(dongle_id, None)
+        if cancel is not None:
+            cancel()
+
+    def _arm_snapshot_retry(self, dongle_id: str, version: str) -> None:
+        """Re-request the snapshot if its reply doesn't arrive in time.
+
+        A published request is not a delivered one: the recovery triggers fire
+        while the dongle is still reconnecting, so the request can go out before
+        it has resubscribed. Since FW >= 4.3.0 never re-sends hold registers on
+        its own, that single loss would leave every setting entity empty for the
+        rest of the session.
+        """
+        if getattr(self, "_snapshot_retry", None) is None:
+            self._snapshot_retry = {}
+        if getattr(self, "_snapshot_retry_attempts", None) is None:
+            self._snapshot_retry_attempts = {}
+        self._cancel_snapshot_retry(dongle_id)
+        attempts = self._snapshot_retry_attempts.get(dongle_id, 0)
+        max_retries = getattr(self, "_snapshot_max_retries", 3)
+        if attempts >= max_retries:
+            LOGGER.warning(
+                "Snapshot from %s still unanswered after %d retries - its settings "
+                "entities will stay unknown until it reboots or reconnects",
+                dongle_id, attempts,
+            )
+            return
+        delay = getattr(self, "_snapshot_retry_delay", 20.0)
+
+        async def _retry(_now) -> None:
+            self._snapshot_retry.pop(dongle_id, None)
+            if self.is_ota_in_progress(dongle_id):
+                return
+            self._snapshot_retry_attempts[dongle_id] = attempts + 1
+            LOGGER.warning(
+                "No snapshot reply from %s after %.0fs - retrying (%d/%d)",
+                dongle_id, delay, attempts + 1, max_retries,
+            )
+            await self.request_snapshot(dongle_id, version, force=True)
+
+        self._snapshot_retry[dongle_id] = async_call_later(self.hass, delay, _retry)
+
+    def _note_snapshot_delivered(self, dongle_id: str) -> None:
+        """Record that a dongle answered its snapshot request.
+
+        Called when <dongle>/snap/hold arrives — the hold half is what carries
+        the settings, so an /snap/input-only reply deliberately does not count.
+        """
+        self._cancel_snapshot_retry(dongle_id)
+        attempts = getattr(self, "_snapshot_retry_attempts", None)
+        if attempts is not None:
+            attempts.pop(dongle_id, None)
 
     async def mark_dongle_seen(self, dongle_id: str) -> None:
         """Record that a message arrived from a dongle and detect gap recovery.
@@ -1283,6 +1361,10 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # which on FW >= 4.3.0 (change-data only) may be a long time. The
             # firmware publishes it on <dongle>/snap/input and <dongle>/snap/hold.
             elif topic.endswith("/snap/input") or topic.endswith("/snap/hold"):
+                if topic.endswith("/snap/hold"):
+                    # The hold half carries the settings; an input-only reply
+                    # leaves them empty, so it must not disarm the retry.
+                    self._note_snapshot_delivered(dongle_id)
                 await self.process_message(dongle_id, topic, msg.payload)
                 self.async_set_updated_data(self.entities)
             # Skip other message processing during startup to prevent excessive updates
@@ -1755,6 +1837,10 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     async def stop_mqtt_subscription(self):
         """Stop all MQTT subscriptions."""
         LOGGER.debug(f"Stopping MQTT subscriptions for all dongles")
+        # Drop armed snapshot retries first: once unsubscribed there is nothing
+        # left to answer them, and a reload would leave the timers orphaned.
+        for dongle_id in list(getattr(self, "_snapshot_retry", {})):
+            self._cancel_snapshot_retry(dongle_id)
         for key, unsubscribe in list(self._mqtt_unsubscribe_callbacks.items()):
             try:
                 unsubscribe()
