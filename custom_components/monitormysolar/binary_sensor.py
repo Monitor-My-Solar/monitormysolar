@@ -1,5 +1,8 @@
 """Battery status binary sensors."""
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
 from homeassistant.core import callback, HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import (
@@ -48,6 +51,10 @@ async def async_setup_entry(
                 if sensor_class_key == "battery":
                     entities.append(
                         BatteryStatusBinarySensor(sensor, hass, entry, dongle_id)
+                    )
+                elif sensor_class_key == "quickcharge":
+                    entities.append(
+                        QuickChargeBinarySensor(sensor, hass, entry, dongle_id)
                     )
     
     async_add_entities(entities, True)
@@ -111,3 +118,63 @@ class BatteryStatusBinarySensor(MonitorMySolarEntity, BinarySensorEntity):
                         self.throttled_async_write_ha_state()
                 except (ValueError, TypeError):
                     LOGGER.debug(f"Invalid battery status value: {value} for {parent_entity_id}")
+
+class QuickChargeBinarySensor(MonitorMySolarEntity, BinarySensorEntity):
+    """Whether a quick charge boost is currently active (hold 233 bit0).
+
+    State comes from the coordinator's quick_charge tracker, which follows the
+    ubQuickChgStartEn hold field and the /setting/updated echo — so it reflects
+    boosts started from anywhere (HA, the MMS app, Lux portal, local web UI).
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.RUNNING
+
+    def __init__(self, sensor_info, hass, entry, dongle_id):
+        self.coordinator = entry.runtime_data
+        self.sensor_info = sensor_info
+        self._name = sensor_info["name"]
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+        self.entity_id = self.coordinator.build_entity_id("binary_sensor", self._dongle_id, sensor_info["unique_id"])
+        self.hass = hass
+        self._manufacturer = entry.data.get("inverter_brand")
+
+        super().__init__(self.coordinator)
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def unique_id(self):
+        return self._unique_id
+
+    @property
+    def is_on(self):
+        state = self.coordinator.quick_charge.get(self._dongle_id)
+        if state is None:
+            return None  # not observed yet (no hold snapshot processed)
+        return bool(state.get("active"))
+
+    @property
+    def extra_state_attributes(self):
+        state = self.coordinator.quick_charge.get(self._dongle_id)
+        if not state or not state.get("active"):
+            return {}
+        return {
+            "started_at": state["started_at"].isoformat(),
+            "ends_at": state["ends_at"].isoformat(),
+            "duration_minutes": state["duration"],
+            # True when HA first saw the boost already running (restart
+            # mid-boost) so started_at/ends_at are best-effort estimates.
+            "estimated": state.get("estimated", False),
+        }
+
+    @property
+    def device_info(self):
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self.throttled_async_write_ha_state()

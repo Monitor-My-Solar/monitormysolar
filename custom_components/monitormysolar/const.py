@@ -643,6 +643,11 @@ ENTITIES = {
                     {"name": "FW Version", "type": "sensor", "unique_id": "FWVer", "state_class": "text", "source": "holdbank1", "device_group": "Inverter"},
 
                 ],
+                "quickcharge": [
+                    # Locally-computed countdown for an active quick charge (the
+                    # inverter reports no remaining time; see coordinator.quick_charge).
+                    {"name": "Quick Charge Time Remaining", "type": "sensor", "unique_id": "quick_charge_time_remaining", "unit_of_measurement": UnitOfTime.MINUTES, "device_class": SensorDeviceClass.DURATION, "sensor_class": "quickcharge", "allowed_groups": ["GEN", "threephase", "offgrid"], "device_group": "Controls"},
+                ],
             },
             "switch": {
                 "holdbank1": [
@@ -694,6 +699,12 @@ ENTITIES = {
                     {"name": "RSD Disable", "type": "switch", "unique_id": "ubRSDDisable", "device_group": "controls", "allowed_groups": ["GEN"] },
                     {"name": "Grid Peak Shaving Enable", "type": "switch", "unique_id": "ubGridPeakShaving", "device_group": "controls", "allowed_groups": ["GEN", "offgrid"] },
                     {"name": "Gen Peak Shaving Enable", "type": "switch", "unique_id": "ubGenPeakShaving", "device_group": "controls", "allowed_groups": ["GEN", "offgrid"] },
+                ],
+                "holdbank6": [
+                    # Hold 233 bit0. Set the duration first via "Quick Charge
+                    # Duration", then turn this on; the inverter clears the bit
+                    # itself when the boost finishes.
+                    {"name": "Quick Charge Start", "type": "switch", "unique_id": "ubQuickChgStartEn", "source": "holdbank6", "allowed_groups": ["GEN", "threephase", "offgrid"], "device_group": "Controls"},
                 ]
             },
             "binary_sensor": {  # This should be the only place defining these sensors
@@ -708,6 +719,11 @@ ENTITIES = {
                     "unique_id": "battery_discharge_status",
                     "parent_sensor": "batstatus_inv",
                     "status_type": "discharge", "source": "battery", "sensor_class": "battery", "device_group": "Battery"}
+                ],
+                "quickcharge": [
+                    # Mirrors hold 233 bit0 (ubQuickChgStartEn / echo name "QuickCharge").
+                    # Gen-class only: GEN (H/F/E/AC) + threephase (G, the 12K) + offgrid (C).
+                    {"name": "Quick Charge", "type": "binary_sensor", "unique_id": "quick_charge_active", "sensor_class": "quickcharge", "allowed_groups": ["GEN", "threephase", "offgrid"], "device_group": "Controls"},
                 ]
             },
             "number": {
@@ -841,7 +857,7 @@ ENTITIES = {
                 "holdbank4": [
                     {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"], "allowed_groups": ["offgrid"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"], "allowed_groups": ["GEN"], "source": "holdbank4", "device_group": "Controls"},
-                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["Off", "Time According To", "SOC/Volt According To"], "allowed_groups": ["legacy", "ac_coupled"], "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["Time According To", "SOC/Volt According To"], "allowed_groups": ["legacy", "ac_coupled"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "00:00 -- 00:30", "type": "select", "unique_id": "Time0", "options": ["Does Not Operate", "AC Charge", "PV Charge", "Discharge"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "00:30 -- 01:00", "type": "select", "unique_id": "Time1", "options": ["Does Not Operate", "AC Charge", "PV Charge", "Discharge"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "01:00 -- 01:30", "type": "select", "unique_id": "Time2", "options": ["Does Not Operate", "AC Charge", "PV Charge", "Discharge"], "source": "holdbank4", "device_group": "Controls"},
@@ -898,7 +914,10 @@ ENTITIES = {
                     {"name": "Discharge Control", "type": "select", "unique_id": "ubBatDischgControl", "options": ["SOC", "Voltage"], "source": "holdbank5", "device_group": "Controls"},
                 ],
                 "holdbank6": [
-                    {"name": "Quick Charge Duration", "type": "select", "unique_id": "quickchgtime", "options": ["0", "15", "30", "45", "60", "90", "120"], "additional_payload": {"key": "ubquickchgstarten","value_map": {"0": "0","default": "1"}}, "source": "holdbank6", "sensor_class": "holdbank6", "device_group": "Controls"},
+                    # No "0" option and no enable piggyback (legacy design): newer
+                    # firmware rejects a 0 write to reg 234 with Illegal Data Value.
+                    # Start/stop lives on the "Quick Charge Start" switch (233 bit0).
+                    {"name": "Quick Charge Duration", "type": "select", "unique_id": "quickchgtime", "options": ["15", "30", "45", "60", "90", "120"], "source": "holdbank6", "sensor_class": "holdbank6", "allowed_groups": ["GEN", "threephase", "offgrid"], "device_group": "Controls"},
 
                 ],
                 "gridboss_holdbank1": [

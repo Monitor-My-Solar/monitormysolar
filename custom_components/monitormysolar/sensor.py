@@ -29,8 +29,10 @@ from homeassistant.core import (
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
+    async_track_time_interval,
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, ENTITIES, FIRMWARE_CODES, LOGGER, STATUS_DIAGNOSTIC_SENSORS
 from .coordinator import MonitorMySolarEntry
@@ -122,6 +124,10 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                     elif sensor_class_key == "temperature":
                         entities.append(
                             TemperatureSensor(sensor, hass, entry, bank_name, dongle_id)
+                        )
+                    elif sensor_class_key == "quickcharge":
+                        entities.append(
+                            QuickChargeRemainingSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
                     else:
                         entities.append(
@@ -1680,3 +1686,92 @@ class BatteryDetailSensor(MonitorMySolarEntity, SensorEntity):
                     round(value, 2) if isinstance(value, (float, int)) else value
                 )
                 self.throttled_async_write_ha_state()
+
+
+class QuickChargeRemainingSensor(MonitorMySolarEntity, SensorEntity):
+    """Minutes left on an active quick charge boost.
+
+    The inverter never reports remaining time; the coordinator stamps ends_at
+    locally when it sees the enable bit turn on (hold delta or /setting/updated
+    echo, whoever initiated the write). This entity just counts down against
+    that timestamp — 0 whenever no boost is running. A 30s local tick keeps the
+    countdown moving between MQTT messages.
+    """
+
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+
+    def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
+        self.coordinator = entry.runtime_data
+        self.sensor_info = sensor_info
+        self._name = sensor_info["name"]
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, sensor_info["unique_id"])
+        self.hass = hass
+        self._manufacturer = entry.data.get("inverter_brand")
+        self._unsub_tick = None
+
+        super().__init__(self.coordinator)
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def unique_id(self):
+        return self._unique_id
+
+    @property
+    def device_info(self):
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
+
+    def _quick_charge_state(self):
+        return self.coordinator.quick_charge.get(self._dongle_id)
+
+    @property
+    def native_value(self):
+        state = self._quick_charge_state()
+        if not state or not state.get("active"):
+            return 0
+        remaining = (state["ends_at"] - dt_util.utcnow()).total_seconds()
+        if remaining <= 0:
+            # ends_at passed but the inverter hasn't cleared the bit yet
+            # (or our estimate ran long) — pin at 0 until the off arrives.
+            return 0
+        return int((remaining + 59) // 60)  # ceil to whole minutes
+
+    @property
+    def extra_state_attributes(self):
+        state = self._quick_charge_state()
+        if not state or not state.get("active"):
+            return {}
+        return {
+            "started_at": state["started_at"].isoformat(),
+            "ends_at": state["ends_at"].isoformat(),
+            "duration_minutes": state["duration"],
+            "estimated": state.get("estimated", False),
+        }
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._unsub_tick = async_track_time_interval(
+            self.hass, self._tick, timedelta(seconds=30)
+        )
+
+    async def async_will_remove_from_hass(self):
+        if self._unsub_tick is not None:
+            self._unsub_tick()
+            self._unsub_tick = None
+        await super().async_will_remove_from_hass()
+
+    @callback
+    def _tick(self, now):
+        state = self._quick_charge_state()
+        if state and state.get("active"):
+            self.throttled_async_write_ha_state()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self.throttled_async_write_ha_state()
