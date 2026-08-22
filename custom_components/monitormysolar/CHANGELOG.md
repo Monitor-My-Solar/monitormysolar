@@ -1,5 +1,15 @@
 # Changelog
 ## Version 4.0.4.2 (Beta)
+### Fixed
+- **AC charge time settings wrongly unavailable on standard/ACS units.** The
+  coordinator kept its own copy of the "Charge Based on:" option lists and the
+  legacy one had drifted from const.py (a phantom "Off" at index 0), so a unit
+  reporting charge type 0 — "Time According To", the most common setting — was
+  read as "Off" and the AC charge time entities were blocked. The option list
+  is now read from the entity catalog itself so the two can never drift, and
+  numeric echo values ("1.00") convert correctly. Three-phase units now also
+  get the "Charge Based on:" select (they were missing from its groups).
+
 ### Quick charge (gen-class units: H/F/E/AC + G three-phase + C offgrid)
 
 - **New: `binary_sensor` Quick Charge** — on while a quick charge boost is
@@ -13,16 +23,17 @@
   `started_at`, `ends_at`, `duration_minutes` and `estimated` (true when HA
   first saw a boost already running, e.g. after a restart, so the end time is a
   best-effort estimate).
-- **New: `switch` Quick Charge Start** — starts/stops a boost (set the duration
-  first). The inverter clears the bit itself when the boost finishes.
+- **New: `switch` Quick Charge Start** — starts/stops a boost. The inverter
+  only accepts a duration while the boost is enabled, so the switch enables
+  first and then writes your chosen Quick Charge Duration automatically. The
+  inverter clears the bit itself when the boost finishes.
 - **Changed: Quick Charge Duration select** — the "0" option and the hidden
   enable piggyback are gone (legacy design; newer firmware rejects a duration
   of 0 with Illegal Data Value). The select now only sets the duration;
-  starting is the switch's job. Also now correctly hidden on legacy/AC-coupled
-  units that don't support quick charge. NOTE: writing the duration needs a
-  dongle firmware update that accepts the QuickChgTime setting name — current
-  firmware ignores the write (the select reverts); display/state sync works
-  regardless.
+  starting is the switch's job. While a boost is running, changing the select
+  re-times it; while idle, the choice is stored and written at the next start
+  (the inverter rejects duration writes when no boost is enabled). Also now
+  correctly hidden on legacy/AC-coupled units that don't support quick charge.
 
 ## Version 4.0.0
 ### Best with dongle firmware 4.3.0+. Some features below REQUIRE 4.3.0.

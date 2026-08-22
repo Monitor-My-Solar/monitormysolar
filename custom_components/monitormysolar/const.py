@@ -701,15 +701,16 @@ ENTITIES = {
                     {"name": "Gen Peak Shaving Enable", "type": "switch", "unique_id": "ubGenPeakShaving", "device_group": "controls", "allowed_groups": ["GEN", "offgrid"] },
                 ],
                 "holdbank6": [
-                    # Set the duration first via "Quick Charge
-                    # Duration", then turn this on; the inverter clears the bit
-                    # itself when the boost finishes.
+                    # Firmware ordering rule: the duration is only writable
+                    # WHILE the boost is enabled — so this switch enables
+                    # first, then pushes the chosen Quick Charge Duration.
+                    # The inverter clears the bit itself when the boost ends.
                     # unique_id matches the hold payload key (state sync); the
                     # dongle's WRITE table names this bit "QuickCharge" (same as
                     # its /setting/updated echo) — verified live 2026-08-22:
                     # writes to "ubQuickChgStartEn" get no /response, writes to
                     # "QuickCharge" succeed.
-                    {"name": "Quick Charge Start", "type": "switch", "unique_id": "ubQuickChgStartEn", "mqtt_setting_name": "QuickCharge", "source": "holdbank6", "allowed_groups": ["GEN", "threephase", "offgrid"], "device_group": "Controls"},
+                    {"name": "Quick Charge Start", "type": "switch", "unique_id": "ubQuickChgStartEn", "mqtt_setting_name": "QuickCharge", "quickcharge_start": True, "source": "holdbank6", "allowed_groups": ["GEN", "threephase", "offgrid"], "device_group": "Controls"},
                 ]
             },
             "binary_sensor": {  # This should be the only place defining these sensors
@@ -861,7 +862,7 @@ ENTITIES = {
                 ],
                 "holdbank4": [
                     {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"], "allowed_groups": ["offgrid"], "source": "holdbank4", "device_group": "Controls"},
-                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"], "allowed_groups": ["GEN"], "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"], "allowed_groups": ["GEN", "threephase"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["Time According To", "SOC/Volt According To"], "allowed_groups": ["legacy", "ac_coupled"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "00:00 -- 00:30", "type": "select", "unique_id": "Time0", "options": ["Does Not Operate", "AC Charge", "PV Charge", "Discharge"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "00:30 -- 01:00", "type": "select", "unique_id": "Time1", "options": ["Does Not Operate", "AC Charge", "PV Charge", "Discharge"], "source": "holdbank4", "device_group": "Controls"},

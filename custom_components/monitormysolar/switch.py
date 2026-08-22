@@ -1,5 +1,7 @@
 import logging
 import asyncio
+import json
+from homeassistant.components import mqtt
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
@@ -48,9 +50,14 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                     continue
 
                 try:
-                    entities.append(
-                        InverterSwitch(switch, hass, entry, bank_name, dongle_id)
-                    )
+                    if switch.get("quickcharge_start"):
+                        entities.append(
+                            QuickChargeStartSwitch(switch, hass, entry, bank_name, dongle_id)
+                        )
+                    else:
+                        entities.append(
+                            InverterSwitch(switch, hass, entry, bank_name, dongle_id)
+                        )
                 except Exception as e:
                     _LOGGER.error(f"Error setting up switch {switch} for dongle {dongle_id}: {e}")
                         
@@ -225,6 +232,48 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
                 self._state = new_state
                 # Schedule state update on the main thread
                 self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
+
+class QuickChargeStartSwitch(InverterSwitch):
+    """Quick Charge Start with the firmware's enable-then-duration ordering.
+
+    The inverter only accepts a duration write WHILE the boost is enabled —
+    writing the time first is rejected as illegal data value. So after a
+    confirmed turn-on, push the user's chosen Quick Charge Duration; the
+    dongle's /setting/updated echo then re-times the countdown.
+    """
+
+    async def async_turn_on(self, **kwargs):
+        await super().async_turn_on(**kwargs)
+        if not self._state:
+            return  # enable write failed and was reverted
+        minutes = self._selected_duration_minutes()
+        # Give the inverter a beat to latch the enable bit before the time write.
+        await asyncio.sleep(1.5)
+        payload = json.dumps(
+            {"setting": "QuickChgTime", "value": minutes, "from": "homeassistant"}
+        )
+        _LOGGER.info(
+            f"Quick charge enabled on {self._dongle_id} — setting duration {minutes} min"
+        )
+        # Direct publish (fire-and-forget): the handler's 1s rate limit would
+        # drop a second send_update this close to the enable; the echo confirms.
+        await mqtt.async_publish(self.hass, f"{self._dongle_id}/update", payload)
+
+    def _selected_duration_minutes(self) -> int:
+        """The duration to run: user's picked preference, else device value, else 30."""
+        pref = self.coordinator.quick_charge_duration_pref.get(self._dongle_id)
+        candidates = [pref]
+        select_key = self.coordinator.build_entity_id("select", self._dongle_id, "quickchgtime")
+        candidates.append(self.coordinator.entities.get(select_key))
+        for raw in candidates:
+            try:
+                minutes = int(float(str(raw)))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= minutes <= 1440:
+                return minutes
+        return 30
+
 
 class CombinedSwitch(MonitorMySolarEntity, SwitchEntity):
     """Switch that controls multiple dongles at once."""

@@ -152,6 +152,11 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # off->on transition; 'estimated' marks a boost already running when
         # HA first saw it (start time unknown, assumed just started).
         self.quick_charge: Dict[str, Dict[str, Any]] = {}
+        # The user's picked Quick Charge Duration per dongle. Kept separate
+        # from coordinator.entities because the device reports its duration as
+        # 0 whenever no boost is running, which would clobber the user's
+        # choice before the next start could use it.
+        self.quick_charge_duration_pref: Dict[str, int] = {}
 
         super().__init__(
             hass,
@@ -677,28 +682,51 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Get the discharge control setting for a dongle."""
         return self._discharge_control_settings.get(dongle_id, "SOC")  # Default to SOC
     
+    def _ac_charge_type_options(self, dongle_id: str) -> list:
+        """ACChargeType option list for this dongle's firmware group.
+
+        Read straight from the const.py select catalog (the entry whose
+        allowed_groups matches this dongle) so this can NEVER drift from what
+        the select entity shows. A previous hardcoded copy here diverged
+        (it had a phantom "Off" at index 0 for legacy/ac_coupled) which
+        shifted every device-reported value by one and wrongly blocked the
+        AC charge time settings.
+        """
+        brand_entities = ENTITIES.get(self.inverter_brand, {})
+        for bank in brand_entities.get("select", {}).values():
+            for entry in bank:
+                if entry.get("unique_id") == "ACChargeType" and self.entity_allowed_for_dongle(dongle_id, entry):
+                    return list(entry.get("options") or [])
+        LOGGER.warning(
+            f"No ACChargeType catalog entry matches group "
+            f"{self.get_firmware_group(dongle_id)!r} (dongle {dongle_id}) — using legacy list"
+        )
+        return ["Time According To", "SOC/Volt According To"]
+
     def update_charge_type_setting(self, dongle_id: str, charge_type):
-        """Update the charge type setting for a dongle."""
-        # Convert integer to string option if needed. ACChargeType's option list
-        # varies by firmware group (0-based indexing) — these MUST stay in lockstep
-        # with the three ACChargeType select entries in const.py:
-        #   offgrid (C***):            6 options (0-5)
-        #   GEN (12K, F/H/E):          3 options (According To Time / SOC-Volt / both)
-        #   legacy (A) + ac_coupled (B): 3 options (Off / Time / SOC-Volt)
-        if isinstance(charge_type, int):
-            group = self.get_firmware_group(dongle_id)
+        """Update the charge type setting for a dongle.
 
-            if group == "offgrid":
-                options = ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"]
-            elif group == "GEN":
-                options = ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
-            elif group in ("legacy", "ac_coupled"):
-                options = ["Off", "Time According To", "SOC/Volt According To"]
-            else:
-                LOGGER.warning(f"No ACChargeType option list for group {group!r} (dongle {dongle_id}), using legacy list")
-                options = ["Off", "Time According To", "SOC/Volt According To"]
-
-            charge_type = options[charge_type] if charge_type < len(options) else charge_type
+        Accepts the device's raw index (int, or a numeric string like "1.00"
+        from the /setting/updated echo) or an option string from the select.
+        """
+        options = self._ac_charge_type_options(dongle_id)
+        if not isinstance(charge_type, bool):
+            raw = charge_type
+            if isinstance(charge_type, str) and charge_type not in options:
+                try:
+                    raw = int(float(charge_type))
+                except ValueError:
+                    raw = charge_type
+            if isinstance(raw, (int, float)):
+                idx = int(raw)
+                if 0 <= idx < len(options):
+                    charge_type = options[idx]
+                else:
+                    LOGGER.warning(
+                        f"ACChargeType index {idx} out of range for {dongle_id} "
+                        f"(options: {options})"
+                    )
+                    charge_type = raw
 
         if dongle_id not in self._charge_type_settings:
             self._charge_type_settings[dongle_id] = {}
@@ -873,7 +901,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # ACChargeType consolidated options:
             # AAAA/BAAA/ccaa/EAAA/HAAA/ceaa: "According To Voltage", "According To Time and Voltage"
             # FAAB/FAAA: "According To SOC/VOLT", "According To Time and SOC/VOLT"
-            return charge_control == "Voltage" and charge_type in ["According To Voltage", "According To Time and Voltage", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
+            return charge_control == "Voltage" and charge_type in ["According To Voltage", "According To Time and Voltage", "According To SOC/VOLT", "According To Time and SOC/VOLT", "SOC/Volt According To"]
 
         # Check charge SOC entities - must check BOTH ubBatChgcontrol AND ACChargeType
         if self._is_charge_soc_entity(entity_unique_id):
@@ -886,7 +914,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # ACChargeType consolidated options:
             # AAAA/BAAA/ccaa/EAAA/HAAA/ceaa: "According To SOC", "According To Time and SOC"
             # FAAB/FAAA: "According To SOC/VOLT", "According To Time and SOC/VOLT"
-            return charge_control == "SOC" and charge_type in ["According To SOC", "According To Time and SOC", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
+            return charge_control == "SOC" and charge_type in ["According To SOC", "According To Time and SOC", "According To SOC/VOLT", "According To Time and SOC/VOLT", "SOC/Volt According To"]
 
         # Check charge time entities
         if self._is_charge_time_entity(entity_unique_id):
@@ -1006,7 +1034,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             charge_type = self.get_charge_type_setting(dongle_id)
             if charge_control != "Voltage":
                 return f"Charge control is set to '{charge_control}' - Voltage settings not available"
-            elif charge_type not in ["According To Voltage", "According To Time and Voltage", "According To SOC/VOLT", "According To Time and SOC/VOLT"]:
+            elif charge_type not in ["According To Voltage", "According To Time and Voltage", "According To SOC/VOLT", "According To Time and SOC/VOLT", "SOC/Volt According To"]:
                 return f"Charge type is set to '{charge_type}' - Voltage settings not available"
 
         elif self._is_charge_soc_entity(entity_unique_id):
@@ -1014,7 +1042,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             charge_type = self.get_charge_type_setting(dongle_id)
             if charge_control != "SOC":
                 return f"Charge control is set to '{charge_control}' - SOC settings not available"
-            elif charge_type not in ["According To SOC", "According To Time and SOC", "According To SOC/VOLT", "According To Time and SOC/VOLT"]:
+            elif charge_type not in ["According To SOC", "According To Time and SOC", "According To SOC/VOLT", "According To Time and SOC/VOLT", "SOC/Volt According To"]:
                 return f"Charge type is set to '{charge_type}' - SOC settings not available"
 
         elif self._is_charge_time_entity(entity_unique_id):
