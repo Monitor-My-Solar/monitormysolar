@@ -334,32 +334,33 @@ class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
         return self.get_device_info(self._dongle_id, self._manufacturer, self.entity_info.get("device_group"))
 
     async def async_select_option(self, option: str) -> None:
-        """Change the selected option."""
-        mqtt_handler = self.coordinator.mqtt_handler
-        if mqtt_handler is not None:
-            # Prepare the payload dictionary
-            payload_dict = {
-                self._entity_type: option
-            }
-            
-            # Add additional payload if configured
-            if self._additional_payload:
-                value_map = self._additional_payload.get("value_map", {})
-                additional_value = value_map.get(option, value_map.get("default"))
-                if additional_value is not None:
-                    payload_dict[self._additional_payload["key"]] = additional_value
+        """Change the selected option.
 
-            # Send the multiple updates via MQTT
-            await mqtt_handler.send_multiple_updates(
-                self._dongle_id,
-                payload_dict,
-                self,
-            )
-            
-            self._attr_current_option = option
-            self.throttled_async_write_ha_state()
-        else:
+        Written as a named setting; the dongle firmware owns the mapping to
+        the actual register. NOTE: current dongle firmware does not yet accept
+        this write name (it answers no /response, so the select reverts) —
+        needs a firmware update adding the quick-charge duration to its
+        writable-settings table. State always syncs from the device's own
+        reports, so this entity is truthful either way.
+        """
+        mqtt_handler = self.coordinator.mqtt_handler
+        if mqtt_handler is None:
             LOGGER.error("MQTT Handler is not initialized")
+            return
+        setting_name = self.entity_info.get("mqtt_setting_name", self._entity_type)
+        try:
+            minutes = int(float(option))
+        except (TypeError, ValueError):
+            LOGGER.error(f"Quick charge duration not numeric: {option!r}")
+            return
+        success = await mqtt_handler.send_update(self._dongle_id, setting_name, minutes, self)
+        if not success:
+            return  # dongle didn't confirm — leave state untouched
+        self._attr_current_option = option
+        # Mirror into coordinator data so the quick-charge tracker uses the
+        # new duration immediately (the echo/hold delta will confirm it).
+        self.coordinator.entities[self.data_key] = option
+        self.throttled_async_write_ha_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:

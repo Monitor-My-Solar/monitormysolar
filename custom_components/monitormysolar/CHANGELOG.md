@@ -1,4 +1,29 @@
 # Changelog
+## Version 4.0.4.2 (Beta)
+### Quick charge (gen-class units: H/F/E/AC + G three-phase + C offgrid)
+
+- **New: `binary_sensor` Quick Charge** — on while a quick charge boost is
+  running. Tracks boosts started from anywhere: HA, the
+  MonitorMySolar app/power-flow, the Lux portal, or the inverter's local web UI
+  (via hold deltas and the FW 4.3.0+ `/setting/updated` echo).
+- **New: `sensor` Quick Charge Time Remaining** — minutes left on the active
+  boost, counting down every 30s; 0 when idle. The inverter doesn't report
+  remaining time, so the countdown is stamped locally when the enable bit turns
+  on and re-timed if the duration is changed mid-boost. Attributes carry
+  `started_at`, `ends_at`, `duration_minutes` and `estimated` (true when HA
+  first saw a boost already running, e.g. after a restart, so the end time is a
+  best-effort estimate).
+- **New: `switch` Quick Charge Start** — starts/stops a boost (set the duration
+  first). The inverter clears the bit itself when the boost finishes.
+- **Changed: Quick Charge Duration select** — the "0" option and the hidden
+  enable piggyback are gone (legacy design; newer firmware rejects a duration
+  of 0 with Illegal Data Value). The select now only sets the duration;
+  starting is the switch's job. Also now correctly hidden on legacy/AC-coupled
+  units that don't support quick charge. NOTE: writing the duration needs a
+  dongle firmware update that accepts the QuickChgTime setting name — current
+  firmware ignores the write (the select reverts); display/state sync works
+  regardless.
+
 ## Version 4.0.0
 ### Best with dongle firmware 4.3.0+. Some features below REQUIRE 4.3.0.
 

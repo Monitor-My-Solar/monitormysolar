@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import time
+from datetime import timedelta
 from typing import Any, cast, Set, List, Dict
 from propcache import cached_property
 
@@ -14,6 +15,7 @@ from homeassistant.helpers.event import (
     async_call_later,
 )
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 from .mqttHandeler import MQTTHandler
 
 from .const import (
@@ -141,6 +143,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._charge_control_settings = {}  # Track ubBatChgcontrol for each dongle
         self._discharge_control_settings = {}  # Track ubBatDischgControl for each dongle
         self._charge_type_settings = {}  # Track ACChargeType for each dongle
+
+        # Quick charge tracker (gen-class units): {dongle_id: {active, started_at,
+        # ends_at, duration, estimated}}. Fed by hold snapshots/deltas
+        # (ubQuickChgStartEn / QuickChgTime) and the /setting/updated echo
+        # (which names the enable bit "QuickCharge"). The inverter never
+        # reports remaining time, so ends_at is stamped locally at the
+        # off->on transition; 'estimated' marks a boost already running when
+        # HA first saw it (start time unknown, assumed just started).
+        self.quick_charge: Dict[str, Dict[str, Any]] = {}
 
         super().__init__(
             hass,
@@ -401,6 +412,75 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Return the firmware group (midbox/GEN/legacy/threephase/offgrid) for a dongle."""
         from .const import firmware_group
         return firmware_group(self.get_firmware_code(dongle_id))
+
+    @staticmethod
+    def _qc_on(raw) -> bool:
+        """Normalize a quick-charge enable value (bool, 'true', '1', '1.00', 1)."""
+        if isinstance(raw, bool):
+            return raw
+        s = str(raw).strip().lower()
+        if s in ("true", "on"):
+            return True
+        if s in ("false", "off", ""):
+            return False
+        try:
+            return float(s) != 0.0
+        except ValueError:
+            return False
+
+    def _qc_duration_minutes(self, dongle_id: str) -> int:
+        """Current QuickChgTime in minutes from coordinator data, default 30.
+
+        The inverter zeroes the duration setting after a boost completes, so 0 (and anything
+        out of the 1..1440 range) falls back to the 30-minute default — same
+        rule the MMS cloud applies.
+        """
+        raw = self.entities.get(self.build_entity_id("select", dongle_id, "quickchgtime"))
+        try:
+            minutes = int(float(str(raw)))
+        except (TypeError, ValueError):
+            return 30
+        return minutes if 1 <= minutes <= 1440 else 30
+
+    def update_quick_charge_enable(self, dongle_id: str, raw) -> None:
+        """Track quick-charge enable transitions and stamp the local countdown."""
+        on = self._qc_on(raw)
+        st = self.quick_charge.get(dongle_id)
+        if on:
+            if st and st.get("active"):
+                return  # already tracking this boost
+            minutes = self._qc_duration_minutes(dongle_id)
+            now = dt_util.utcnow()
+            self.quick_charge[dongle_id] = {
+                "active": True,
+                "started_at": now,
+                "ends_at": now + timedelta(minutes=minutes),
+                "duration": minutes,
+                # First observation ever showing 'on' may be a boost that was
+                # already running (HA restart mid-boost) — flag the countdown
+                # as an estimate.
+                "estimated": st is None,
+            }
+        else:
+            if st is not None and not st.get("active"):
+                return
+            self.quick_charge[dongle_id] = {"active": False}
+        self.async_set_updated_data(self.entities)
+
+    def update_quick_charge_duration(self, dongle_id: str, raw) -> None:
+        """Re-time an active boost when QuickChgTime changes mid-boost."""
+        st = self.quick_charge.get(dongle_id)
+        if not st or not st.get("active"):
+            return
+        try:
+            minutes = int(float(str(raw)))
+        except (TypeError, ValueError):
+            return
+        if minutes < 1 or minutes > 1440 or minutes == st.get("duration"):
+            return  # 0/garbage is the post-boost register clear, not a real duration
+        st["duration"] = minutes
+        st["ends_at"] = st["started_at"] + timedelta(minutes=minutes)
+        self.async_set_updated_data(self.entities)
 
     def entity_allowed_for_dongle(self, dongle_id: str, entity_def: dict) -> bool:
         """Whether an entity definition should be created for this dongle.
@@ -1973,6 +2053,26 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             from_who = data.get("from") or ""
             if setting and value is not None:
                 formatted_suffix = setting.lower().replace("-", "_").replace(":", "_")
+
+                # Quick-charge tracking. The dongle names the enable bit
+                # "QuickCharge" in this echo (vs "ubQuickChgStartEn" in hold
+                # payloads) — accept both. Runs BEFORE the own-write dedup so
+                # the countdown stamps no matter who initiated the write
+                # (HA, MMS app/powerflow, Lux portal, local web UI).
+                if formatted_suffix in ("quickcharge", "ubquickchgstarten"):
+                    self.update_quick_charge_enable(dongle_id, value)
+                    # The echo's "QuickCharge" name doesn't match the switch
+                    # catalog entry (ubQuickChgStartEn) — route the value onto
+                    # the switch's key so it flips immediately instead of
+                    # waiting for the next hold delta.
+                    if formatted_suffix == "quickcharge":
+                        switch_key = self.build_entity_id("switch", dongle_id, "ubquickchgstarten")
+                        # Normalize before storing: the echo ships strings like
+                        # "1.00", and the switch's int() coercion silently
+                        # rejects those.
+                        self.entities[switch_key] = "1" if self._qc_on(value) else "0"
+                elif formatted_suffix == "quickchgtime":
+                    self.update_quick_charge_duration(dongle_id, value)
                 # Resolve the platform AND catalog entry so we can coerce the
                 # value (FW >= 4.3.0 sends it as a string like "1.00") to the
                 # entity's native type — an int index for selects, float for
@@ -2142,11 +2242,19 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 elif entity_id_suffix == "ACChargeType":
                     LOGGER.debug(f"Processing ACChargeType from MQTT: {state}")
                     self.update_charge_type_setting(dongle_id, state)
-                    
+                elif entity_id_suffix.lower() == "quickchgtime":
+                    self.update_quick_charge_duration(dongle_id, state)
+
                 formatted_entity_id_suffix = entity_id_suffix.lower().replace("-", "_").replace(":", "_")
                 entity_type = self.determine_entity_type(formatted_entity_id_suffix)
                 entity_id = self.build_entity_id(entity_type, dongle_id, formatted_entity_id_suffix)
                 self.entities[entity_id] = state
+
+                # After the value is stored (so a bootstrap snapshot's own
+                # QuickChgTime is visible to the duration lookup) track the
+                # quick-charge enable bit.
+                if entity_id_suffix.lower() == "ubquickchgstarten":
+                    self.update_quick_charge_enable(dongle_id, state)
 
         # Process events data if present (new format)
         if events_data:

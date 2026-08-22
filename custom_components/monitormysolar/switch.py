@@ -96,6 +96,10 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
+        # Name used for MQTT writes. Usually the unique_id, but some registers
+        # go by a different name in the dongle's write table than in its hold
+        # payloads (e.g. hold key ubQuickChgStartEn is written as "QuickCharge").
+        self._write_setting_name = entity_info.get("mqtt_setting_name", entity_info["unique_id"])
         self._bank_name = bank_name
         self.entity_id = self.coordinator.build_entity_id("switch", self._dongle_id, self._entity_type)
         self.hass = hass
@@ -151,7 +155,7 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
             self.throttled_async_write_ha_state()
             _LOGGER.info(f"Setting Switch on value for {self.entity_id}")
             success = await mqtt_handler.send_update(
-                self._dongle_id, self.entity_info["unique_id"], 1, self
+                self._dongle_id, self._write_setting_name, 1, self
             )
             if not success:
                 self.revert_state()
@@ -173,7 +177,7 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
             self.throttled_async_write_ha_state()  # Update HA state immediately
             _LOGGER.info(f"Setting Switch off value for {self.entity_id}")
             success = await mqtt_handler.send_update(
-                self._dongle_id, self.entity_info["unique_id"], 0, self
+                self._dongle_id, self._write_setting_name, 0, self
             )
             if not success:
                 self.revert_state()

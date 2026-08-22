@@ -1,15 +1,18 @@
 {
   "domain": "monitormysolar",
   "name": "MonitorMySolar",
-  "codeowners": ["@zakery292"],
+  "codeowners": [
+    "@zakery292"
+  ],
   "config_flow": true,
-  "dependencies": ["mqtt"],
+  "dependencies": [
+    "mqtt"
+  ],
   "documentation": "https://github.com/Monitor-My-Solar/monitormysolar",
   "integration_type": "device",
-  "iot_class": "local_push",    
+  "iot_class": "local_push",
   "issue_tracker": "https://github.com/Monitor-My-Solar/monitormysolar",
   "loggers": [],
-  "requirements": [],    
-  "version": "4.0.3.1"
+  "requirements": [],
+  "version": "4.0.4.2"
 }
-
