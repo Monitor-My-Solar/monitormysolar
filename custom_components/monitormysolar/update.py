@@ -6,7 +6,11 @@ This module provides firmware update functionality with:
 - Manual update checks via the entity UI
 - Real-time progress tracking during updates
 - Release notes display
-- Support for stable and beta versions
+- Support for stable and beta versions: every dongle gets a "Firmware" entity
+  on the stable track and a "Firmware Beta" entity on the beta track. The beta
+  entity is enabled by default only when the "Show beta firmware updates"
+  option is on; otherwise it sits disabled in the entity registry, one click
+  away.
 
 The update entity will:
 1. Check for updates automatically every 6 hours
@@ -24,8 +28,9 @@ from datetime import timedelta
 from homeassistant.components import mqtt
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature, UpdateDeviceClass
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
-from .const import DOMAIN, ENTITIES, LOGGER, CONF_USE_BETA, DEFAULT_USE_BETA
+from .const import DOMAIN, ENTITIES, LOGGER, CONF_USE_BETA, DEFAULT_USE_BETA, fw_version_is_newer
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
 
@@ -35,7 +40,11 @@ from .entity import MonitorMySolarEntity
 OTA_ACK_TIMEOUT = 30  # seconds to wait for <id>/admin/response
 OTA_OVERALL_TIMEOUT = 600  # seconds to watch progress/result before giving up
 
-UPDATE_URL = "https://monitoring.monitormy.solar/version"
+# The update server publishes one channel per chip. The bare /version endpoint is
+# the legacy ESP32-C6 channel, so an ESP32-S3 dongle checked against it was
+# offered the C6 build and never saw its own.
+UPDATE_URL_BASE = "https://monitoring.monitormy.solar/version"
+UPDATE_URLS = {"s3": f"{UPDATE_URL_BASE}/s3", "c6": f"{UPDATE_URL_BASE}/c6"}
 UPDATE_CHECK_INTERVAL = timedelta(hours=6)  # Check every 6 hours
 
 async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry, async_add_entities) -> None:
@@ -43,37 +52,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry, asy
     coordinator = entry.runtime_data
     dongle_ids = coordinator._dongle_ids
     
-    # Fetch latest firmware version from server
-    await _fetch_server_versions(coordinator)
+    # Fetch the latest firmware per chip channel. At setup a dongle may not have
+    # published /status yet, so its chip is unknown — fetch both channels and let
+    # each entity read the one its dongle resolves to.
+    await _fetch_server_versions(coordinator, UPDATE_URLS.keys())
 
     entities = []
-    
-    # Create a firmware update entity for each dongle
+
+    # One stable and one beta update entity per dongle.
+    show_beta = entry.data.get(CONF_USE_BETA, DEFAULT_USE_BETA)
     for dongle_id in dongle_ids:
-        entities.append(
-            DongleFirmwareUpdate(
-                hass,
-                entry,
-                dongle_id
-            )
-        )
+        entities.append(DongleFirmwareUpdate(hass, entry, dongle_id, track="prod"))
+        beta = DongleFirmwareUpdate(hass, entry, dongle_id, track="beta")
+        entities.append(beta)
+        if show_beta:
+            _enable_if_integration_disabled(hass, beta.unique_id)
 
     if entities:
         async_add_entities(entities)
+
+
+def _enable_if_integration_disabled(hass: HomeAssistant, unique_id: str) -> None:
+    """Re-enable a beta entity this integration registered disabled.
+
+    `entity_registry_enabled_default` only counts the first time an entity is
+    registered, so a user who turns the beta option on later would never see
+    the entity. A user who disabled it themselves is left alone.
+    """
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id("update", DOMAIN, unique_id)
+    if not entity_id:
+        return
+    entry = registry.async_get(entity_id)
+    if entry and entry.disabled_by == er.RegistryEntryDisabler.INTEGRATION:
+        registry.async_update_entity(entity_id, disabled_by=None)
         
-async def _fetch_server_versions(coordinator) -> None:
-    """Fetch latest firmware versions from server."""
+async def _fetch_server_versions(coordinator, chips) -> None:
+    """Fetch the latest firmware versions for the given chip channels ("s3"/"c6")."""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(UPDATE_URL, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status == 200:
-                    server_data = await response.json()
-                    coordinator.server_versions = server_data
-                    LOGGER.debug(f"Server versions updated: {server_data}")
-                else:
-                    LOGGER.warning(f"Failed to fetch server versions: HTTP {response.status}")
-    except asyncio.TimeoutError:
-        LOGGER.warning("Timeout fetching server versions")
+            for chip in chips:
+                url = UPDATE_URLS.get(chip)
+                if not url:
+                    continue
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            server_data = await response.json()
+                            coordinator.server_versions[chip] = server_data
+                            LOGGER.debug(f"Server versions updated for {chip}: {server_data}")
+                        else:
+                            LOGGER.warning(
+                                f"Failed to fetch {chip} server versions: HTTP {response.status}"
+                            )
+                except asyncio.TimeoutError:
+                    LOGGER.warning(f"Timeout fetching {chip} server versions")
     except Exception as e:
         LOGGER.error(f"Failed to fetch server versions: {e}")
 
@@ -89,15 +122,19 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         hass: HomeAssistant,
         entry: MonitorMySolarEntry,
         dongle_id: str,
+        track: str = "prod",
     ) -> None:
-        """Initialize the update entity."""
+        """Initialize the update entity for one firmware track ("prod" or "beta")."""
         self.hass = hass
         self.coordinator = entry.runtime_data
         self._dongle_id = dongle_id
+        self._track = track
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
-        self._unique_id = f"{entry.entry_id}_{dongle_id}_firmware_update"
+        # The stable entity keeps its historical unique_id / entity_id.
+        suffix = "firmware_update" if track == "prod" else "firmware_update_beta"
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{suffix}"
         self._manufacturer = "MonitorMySolar"
-        self.entity_id = self.coordinator.build_entity_id("update", self._dongle_id, "firmware_update")
+        self.entity_id = self.coordinator.build_entity_id("update", self._dongle_id, suffix)
         self._attr_in_progress = False
         self._attr_progress = None
         self._unsubscribe_timer = None
@@ -112,64 +149,50 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
     @property
     def name(self):
         """Return the name of the entity."""
+        beta = " Beta" if self._track == "beta" else ""
         if self._attr_has_entity_name:
             # Multiple dongles - return just "Firmware"
-            return "Firmware"
+            return f"Firmware{beta}"
         else:
             # Single dongle - return full name
-            return "Firmware Update"
+            return f"Firmware{beta} Update"
 
     @property
     def unique_id(self):
         """Return a unique ID."""
         return self._unique_id
 
-    @staticmethod
-    def _strip_chip_suffix(version: str) -> str:
-        """Strip the trailing chip designator (e.g. S3 / C6) from a version string.
+    @property
+    def _chip(self) -> str:
+        """Chip channel this dongle's builds come from ("s3" / "c6")."""
+        return self.coordinator.dongle_chip(self._dongle_id)
 
-        The dongle reports versions like "4.3.0.111S3" or "4.3.0C6", but the
-        update server publishes the bare version ("4.3.0.111" / "4.3.0"). Without
-        stripping the chip suffix the installed vs latest comparison never matches
-        and HA would always show an update available. Removes a trailing run of
-        letters+digits that isn't part of the dotted numeric version.
-        """
-        if not version:
-            return version
-        # Split on dots; the chip suffix is glued onto the last numeric segment,
-        # e.g. "111S3" -> keep "111". Trim trailing chars from the last part once a
-        # non-digit is hit.
-        parts = version.split(".")
-        last = parts[-1]
-        trimmed = ""
-        for ch in last:
-            if ch.isdigit():
-                trimmed += ch
-            else:
-                break
-        parts[-1] = trimmed
-        # Drop any now-empty trailing segment (e.g. version was just "4.3.0S3" with
-        # nothing numeric after — shouldn't happen, but be safe).
-        while parts and parts[-1] == "":
-            parts.pop()
-        return ".".join(parts)
+    @property
+    def _server_versions(self) -> dict:
+        """The update-server response for this dongle's chip."""
+        return (self.coordinator.server_versions or {}).get(self._chip) or {}
 
     @property
     def installed_version(self) -> str | None:
-        """Version currently installed (chip suffix stripped to match the server)."""
+        """Version the dongle reports, as published (e.g. "4.5.0.87S3").
+
+        The server publishes the same chip-suffixed form, so installed and
+        latest read alike; the numeric compare in version_is_newer ignores
+        the suffix either way.
+        """
         version = self.coordinator.current_fw_versions.get(self._dongle_id)
 
         if version in [None, "", "Waiting...", "Unknown"]:
             return None
 
-        return self._strip_chip_suffix(str(version))
+        return str(version)
 
     @property
     def latest_version(self) -> str | None:
-        """Latest version available."""
-        server_versions = self.coordinator.server_versions or {}
+        """Latest version available on this dongle's chip channel and track."""
+        server_versions = self._server_versions
 
-        if self._use_beta:
+        if self._track == "beta":
             version = server_versions.get("betaFwVersion")
         else:
             version = server_versions.get("latestFwVersion")
@@ -180,25 +203,33 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         return str(version)
 
     @property
-    def _use_beta(self) -> bool:
-        """Whether this install should track the beta firmware channel."""
+    def _show_beta(self) -> bool:
+        """The "Show beta firmware updates" option."""
         return self.coordinator.entry.data.get(CONF_USE_BETA, DEFAULT_USE_BETA)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Which chip channel and track the offered build comes from."""
+        return {"chip": self._chip.upper(), "track": self._track}
+
+    def version_is_newer(self, latest_version: str, installed_version: str) -> bool:
+        """Offer an update only when the server version is strictly newer.
+
+        HA's default comparison is an inequality, so a unit running a build
+        NEWER than the server's published version (dev/beta units) would be
+        offered a 'downgrade'. Numeric tuple compare instead. Deliberate
+        consequence: a server-side rollback to an older version is not shown
+        in HA — rollbacks are pushed via the /admin OTA command, which does
+        not consult this comparison.
+        """
+        return fw_version_is_newer(latest_version, installed_version)
     
     def release_notes(self) -> str | None:
         """Return the release notes."""
         try:
-            server_versions = self.coordinator.server_versions or {}
-            
-            # Determine which changelog to show based on version
-            latest = self.latest_version
-            beta_version = server_versions.get("betaFwVersion")
-            
-            # If latest version matches beta, show beta changelog
-            if latest and beta_version and latest == beta_version:
-                changelog = server_versions.get("changelogBeta")
-            else:
-                # Otherwise show standard changelog
-                changelog = server_versions.get("changelog")
+            server_versions = self._server_versions
+            key = "changelogBeta" if self._track == "beta" else "changelog"
+            changelog = server_versions.get(key)
             
             if not changelog:
                 return None
@@ -232,7 +263,7 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         the current build on prod or beta. The `version` argument from HA is
         ignored.
         """
-        track = "beta" if self._use_beta else "prod"
+        track = self._track
 
         request_id = uuid.uuid4().hex[:12]
         command = {"cmd": "ota", "id": request_id, "args": {"track": track}}
@@ -252,13 +283,29 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         result_event = asyncio.Event()
         loop = self.hass.loop
 
+        def _mark_acknowledged(detail: str) -> None:
+            """The dongle has taken the command, whichever topic told us so."""
+            if ack["received"]:
+                return
+            ack["received"] = True
+            ack["ok"] = True
+            ack["detail"] = detail
+            loop.call_soon_threadsafe(ack_event.set)
+
         @callback
         def _on_response(msg):
             try:
                 data = json.loads(msg.payload)
             except (ValueError, TypeError):
                 return
-            if data.get("id") != request_id or data.get("cmd") != "ota":
+            if data.get("cmd") != "ota":
+                return
+            # Match our request id when the dongle echoes one; an OTA reply
+            # without an id is still ours (we only ever have one in flight).
+            msg_id = data.get("id")
+            if msg_id is not None and msg_id != request_id:
+                return
+            if ack["received"]:
                 return
             ack["received"] = True
             ack["ok"] = data.get("status") == "ok"
@@ -282,6 +329,10 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
             msg_id = data.get("id")
             if msg_id is not None and msg_id != request_id:
                 return
+            # Progress means the dongle took the command, even if its ACK on
+            # the response topic was missed (it reboots straight after sending
+            # it, and the subscription can race the publish).
+            _mark_acknowledged("progress received")
             pct = data.get("progress")
             if isinstance(pct, (int, float)) and 0 <= pct <= 100:
                 self._attr_progress = int(pct)
@@ -293,6 +344,8 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
                 data = json.loads(msg.payload)
             except (ValueError, TypeError):
                 return
+            # A result implies the command was accepted; never fail on a missed ACK.
+            _mark_acknowledged("result received")
             result["status"] = data.get("status")
             result["detail"] = data.get("detail", "")
             loop.call_soon_threadsafe(result_event.set)
@@ -313,6 +366,9 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         self.coordinator.set_ota_in_progress(self._dongle_id, True)
 
         try:
+            # Let the three subscriptions settle at the broker before the
+            # command goes out; the dongle ACKs and reboots within a second.
+            await asyncio.sleep(0.5)
             await mqtt.async_publish(
                 self.hass, f"{self._dongle_id}/admin", json.dumps(command), qos=1
             )
@@ -401,8 +457,8 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
     
     async def _async_check_for_update(self) -> None:
         """Check for firmware updates."""
-        LOGGER.debug(f"Checking for firmware updates for {self._dongle_id}")
-        await _fetch_server_versions(self.coordinator)
+        LOGGER.debug(f"Checking for firmware updates for {self._dongle_id} ({self._chip})")
+        await _fetch_server_versions(self.coordinator, [self._chip])
         self._last_check = self.hass.loop.time()
         self.async_write_ha_state()
     
@@ -416,8 +472,8 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
     
     @property
     def entity_registry_enabled_default(self) -> bool:
-        """Return if the entity should be enabled when first added to the entity registry."""
-        return True
+        """Stable is always on; beta only when the user asked to see beta updates."""
+        return self._track != "beta" or bool(self._show_beta)
     
     async def _refresh_firmware_version(self) -> None:
         """Refresh the firmware version after an update."""

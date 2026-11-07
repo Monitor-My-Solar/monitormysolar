@@ -1,5 +1,7 @@
 import logging
 import asyncio
+import json
+from homeassistant.components import mqtt
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
@@ -48,9 +50,14 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                     continue
 
                 try:
-                    entities.append(
-                        InverterSwitch(switch, hass, entry, bank_name, dongle_id)
-                    )
+                    if switch.get("quickcharge_start"):
+                        entities.append(
+                            QuickChargeStartSwitch(switch, hass, entry, bank_name, dongle_id)
+                        )
+                    else:
+                        entities.append(
+                            InverterSwitch(switch, hass, entry, bank_name, dongle_id)
+                        )
                 except Exception as e:
                     _LOGGER.error(f"Error setting up switch {switch} for dongle {dongle_id}: {e}")
                         
@@ -92,10 +99,14 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
         self.entity_info = entity_info
         self._name = entity_info["name"]
         self._unique_id = f"{entry.entry_id}_{dongle_id}_{entity_info['unique_id']}".lower()
-        self._state = False
+        self._state = None
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
+        # Name used for MQTT writes. Usually the unique_id, but some registers
+        # go by a different name in the dongle's write table than in its hold
+        # payloads (e.g. hold key ubQuickChgStartEn is written as "QuickCharge").
+        self._write_setting_name = entity_info.get("mqtt_setting_name", entity_info["unique_id"])
         self._bank_name = bank_name
         self.entity_id = self.coordinator.build_entity_id("switch", self._dongle_id, self._entity_type)
         self.hass = hass
@@ -151,7 +162,7 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
             self.throttled_async_write_ha_state()
             _LOGGER.info(f"Setting Switch on value for {self.entity_id}")
             success = await mqtt_handler.send_update(
-                self._dongle_id, self.entity_info["unique_id"], 1, self
+                self._dongle_id, self._write_setting_name, 1, self
             )
             if not success:
                 self.revert_state()
@@ -173,7 +184,7 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
             self.throttled_async_write_ha_state()  # Update HA state immediately
             _LOGGER.info(f"Setting Switch off value for {self.entity_id}")
             success = await mqtt_handler.send_update(
-                self._dongle_id, self.entity_info["unique_id"], 0, self
+                self._dongle_id, self._write_setting_name, 0, self
             )
             if not success:
                 self.revert_state()
@@ -195,8 +206,8 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 # CRITICAL: setting/updated payloads ship value as a STRING
                 # ("0" / "1"), and bool("0") in Python is True because any
@@ -222,6 +233,48 @@ class InverterSwitch(MonitorMySolarEntity, SwitchEntity):
                 # Schedule state update on the main thread
                 self.hass.loop.call_soon_threadsafe(self.throttled_async_write_ha_state)
 
+class QuickChargeStartSwitch(InverterSwitch):
+    """Quick Charge Start with the firmware's enable-then-duration ordering.
+
+    The inverter only accepts a duration write WHILE the boost is enabled —
+    writing the time first is rejected as illegal data value. So after a
+    confirmed turn-on, push the user's chosen Quick Charge Duration; the
+    dongle's /setting/updated echo then re-times the countdown.
+    """
+
+    async def async_turn_on(self, **kwargs):
+        await super().async_turn_on(**kwargs)
+        if not self._state:
+            return  # enable write failed and was reverted
+        minutes = self._selected_duration_minutes()
+        # Give the inverter a beat to latch the enable bit before the time write.
+        await asyncio.sleep(1.5)
+        payload = json.dumps(
+            {"setting": "QuickChgTime", "value": minutes, "from": "homeassistant"}
+        )
+        _LOGGER.info(
+            f"Quick charge enabled on {self._dongle_id} — setting duration {minutes} min"
+        )
+        # Direct publish (fire-and-forget): the handler's 1s rate limit would
+        # drop a second send_update this close to the enable; the echo confirms.
+        await mqtt.async_publish(self.hass, f"{self._dongle_id}/update", payload)
+
+    def _selected_duration_minutes(self) -> int:
+        """The duration to run: user's picked preference, else device value, else 30."""
+        pref = self.coordinator.quick_charge_duration_pref.get(self._dongle_id)
+        candidates = [pref]
+        select_key = self.coordinator.build_entity_id("select", self._dongle_id, "quickchgtime")
+        candidates.append(self.coordinator.entities.get(select_key))
+        for raw in candidates:
+            try:
+                minutes = int(float(str(raw)))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= minutes <= 1440:
+                return minutes
+        return 30
+
+
 class CombinedSwitch(MonitorMySolarEntity, SwitchEntity):
     """Switch that controls multiple dongles at once."""
     
@@ -231,7 +284,7 @@ class CombinedSwitch(MonitorMySolarEntity, SwitchEntity):
         self.entity_info = entity_info
         self._name = entity_info["name"]
         self._unique_id = f"{entry.entry_id}_{entity_info['unique_id']}".lower()
-        self._state = False
+        self._state = None
         self._dongle_ids = dongle_ids
         self._virtual_id = "combined_parallel"
         self._formatted_dongle_id = "combined"

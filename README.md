@@ -208,7 +208,7 @@ Access via **Configure** button on the integration:
 - Use input box for numbers (instead of sliders)
 - Enable device grouping (organise entities into sub-devices)
 - Add the dongle ID to entity names (single-dongle installs)
-- Use Beta Firmware track
+- Show beta firmware updates (adds a **Firmware Beta** update entity)
 
 <p align="center">
   <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/updateSettings.png?raw=true" target="_blank">
@@ -235,7 +235,7 @@ Firmware updates run **over MQTT** (firmware 4.3.0+ required), no dongle IP need
 2. View available updates and release notes
 3. Click **Install** to update
 4. Monitor real-time progress; the dongle reboots during the update
-5. Optional: choose the prod or beta track via the **Use Beta Firmware** setting
+5. Optional: turn on **Show beta firmware updates** to get a second **Firmware Beta** entity that follows the beta track (it is registered disabled otherwise; enable it from the entity settings if you want it without the option)
 
 <p align="center">
   <a href="https://github.com/Monitor-My-Solar/monitormysolar/blob/main/images/firmware.png?raw=true" target="_blank">

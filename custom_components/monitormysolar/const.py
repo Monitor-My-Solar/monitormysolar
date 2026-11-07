@@ -106,6 +106,80 @@ def firmware_group(code: str) -> str:
     return "legacy"
 
 
+def version_tuple(version):
+    """Parse a dotted version into an int tuple ('4.3.2.2C6' -> (4, 3, 2, 2)).
+
+    Trailing non-digits per segment (chip suffixes like C6/S3) are stripped.
+    Returns None if any segment has no leading digits or the string is empty.
+    """
+    if not version:
+        return None
+    nums = []
+    for part in str(version).strip().split("."):
+        digits = ""
+        for ch in part:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if not digits:
+            return None
+        nums.append(int(digits))
+    return tuple(nums) or None
+
+
+def dongle_chip_key(chip_type: str | None, version: str | None = None) -> str:
+    """Resolve which update-server chip channel a dongle belongs to: "s3" or "c6".
+
+    The dongle's /status payload names its chip ("ESP32-S3" / "ESP32-C6");
+    the firmware version carries the same designator as a suffix ("4.5.0.87S3").
+    Units too old to report either are ESP32-C6, which is also what the
+    legacy update endpoint serves.
+    """
+    for candidate in (chip_type, version):
+        if not candidate:
+            continue
+        text = str(candidate).upper()
+        if "S3" in text:
+            return "s3"
+        if "C6" in text:
+            return "c6"
+    return "c6"
+
+
+def fw_version_is_newer(latest: str, installed: str) -> bool:
+    """Whether `latest` is strictly newer than `installed` (numeric compare).
+
+    Shorter tuples are zero-padded, so 4.3.2 == 4.3.2.0. Unparseable versions
+    fall back to plain inequality (any difference counts as an update) so a
+    malformed server version can hide behind equality but never crash.
+    """
+    latest_t = version_tuple(latest)
+    installed_t = version_tuple(installed)
+    if latest_t is None or installed_t is None:
+        return latest != installed
+    width = max(len(latest_t), len(installed_t))
+    return (latest_t + (0,) * (width - len(latest_t))) > (
+        installed_t + (0,) * (width - len(installed_t))
+    )
+
+
+def fw_code_get(mapping: dict, code: str, default=None):
+    """Case-insensitive lookup of a firmware code in a code-keyed table.
+
+    The tables mix casings ("FAAA" vs "ceaa") and dongles report mixed case
+    too ("Ceaa"), so exact-match dict access on a firmware code is never safe.
+    Every code-keyed lookup must go through here.
+    """
+    if not code or not mapping:
+        return default
+    wanted = code.strip().lower()
+    for key, value in mapping.items():
+        if key.lower() == wanted:
+            return value
+    return default
+
+
 FIRMWARE_CODES = {
     "a_3_6k_Hybrid": {
         "Device_Type": "A Standard model",
@@ -588,6 +662,11 @@ ENTITIES = {
                     {"name": "FW Version", "type": "sensor", "unique_id": "FWVer", "state_class": "text", "source": "holdbank1", "device_group": "Inverter"},
 
                 ],
+                "quickcharge": [
+                    # Locally-computed countdown for an active quick charge (the
+                    # inverter reports no remaining time; see coordinator.quick_charge).
+                    {"name": "Quick Charge Time Remaining", "type": "sensor", "unique_id": "quick_charge_time_remaining", "unit_of_measurement": UnitOfTime.MINUTES, "device_class": SensorDeviceClass.DURATION, "sensor_class": "quickcharge", "allowed_groups": ["GEN", "threephase", "offgrid"], "device_group": "Controls"},
+                ],
             },
             "switch": {
                 "holdbank1": [
@@ -639,6 +718,21 @@ ENTITIES = {
                     {"name": "RSD Disable", "type": "switch", "unique_id": "ubRSDDisable", "device_group": "controls", "allowed_groups": ["GEN"] },
                     {"name": "Grid Peak Shaving Enable", "type": "switch", "unique_id": "ubGridPeakShaving", "device_group": "controls", "allowed_groups": ["GEN", "offgrid"] },
                     {"name": "Gen Peak Shaving Enable", "type": "switch", "unique_id": "ubGenPeakShaving", "device_group": "controls", "allowed_groups": ["GEN", "offgrid"] },
+                ],
+                "holdbank6": [
+                    # Firmware ordering rule: the duration is only writable
+                    # WHILE the boost is enabled — so this switch enables
+                    # first, then pushes the chosen Quick Charge Duration.
+                    # The inverter clears the bit itself when the boost ends.
+                    # unique_id matches the hold payload key (state sync); the
+                    # dongle's WRITE table names this bit "QuickCharge" (same as
+                    # its /setting/updated echo) — verified live 2026-08-22:
+                    # writes to "ubQuickChgStartEn" get no /response, writes to
+                    # "QuickCharge" succeed.
+                    {"name": "Quick Charge Start", "type": "switch", "unique_id": "ubQuickChgStartEn", "mqtt_setting_name": "QuickCharge", "quickcharge_start": True, "source": "holdbank6", "allowed_groups": ["GEN", "threephase", "offgrid"], "device_group": "Controls"},
+                    # GEN3 ciaa only: the inverter's grid-CT-connected toggle; the dongle
+                    # read-modify-writes the underlying setting so its other bits are kept.
+                    {"name": "Grid CT Connection", "type": "switch", "unique_id": "GridCTConnect", "source": "holdbank6", "allowed_firmware_codes": ["ciaa"], "device_group": "Controls"},
                 ]
             },
             "binary_sensor": {  # This should be the only place defining these sensors
@@ -653,6 +747,11 @@ ENTITIES = {
                     "unique_id": "battery_discharge_status",
                     "parent_sensor": "batstatus_inv",
                     "status_type": "discharge", "source": "battery", "sensor_class": "battery", "device_group": "Battery"}
+                ],
+                "quickcharge": [
+                    # Mirrors the quick-charge enable (ubQuickChgStartEn / echo name "QuickCharge").
+                    # Gen-class only: GEN (H/F/E/AC) + threephase (G, the 12K) + offgrid (C).
+                    {"name": "Quick Charge", "type": "binary_sensor", "unique_id": "quick_charge_active", "sensor_class": "quickcharge", "allowed_groups": ["GEN", "threephase", "offgrid"], "device_group": "Controls"},
                 ]
             },
             "number": {
@@ -690,14 +789,14 @@ ENTITIES = {
                     {"name": "SmartLoad3 End SOC", "type": "number", "unique_id": "SmartLoad3_EndSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "SmartLoad4 Start SOC", "type": "number", "unique_id": "SmartLoad4_StartSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "SmartLoad4 End SOC", "type": "number", "unique_id": "SmartLoad4_EndSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad1 Start Voltage", "type": "number", "unique_id": "SmartLoad1_StartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad1 End Voltage", "type": "number", "unique_id": "SmartLoad1_EndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad2 Start Voltage", "type": "number", "unique_id": "SmartLoad2_StartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad2 End Voltage", "type": "number", "unique_id": "SmartLoad2_EndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad3 Start Voltage", "type": "number", "unique_id": "SmartLoad3_StartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad3 End Voltage", "type": "number", "unique_id": "SmartLoad3_EndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad4 Start Voltage", "type": "number", "unique_id": "SmartLoad4_StartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad4 End Voltage", "type": "number", "unique_id": "SmartLoad4_EndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad1 Start Voltage", "type": "number", "unique_id": "SmartLoad1_StartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad1 End Voltage", "type": "number", "unique_id": "SmartLoad1_EndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad2 Start Voltage", "type": "number", "unique_id": "SmartLoad2_StartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad2 End Voltage", "type": "number", "unique_id": "SmartLoad2_EndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad3 Start Voltage", "type": "number", "unique_id": "SmartLoad3_StartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad3 End Voltage", "type": "number", "unique_id": "SmartLoad3_EndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad4 Start Voltage", "type": "number", "unique_id": "SmartLoad4_StartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad4 End Voltage", "type": "number", "unique_id": "SmartLoad4_EndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "ACcouple1 Start SOC", "type": "number", "unique_id": "ACcouple1_StartSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "ACcouple1 End SOC", "type": "number", "unique_id": "ACcouple1_EndSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "ACcouple2 Start SOC", "type": "number", "unique_id": "ACcouple2_StartSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
@@ -706,14 +805,14 @@ ENTITIES = {
                     {"name": "ACcouple3 End SOC", "type": "number", "unique_id": "ACcouple3_EndSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "ACcouple4 Start SOC", "type": "number", "unique_id": "ACcouple4_StartSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "ACcouple4 End SOC", "type": "number", "unique_id": "ACcouple4_EndSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "ACcouple1 Start Voltage", "type": "number", "unique_id": "ACcouple1_StartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "ACcouple1 End Voltage", "type": "number", "unique_id": "ACcouple1_EndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "ACcouple2 Start Voltage", "type": "number", "unique_id": "ACcouple2_StartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "ACcouple2 End Voltage", "type": "number", "unique_id": "ACcouple2_EndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "ACcouple3 Start Voltage", "type": "number", "unique_id": "ACcouple3_StartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "ACcouple3 End Voltage", "type": "number", "unique_id": "ACcouple3_EndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "ACcouple4 Start Voltage", "type": "number", "unique_id": "ACcouple4_StartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "ACcouple4 End Voltage", "type": "number", "unique_id": "ACcouple4_EndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "ACcouple1 Start Voltage", "type": "number", "unique_id": "ACcouple1_StartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "ACcouple1 End Voltage", "type": "number", "unique_id": "ACcouple1_EndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "ACcouple2 Start Voltage", "type": "number", "unique_id": "ACcouple2_StartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "ACcouple2 End Voltage", "type": "number", "unique_id": "ACcouple2_EndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "ACcouple3 Start Voltage", "type": "number", "unique_id": "ACcouple3_StartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "ACcouple3 End Voltage", "type": "number", "unique_id": "ACcouple3_EndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "ACcouple4 Start Voltage", "type": "number", "unique_id": "ACcouple4_StartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "ACcouple4 End Voltage", "type": "number", "unique_id": "ACcouple4_EndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "SmartLoad1 Shedding Start PV Power", "type": "number", "unique_id": "SmartLoad1_SheddingStartPv_Power", "unit": "W", "min": 0, "max": 10000, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "SmartLoad2 Shedding Start PV Power", "type": "number", "unique_id": "SmartLoad2_SheddingStartPv_Power", "unit": "W", "min": 0, "max": 10000, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "SmartLoad3 Shedding Start PV Power", "type": "number", "unique_id": "SmartLoad3_SheddingStartPv_Power", "unit": "W", "min": 0, "max": 10000, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
@@ -726,14 +825,14 @@ ENTITIES = {
                     {"name": "SmartLoad3 Shedding End SOC", "type": "number", "unique_id": "SmartLoad3_SheddingEndSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "SmartLoad4 Shedding Start SOC", "type": "number", "unique_id": "SmartLoad4_SheddingStartSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "SmartLoad4 Shedding End SOC", "type": "number", "unique_id": "SmartLoad4_SheddingEndSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad1 Shedding Start Voltage", "type": "number", "unique_id": "SmartLoad1_SheddingStartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad1 Shedding End Voltage", "type": "number", "unique_id": "SmartLoad1_SheddingEndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad2 Shedding Start Voltage", "type": "number", "unique_id": "SmartLoad2_SheddingStartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad2 Shedding End Voltage", "type": "number", "unique_id": "SmartLoad2_SheddingEndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad3 Shedding Start Voltage", "type": "number", "unique_id": "SmartLoad3_SheddingStartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad3 Shedding End Voltage", "type": "number", "unique_id": "SmartLoad3_SheddingEndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad4 Shedding Start Voltage", "type": "number", "unique_id": "SmartLoad4_SheddingStartVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
-                    {"name": "SmartLoad4 Shedding End Voltage", "type": "number", "unique_id": "SmartLoad4_SheddingEndVolt", "unit": "V", "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad1 Shedding Start Voltage", "type": "number", "unique_id": "SmartLoad1_SheddingStartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad1 Shedding End Voltage", "type": "number", "unique_id": "SmartLoad1_SheddingEndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad2 Shedding Start Voltage", "type": "number", "unique_id": "SmartLoad2_SheddingStartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad2 Shedding End Voltage", "type": "number", "unique_id": "SmartLoad2_SheddingEndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad3 Shedding Start Voltage", "type": "number", "unique_id": "SmartLoad3_SheddingStartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad3 Shedding End Voltage", "type": "number", "unique_id": "SmartLoad3_SheddingEndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad4 Shedding Start Voltage", "type": "number", "unique_id": "SmartLoad4_SheddingStartVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
+                    {"name": "SmartLoad4 Shedding End Voltage", "type": "number", "unique_id": "SmartLoad4_SheddingEndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 60, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "Flash 50/60Hz", "type": "number", "unique_id": "Flash_5060hz", "unit": "", "min": 0, "max": 1, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                     {"name": "NEC 120 Current Limit", "type": "number", "unique_id": "NEC_120CurrLimit", "unit": "A", "min": 0, "max": 200, "mode": "slider", "allowed_groups": ["midbox"], "source": "gridboss_holdbank2", "device_group": "GridBoss Controls"},
                 ],
@@ -745,22 +844,28 @@ ENTITIES = {
                     {"name": "Lead Acid Discharge Rate (A)", "type": "number", "unique_id": "DischgRate", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
                     {"name": "Battery Discharge Start Point (W)", "type": "number", "unique_id": "PtoUserStartdischg", "unit": "W", "min": 1, "max": 500 , "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
                     {"name": "Battery Charge Start Point (W)", "type": "number", "unique_id": "PtoUserStartchg", "unit": "W", "min": -50, "max": 1, "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
-                    {"name": "CT Offset (W)", "type": "number", "unique_id": "wCT_PowerOffset", "unit": "W", "min": -1000, "max": 1000 , "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
+                    # CT offset range differs by model: small hybrids / ACS / off-grid
+                    # cap at +/-199 W, large hybrids at +/-1000 W (mirrors MaxBackFlow's
+                    # group split below).
+                    {"name": "CT Offset (W)", "type": "number", "unique_id": "wCT_PowerOffset", "unit": "W", "min": -199, "max": 199, "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "allowed_groups": ["legacy", "ac_coupled", "offgrid"], "device_group": "Controls"},
+                    {"name": "CT Offset (W)", "type": "number", "unique_id": "wCT_PowerOffset", "unit": "W", "min": -1000, "max": 1000, "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "allowed_groups": ["GEN", "threephase"], "device_group": "Controls"},
                     {"name": "Export Power (%)", "type": "number", "unique_id": "MaxBackFlow", "unit": "W", "min": 0, "max": 200 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["legacy"], "device_group": "Controls"},
                     {"name": "Export Power (kW)", "type": "number", "unique_id": "MaxBackFlow", "unit": "kW", "min": 0, "max": 24 , "step": 0.1, "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"], "device_group": "Controls", "display_scale": 10},
                     {"name": "On-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "EOD", "unit": "%", "min": 0, "max": 90, "mode": "slider", "source": "holdbank3", "device_group": "Controls"},
-                    {"name": "Off-grid Battery Voltage Cut off", "type": "number", "unique_id": "CutVoltForDischg", "unit": "V", "min": 40, "max": 56, "mode": "slider", "source": "holdbank3", "device_group": "Controls"},
-                    {"name": "Charge Current DC(A)", "type": "number", "unique_id": "ChargeCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
+                    {"name": "Off-grid Battery Voltage Cut off", "type": "number", "unique_id": "CutVoltForDischg", "unit": "V", "step": 0.1, "min": 40, "max": 56, "mode": "slider", "source": "holdbank3", "device_group": "Controls"},
+                    # GEN3 "ciaa": the charge-current limit is the ACChargeBatCurrent setting,
+                    # not ChargeCurr — ChargeCurr is hidden there and ACChargeBatCurrent surfaced.
+                    {"name": "Charge Current DC(A)", "type": "number", "unique_id": "ChargeCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "excluded_firmware_codes": ["ciaa"], "device_group": "Controls"},
                     {"name": "Discharge Current DC(A) Lead Acid", "type": "number", "unique_id": "DischgCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
                 ],
                 "holdbank4": [
                     {"name": "Off-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "SOCLowLimitForESPSDischg", "unit": "%", "min": 0, "max": 90, "mode": "slider", "source": "holdbank4", "device_group": "Controls"},
-                    {"name": "AC Charge Start (Voltage)", "type": "number", "unique_id": "ACChgStartVolt", "step": 0.1, "unit": "V", "min": 38.5, "max": 52, "mode": "slider", "source": "holdbank4", "mqtt_multiplier": 10, "device_group": "Controls"},
-                    {"name": "AC Charge End (Voltage)", "type": "number", "unique_id": "ACChgEndVolt", "step": 0.1, "unit": "V", "min": 48, "max": 59, "mode": "slider", "source": "holdbank4", "mqtt_multiplier": 10, "device_group": "Controls"},
+                    {"name": "AC Charge Start (Voltage)", "type": "number", "unique_id": "ACChgStartVolt", "step": 0.1, "unit": "V", "min": 38.5, "max": 52, "mode": "slider", "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "AC Charge End (Voltage)", "type": "number", "unique_id": "ACChgEndVolt", "step": 0.1, "unit": "V", "min": 48, "max": 59, "mode": "slider", "source": "holdbank4", "device_group": "Controls"},
                     {"name": "Max Grid Input Power", "type": "number", "unique_id": "MaxGridInputPower", "unit": "kW", "min": 0, "max": 24, "mode": "slider", "step": 0.1, "source": "holdbank4", "device_group": "Controls"},
                     {"name": "Generator Ratied Input Power", "type": "number", "unique_id": "GenRatePower", "unit": "kW", "min": 0, "max": 24, "mode": "slider", "step": 0.1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "device_group": "Controls"},
-                    {"name": "Generator Charge Start Voltage", "type": "number", "unique_id": "GenChgStartVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "step": 0.1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "mqtt_multiplier": 10, "device_group": "Controls"},
-                    {"name": "Generator Charge End Voltage", "type": "number", "unique_id": "GenChgEndVolt", "unit": "V", "min": 50, "max": 60, "mode": "slider", "step": 0.1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "mqtt_multiplier": 10, "device_group": "Controls"},
+                    {"name": "Generator Charge Start Voltage", "type": "number", "unique_id": "GenChgStartVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "step": 0.1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "Generator Charge End Voltage", "type": "number", "unique_id": "GenChgEndVolt", "unit": "V", "min": 50, "max": 60, "mode": "slider", "step": 0.1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "Generator Charge Start SOC", "type": "number", "unique_id": "GenChgStartSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "step": 1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "Generator Charge End SOC", "type": "number", "unique_id": "GenChgEndSOC", "unit": "%", "min": 0, "max": 100, "mode": "slider", "step": 1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "Max Generator Charge Battery Current", "type": "number", "unique_id": "MaxGenChgBatCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "HAAA": 195, "ccaa": 250, "ceaa": 250}, "mode": "slider", "step": 1, "allowed_groups": ["GEN", "offgrid"], "source": "holdbank4", "device_group": "Controls"},
@@ -768,25 +873,39 @@ ENTITIES = {
 
                 ],
                 "holdbank5": [
-                    {"name": "On Grid Battery Voltage Cut off", "type": "number", "unique_id": "OngridEOD_Voltage", "unit": "V", "min": 40, "max": 56, "mode": "slider", "mqtt_multiplier": 10, "device_group": "Controls"}
+                    {"name": "On Grid Battery Voltage Cut off", "type": "number", "unique_id": "OngridEOD_Voltage", "unit": "V", "step": 0.1, "min": 40, "max": 56, "mode": "slider", "device_group": "Controls"},
+                    # Raw amps. On GEN3 "ciaa" this IS the charge-current limit the
+                    # inverter honours (Locks Road 2026-11-06).
+                    {"name": "Charge Current (A)", "type": "number", "unique_id": "ACChargeBatCurrent", "unit": "A", "min": 0, "max": 250, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank5", "allowed_firmware_codes": ["ciaa"], "device_group": "Controls"},
                 ],
                 "holdbank6": [
                     {"name": "System Charge SOC Limit %", "type": "number", "unique_id": "BatStopChgSOC", "unit": "%", "min": 0, "max": 101, "mode": "slider", "allowed_groups": ["GEN", "offgrid"], "source": "holdbank6", "device_group": "Controls"},
-                    {"name": "System Charge Volt limit (v)", "type": "number", "unique_id": "BatStopChgVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "allowed_groups": ["GEN", "offgrid"], "source": "holdbank6", "device_group": "Controls"},
-                    {"name": "Stop Dischage (Voltage)", "type": "number", "unique_id": "ForceDichgEndVolt", "unit": "V", "min": 40, "max": 56, "mode": "slider", "source": "holdbank6", "mqtt_multiplier": 10, "device_group": "Controls"},
+                    {"name": "System Charge Volt limit (v)", "type": "number", "unique_id": "BatStopChgVolt", "unit": "V", "step": 0.1, "min": 40, "max": 56, "mode": "slider", "allowed_groups": ["GEN", "offgrid"], "source": "holdbank6", "device_group": "Controls"},
+                    {"name": "Stop Dischage (Voltage)", "type": "number", "unique_id": "ForceDichgEndVolt", "unit": "V", "step": 0.1, "min": 40, "max": 56, "mode": "slider", "source": "holdbank6", "device_group": "Controls"},
                 ],
             },
             "select": {
+                "holdbank1": [
+                    # GEN3 ciaa offers Empty / Parallel / Independent only; the value also
+                    # carries a read-only field, hence value_mask.
+                    {"name": "PV Input Mode", "type": "select", "unique_id": "PVInputModel", "options": ["Empty", "Parallel MPPT Inputs", "Independent MPPT Inputs"], "option_values": [0, 3, 4], "value_mask": 255, "source": "holdbank1", "allowed_firmware_codes": ["ciaa"], "device_group": "Controls"},
+                ],
                 "holdbank3": [
                     {"name": "CT Sample Ratio", "type": "select", "unique_id": "CTSampleRatio", "options": ["1:1000", "1:3000"], "source": "holdbank3", "device_group": "Controls"},
+                    # PV CT reuse — same device field, but the option set (and its
+                    # meaning) differs by family: hybrids/gen read it as CT reuse,
+                    # ACS reads it as what the PV CT measures. Same split pattern
+                    # as "Charge Based on:".
+                    {"name": "PV CT Reuse", "type": "select", "unique_id": "PVCTSampleType", "options": ["None (no reuse)", "Specific load", "AC couple power"], "source": "holdbank3", "allowed_groups": ["GEN", "threephase"], "device_group": "Controls"},
+                    {"name": "PV CT Function", "type": "select", "unique_id": "PVCTSampleType", "options": ["PV power", "Specific load"], "source": "holdbank3", "allowed_groups": ["ac_coupled"], "device_group": "Controls"},
                     {"name": "Clear Parallel Alarm", "type": "select", "unique_id": "ClearParallelAlarm", "options": ["N/A", "Clear" ], "source": "holdbank3", "device_group": "Controls"},
 
 
                 ],
                 "holdbank4": [
                     {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"], "allowed_groups": ["offgrid"], "source": "holdbank4", "device_group": "Controls"},
-                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"], "allowed_groups": ["GEN"], "source": "holdbank4", "device_group": "Controls"},
-                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["Off", "Time According To", "SOC/Volt According To"], "allowed_groups": ["legacy", "ac_coupled"], "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"], "allowed_groups": ["GEN", "threephase"], "source": "holdbank4", "device_group": "Controls"},
+                    {"name": "Charge Based on:", "type": "select", "unique_id": "ACChargeType", "options": ["Time According To", "SOC/Volt According To"], "allowed_groups": ["legacy", "ac_coupled"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "00:00 -- 00:30", "type": "select", "unique_id": "Time0", "options": ["Does Not Operate", "AC Charge", "PV Charge", "Discharge"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "00:30 -- 01:00", "type": "select", "unique_id": "Time1", "options": ["Does Not Operate", "AC Charge", "PV Charge", "Discharge"], "source": "holdbank4", "device_group": "Controls"},
                     {"name": "01:00 -- 01:30", "type": "select", "unique_id": "Time2", "options": ["Does Not Operate", "AC Charge", "PV Charge", "Discharge"], "source": "holdbank4", "device_group": "Controls"},
@@ -843,7 +962,14 @@ ENTITIES = {
                     {"name": "Discharge Control", "type": "select", "unique_id": "ubBatDischgControl", "options": ["SOC", "Voltage"], "source": "holdbank5", "device_group": "Controls"},
                 ],
                 "holdbank6": [
-                    {"name": "Quick Charge Duration", "type": "select", "unique_id": "quickchgtime", "options": ["0", "15", "30", "45", "60", "90", "120"], "additional_payload": {"key": "ubquickchgstarten","value_map": {"0": "0","default": "1"}}, "source": "holdbank6", "sensor_class": "holdbank6", "device_group": "Controls"},
+                    # No "0" option and no enable piggyback (legacy design): newer
+                    # firmware rejects a 0 duration write with Illegal Data Value.
+                    # Start/stop lives on the "Quick Charge Start" switch.
+                    # Duration in minutes; state syncs from the device's own
+                    # reports. Writing requires dongle firmware that accepts the
+                    # QuickChgTime setting name (older firmware ignores it and
+                    # the select reverts).
+                    {"name": "Quick Charge Duration", "type": "select", "unique_id": "quickchgtime", "options": ["15", "30", "45", "60", "90", "120"], "mqtt_setting_name": "QuickChgTime", "source": "holdbank6", "sensor_class": "holdbank6", "allowed_groups": ["GEN", "threephase", "offgrid"], "device_group": "Controls"},
 
                 ],
                 "gridboss_holdbank1": [

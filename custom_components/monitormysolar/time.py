@@ -161,8 +161,8 @@ class InverterTime(MonitorMySolarEntity, TimeEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 # If this is a user-initiated change, don't override with stale coordinator data
                 if self._user_initiated_change:

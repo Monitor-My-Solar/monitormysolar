@@ -20,7 +20,16 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
         # self.coordinator = coordinator
         """Initialize light."""
         super().__init__(coordinator)
-        
+
+        # Freeze the coordinator-data key at construction. The coordinator keys
+        # its data dict by the entity_id computed via build_entity_id(), but the
+        # live self.entity_id can diverge from that afterwards: the registry
+        # appends _2 on a collision (e.g. two unprefixed single-dongle entries)
+        # and users can rename entity_ids. Data lookups must always use this
+        # frozen key — looking up by self.entity_id breaks the entity forever
+        # after any rename.
+        self._data_key = getattr(self, "entity_id", None)
+
         # Dynamically set has_entity_name based on number of dongles
         # If single dongle, don't use entity name (cleaner display)
         # If multiple dongles, use entity name for clarity
@@ -33,6 +42,17 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
         # Initialize throttling variables
         self._last_state_change = 0
         self._update_interval = None
+
+    @property
+    def data_key(self) -> str:
+        """Key into coordinator.entities for this entity's data.
+
+        The construction-time computed entity_id — NOT the live self.entity_id,
+        which the registry may have renamed (collision _2 suffix, user rename).
+        Falls back to the live id for entity classes that never set entity_id
+        before base __init__ (they keep today's behaviour).
+        """
+        return self._data_key or self.entity_id
 
     @property
     def available(self) -> bool:
@@ -114,21 +134,23 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
         # Extract information from firmware code
         if fw_code and len(fw_code) == 4:
             # Import constants
-            from .const import FIRMWARE_CODES, VALID_FIRMWARE_CODES
+            from .const import FIRMWARE_CODES, VALID_FIRMWARE_CODES, fw_code_get
 
-            # First character is device type code
-            device_type_code = fw_code[0]
+            # Dongles report codes in mixed case ("Ceaa", "FAAA") and the
+            # per-character tables below are keyed uppercase — normalize before
+            # every lookup.
+            device_type_code = fw_code[0].upper()
             # Second character is derived device type
-            derived_type_code = fw_code[1]
+            derived_type_code = fw_code[1].upper()
             # Third character is ODM code (brand)
-            odm_code = fw_code[2]
+            odm_code = fw_code[2].upper()
             # Fourth character is feature code (country)
-            feature_code = fw_code[3]
+            feature_code = fw_code[3].upper()
 
             # Find the corresponding firmware code category
             model_key = None
             for key in FIRMWARE_CODES:
-                if key.startswith(device_type_code.lower()) or key.startswith(device_type_code):
+                if key.upper().startswith(device_type_code):
                     model_key = key
                     break
 
@@ -163,9 +185,13 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
                 if feature and feature != "Others" and feature != "Standard Model":
                     model_name += f" ({feature})"
 
-                # Use lookup for friendly name if available
-                if fw_code in VALID_FIRMWARE_CODES:
-                    model_name = VALID_FIRMWARE_CODES[fw_code]
+            # The lookup table is authoritative for the model name; the
+            # character-derived name above is only a fallback for codes the
+            # table doesn't know yet. Applied outside the model_key branch so
+            # a table hit never depends on the character parsing working.
+            friendly_name = fw_code_get(VALID_FIRMWARE_CODES, fw_code)
+            if friendly_name:
+                model_name = friendly_name
 
         # Set manufacturer - this is a standard field in Home Assistant device registry
         device_info["manufacturer"] = brand_name
@@ -200,8 +226,8 @@ class MonitorMySolarEntity(CoordinatorEntity[MonitorMySolar]):
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
         # This method is called by your DataUpdateCoordinator when a successful update runs.
-        if self.entity_id in self.coordinator.entities:
-            self._state = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            self._state = self.coordinator.entities[self.data_key]
             self.throttled_async_write_ha_state()
         # No stored value yet (e.g. seeded at add-time before any data arrived) —
         # nothing to write. Avoid the spurious "key not found" warning + state write.

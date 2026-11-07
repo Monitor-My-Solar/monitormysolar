@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 def _run(coro):
     import asyncio
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def _prep(coordinator, monkeypatch, entity_type="number"):

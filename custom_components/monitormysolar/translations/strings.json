@@ -135,6 +135,9 @@
     },
     "abort": {
       "no_restorable_entities": "There are no deleted or disabled entities to restore."
+    },
+    "error": {
+      "raw_ids_taken": "Another Monitor My Solar entry already uses the clean (no dongle ID) entity names. Only one entry can use them - keep the dongle ID in entity names for this one."
     }
   }
 }

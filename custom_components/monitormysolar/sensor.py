@@ -16,6 +16,7 @@ from homeassistant.const import (
     UnitOfFrequency,
     UnitOfPower,
     UnitOfTemperature,
+    UnitOfTime,
     STATE_UNKNOWN,
     EntityCategory,
 )
@@ -29,8 +30,10 @@ from homeassistant.core import (
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
+    async_track_time_interval,
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, ENTITIES, FIRMWARE_CODES, LOGGER, STATUS_DIAGNOSTIC_SENSORS
 from .coordinator import MonitorMySolarEntry
@@ -123,6 +126,10 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
                         entities.append(
                             TemperatureSensor(sensor, hass, entry, bank_name, dongle_id)
                         )
+                    elif sensor_class_key == "quickcharge":
+                        entities.append(
+                            QuickChargeRemainingSensor(sensor, hass, entry, bank_name, dongle_id)
+                        )
                     else:
                         entities.append(
                             InverterSensor(sensor, hass, entry, bank_name, dongle_id)
@@ -182,6 +189,91 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
         battery_data = coordinator.get_battery_data(dongle_id)
         if battery_data and battery_data.get("batteries"):
             _create_battery_entities(hass, entry, async_add_entities, dongle_id, battery_data)
+
+    # JK cell health (JK BMS + active balancers): same dynamic pattern, keyed by MAC.
+    _setup_cell_health_entity_listener(hass, entry, async_add_entities)
+    for dongle_id in dongle_ids:
+        devices = coordinator.get_cell_health_data(dongle_id)
+        if devices:
+            _create_cell_health_entities(hass, entry, async_add_entities, dongle_id, devices)
+
+
+def _setup_cell_health_entity_listener(hass, entry, async_add_entities):
+    coordinator = entry.runtime_data
+
+    @callback
+    def _on_cell_health_received(event):
+        dongle_id = event.data.get("dongle_id")
+        if not dongle_id:
+            return
+        devices = coordinator.get_cell_health_data(dongle_id)
+        if devices:
+            _create_cell_health_entities(hass, entry, async_add_entities, dongle_id, devices)
+
+    entry.async_on_unload(
+        hass.bus.async_listen(f"{DOMAIN}_cellhealth_data_received", _on_cell_health_received)
+    )
+
+
+# Per-device sensors. Keys match cell_health.flatten_device(); per-cell
+# resistance / voltage sensors are added per reported cell.
+CELL_HEALTH_SENSOR_DEFS = [
+    {"key": "status", "name": "Status"},
+    {"key": "pack_voltage", "name": "Pack Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+    {"key": "avg_cell_voltage", "name": "Average Cell Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+    {"key": "cell_delta_mv", "name": "Cell Spread", "unit": "mV", "state_class": "measurement"},
+    {"key": "max_cell", "name": "Max Cell Number"},
+    {"key": "min_cell", "name": "Min Cell Number"},
+    {"key": "balancing", "name": "Balancing"},
+    {"key": "balance_current", "name": "Balance Current", "unit": "A", "device_class": "current", "state_class": "measurement"},
+    {"key": "runtime_s", "name": "Runtime", "unit": "s", "device_class": "duration", "state_class": "total_increasing"},
+    {"key": "faults", "name": "Faults"},
+    {"key": "model", "name": "Model"},
+    {"key": "sw", "name": "Firmware"},
+    {"key": "res_median_mohm", "name": "Resistance Median", "unit": "mΩ", "state_class": "measurement"},
+    {"key": "res_max_mohm", "name": "Resistance Max", "unit": "mΩ", "state_class": "measurement"},
+    # Cells above 1.5x the device median — "check that busbar or sense lead".
+    {"key": "res_flagged_count", "name": "Cells To Check", "state_class": "measurement", "attributes": ["res_flagged_cells"]},
+    {"key": "balancer_enabled", "name": "Balancer Switch"},
+    {"key": "balancer_start_voltage", "name": "Balancer Start Voltage", "unit": "V", "device_class": "voltage"},
+    {"key": "balancer_trigger_mv", "name": "Balancer Trigger Spread", "unit": "mV"},
+    {"key": "balancer_max_current", "name": "Balancer Max Current", "unit": "A", "device_class": "current"},
+    # yes while the spread is over the trigger but no cell has reached the start voltage.
+    {"key": "balancer_waiting", "name": "Balancer Waiting For Top Of Charge"},
+]
+
+
+def _create_cell_health_entities(hass, entry, async_add_entities, dongle_id, devices):
+    """One HA device per JK MAC (balancer or JK BMS) with the sensors above
+    plus per-cell resistance and voltage."""
+    from .cell_health import flatten_device, mac_slug
+
+    coordinator = entry.runtime_data
+    created = coordinator._cell_health_entities_created
+    entities = []
+    for mac, device in devices.items():
+        marker = f"{dongle_id}:{mac}"
+        if marker in created:
+            continue
+        flat = flatten_device(device)
+        defs = list(CELL_HEALTH_SENSOR_DEFS)
+        cell_count = len([k for k in flat if k.endswith("_resistance")])
+        for n in range(1, cell_count + 1):
+            defs.append({"key": f"cell_{n}_resistance", "name": f"Cell {n} Resistance", "unit": "mΩ", "state_class": "measurement"})
+        volt_count = len([k for k in flat if k.endswith("_voltage") and k.startswith("cell_")])
+        for n in range(1, volt_count + 1):
+            defs.append({"key": f"cell_{n}_voltage", "name": f"Cell {n} Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"})
+        device_entities = [
+            CellHealthSensor(hass, entry, dongle_id, mac, mac_slug(mac), device, sensor_def, flat.get(sensor_def["key"]))
+            for sensor_def in defs
+            if sensor_def["key"] in flat
+        ]
+        if device_entities:
+            created.add(marker)
+            entities.extend(device_entities)
+    if entities:
+        async_add_entities(entities)
+        LOGGER.info(f"Created {len(entities)} cell-health sensors for {dongle_id} ({len(devices)} JK device(s))")
 
 
 def _setup_battery_entity_listener(hass, entry, async_add_entities):
@@ -349,8 +441,8 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
         """Update sensor with latest data from coordinator."""
 
         # This method is called by your DataUpdateCoordinator when a successful update runs.
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 if self._sensor_type == "RunningTime" and isinstance(value, (float, int)):
                     # Convert seconds to HH:MM:SS format
@@ -369,7 +461,18 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
                     )
                 self.throttled_async_write_ha_state()
         else:
-            LOGGER.warning(f"entity {self.entity_id} key not found")
+            # A missing key is normal until this sensor's dongle has reported the
+            # field (change-data firmware may never send static fields outside a
+            # snapshot, and a quiet dongle in a multi-dongle entry has no data at
+            # all). Every coordinator push runs this for every data-less sensor,
+            # so a per-push WARNING floods the log and trips HA's
+            # "logging too frequently" guard. Log once per entity, at DEBUG.
+            if not getattr(self, "_missing_key_logged", False):
+                self._missing_key_logged = True
+                LOGGER.debug(
+                    "entity %s data key %s not found (logged once per entity)",
+                    self.entity_id, self.data_key,
+                )
 
     async def async_added_to_hass(self) -> None:
         """When entity is added to hass."""
@@ -385,7 +488,7 @@ class InverterSensor(MonitorMySolarEntity, SensorEntity):
                 self.async_write_ha_state()
                 
                 # Also reset in coordinator data
-                self.coordinator.entities[self.entity_id] = 0
+                self.coordinator.entities[self.data_key] = 0
             
             # Schedule reset at midnight (00:00:00)
             # For HourlyConsumption, also reset every hour
@@ -488,8 +591,8 @@ class StatusSensor(MonitorMySolarEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if isinstance(value, dict):
                 # Extract the 'uptime' for the sensor's state
                 self._state = value.get("uptime")
@@ -766,8 +869,8 @@ class CombinedSensor(MonitorMySolarEntity, SensorEntity):
         """Update sensor with latest data from coordinator."""
         LOGGER.warning(f"CombinedSensor id: {self.entity_id}")
         LOGGER.warning(f"sensor_values: {self._sensor_values}")
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
 
                 if self.entity_id in self._sensor_values:
@@ -925,8 +1028,8 @@ class FaultWarningSensor(MonitorMySolarEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            value_data = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value_data = self.coordinator.entities[self.data_key]
             #LOGGER.debug(f"Value data: {value_data}")
             if isinstance(value_data, dict):
                 self._value = value_data.get("value", 0)
@@ -1173,8 +1276,8 @@ class TemperatureSensor(MonitorMySolarEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 self._state = (
                     round(value, 2) if isinstance(value, (float, int)) else value
@@ -1662,10 +1765,177 @@ class BatteryDetailSensor(MonitorMySolarEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 self._state = (
                     round(value, 2) if isinstance(value, (float, int)) else value
                 )
                 self.throttled_async_write_ha_state()
+
+
+class CellHealthSensor(MonitorMySolarEntity, SensorEntity):
+    """One value of a JK device (balancer or JK BMS) from <id>/cellhealth."""
+
+    def __init__(self, hass, entry, dongle_id, mac, slug, device, sensor_def, initial_value):
+        self.coordinator = entry.runtime_data
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+        self._mac = mac
+        self._slug = slug
+        self._key = sensor_def["key"]
+        self._sensor_def = sensor_def
+        self._role = device.get("role") or "battery"
+        self._model = device.get("model") or ("JK balancer" if self._role == "balancer" else "JK BMS")
+        label = "Balancer" if self._role == "balancer" else "JK BMS"
+        self._name = f"{label} {mac[-5:]} {sensor_def['name']}"
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_cellhealth_{slug}_{self._key}".lower()
+        self._state = initial_value
+        self.entity_id = self.coordinator.build_entity_id("sensor", dongle_id, f"cellhealth_{slug}_{self._key}")
+        self.hass = hass
+        self._manufacturer = entry.data.get("inverter_brand")
+        super().__init__(self.coordinator)
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def unique_id(self):
+        return self._unique_id
+
+    @property
+    def state(self):
+        return self._state
+
+    @property
+    def state_class(self):
+        return self._sensor_def.get("state_class")
+
+    @property
+    def unit_of_measurement(self):
+        return self._sensor_def.get("unit")
+
+    @property
+    def device_class(self):
+        return self._sensor_def.get("device_class")
+
+    @property
+    def extra_state_attributes(self):
+        attrs = {"mac": self._mac, "role": self._role}
+        for key in self._sensor_def.get("attributes", []):
+            attrs[key] = self.coordinator.entities.get(
+                self.coordinator.build_entity_id("sensor", self._dongle_id, f"cellhealth_{self._slug}_{key}")
+            )
+        if self._key == "res_flagged_count" and self._state:
+            attrs["advice"] = "check that busbar or sense lead"
+        return attrs
+
+    @property
+    def device_info(self):
+        """One device per JK MAC, under the dongle. Balancers are NOT part of
+        the battery bank device."""
+        return {
+            "identifiers": {(DOMAIN, f"{self._dongle_id}_cellhealth_{self._slug}")},
+            "name": f"{self._dongle_id} - {'Balancer' if self._role == 'balancer' else 'JK BMS'} {self._mac}",
+            "manufacturer": "JiKong",
+            "model": self._model,
+            "via_device": (DOMAIN, self._dongle_id),
+        }
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
+            if value is not None:
+                self._state = round(value, 3) if isinstance(value, float) else value
+                self.throttled_async_write_ha_state()
+
+
+class QuickChargeRemainingSensor(MonitorMySolarEntity, SensorEntity):
+    """Minutes left on an active quick charge boost.
+
+    The inverter never reports remaining time; the coordinator stamps ends_at
+    locally when it sees the enable bit turn on (hold delta or /setting/updated
+    echo, whoever initiated the write). This entity just counts down against
+    that timestamp — 0 whenever no boost is running. A 30s local tick keeps the
+    countdown moving between MQTT messages.
+    """
+
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+
+    def __init__(self, sensor_info, hass, entry, bank_name, dongle_id):
+        self.coordinator = entry.runtime_data
+        self.sensor_info = sensor_info
+        self._name = sensor_info["name"]
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{sensor_info['unique_id']}".lower()
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+        self.entity_id = self.coordinator.build_entity_id("sensor", self._dongle_id, sensor_info["unique_id"])
+        self.hass = hass
+        self._manufacturer = entry.data.get("inverter_brand")
+        self._unsub_tick = None
+
+        super().__init__(self.coordinator)
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def unique_id(self):
+        return self._unique_id
+
+    @property
+    def device_info(self):
+        return self.get_device_info(self._dongle_id, self._manufacturer, self.sensor_info.get("device_group"))
+
+    def _quick_charge_state(self):
+        return self.coordinator.quick_charge.get(self._dongle_id)
+
+    @property
+    def native_value(self):
+        state = self._quick_charge_state()
+        if not state or not state.get("active"):
+            return 0
+        remaining = (state["ends_at"] - dt_util.utcnow()).total_seconds()
+        if remaining <= 0:
+            # ends_at passed but the inverter hasn't cleared the bit yet
+            # (or our estimate ran long) — pin at 0 until the off arrives.
+            return 0
+        return int((remaining + 59) // 60)  # ceil to whole minutes
+
+    @property
+    def extra_state_attributes(self):
+        state = self._quick_charge_state()
+        if not state or not state.get("active"):
+            return {}
+        return {
+            "started_at": state["started_at"].isoformat(),
+            "ends_at": state["ends_at"].isoformat(),
+            "duration_minutes": state["duration"],
+            "estimated": state.get("estimated", False),
+        }
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._unsub_tick = async_track_time_interval(
+            self.hass, self._tick, timedelta(seconds=30)
+        )
+
+    async def async_will_remove_from_hass(self):
+        if self._unsub_tick is not None:
+            self._unsub_tick()
+            self._unsub_tick = None
+        await super().async_will_remove_from_hass()
+
+    @callback
+    def _tick(self, now):
+        state = self._quick_charge_state()
+        if state and state.get("active"):
+            self.throttled_async_write_ha_state()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self.throttled_async_write_ha_state()

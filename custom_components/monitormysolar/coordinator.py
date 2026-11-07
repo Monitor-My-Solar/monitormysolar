@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import time
+from datetime import timedelta
 from typing import Any, cast, Set, List, Dict
 from propcache import cached_property
 
@@ -14,6 +15,7 @@ from homeassistant.helpers.event import (
     async_call_later,
 )
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 from .mqttHandeler import MQTTHandler
 
 from .const import (
@@ -21,7 +23,31 @@ from .const import (
     ENTITIES,
     LOGGER,
     PLATFORMS,
+    dongle_chip_key,
 )
+
+# "Charge Based on:" options that make the AC-charge voltage / SOC entities
+# apply. One list each, used by both the availability check and the reason
+# message so the two can never drift (that drift was the 4.0.6 bug).
+AC_CHARGE_TYPES_VOLTAGE = [
+    "According To Voltage",
+    "According To Time and Voltage",
+    "According To SOC/VOLT",
+    "According To Time and SOC/VOLT",
+    "SOC/Volt According To",
+]
+AC_CHARGE_TYPES_SOC = [
+    "According To SOC",
+    "According To Time and SOC",
+    "According To SOC/VOLT",
+    "According To Time and SOC/VOLT",
+    "SOC/Volt According To",
+]
+# Last-resort ACChargeType option list when no catalog select matches the
+# dongle's firmware group. This is an ORDERED index list (the device reports
+# 0 / 1), the legacy two-option firmware order, and is deliberately separate
+# from the gating lists above, which are membership sets, not indices.
+AC_CHARGE_TYPE_FALLBACK_OPTIONS = ["Time According To", "SOC/Volt According To"]
 
 # Forward reference type definition
 class MonitorMySolar(DataUpdateCoordinator[None]):
@@ -76,7 +102,12 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._mqtt_unsubscribe_callbacks: Dict[str, Any] = {}
         self._ignored_entity_suffixes: Set[str] = set()  # To track entities we've already logged about
         self._pending_dongles: List[str] = self._dongle_ids.copy()  # Track dongles still needing setup
-        self.server_versions = {}
+        # Update-server versions per chip channel ("s3" / "c6"): each dongle's
+        # update entity reads the channel its own chip belongs to.
+        self.server_versions: Dict[str, Dict[str, Any]] = {}
+        # Chip type per dongle from /status ("ESP32-S3" / "ESP32-C6"); legacy
+        # units never report one and are C6.
+        self.dongle_chip_types: Dict[str, str] = {}
         self._sync_settings_enabled = False  # Track sync settings state
         self._setting_history = {}  # Track setting changes with timestamps
         self._max_history_entries = 100  # Limit history size per setting
@@ -98,10 +129,26 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._dongle_stale_after = 90.0
         # Don't send more than one recovery snapshot per dongle within this window.
         self._recovery_snapshot_debounce = 30.0
+        # A snapshot request can be lost: the recovery triggers fire while the
+        # dongle is still coming back, so it may not have resubscribed yet. On
+        # FW >= 4.3.0 nothing re-sends hold registers, so a lost request leaves
+        # every setting entity empty until the next reboot. Verify the reply
+        # (<dongle>/snap/hold) actually arrives and retry a bounded number of times.
+        self._snapshot_retry: Dict[str, Any] = {}  # dongle -> cancel callback
+        self._snapshot_retry_attempts: Dict[str, int] = {}
+        self._snapshot_retry_delay = 20.0
+        self._snapshot_max_retries = 3
         self._has_gridboss = entry.data.get("has_gridboss", False)  # Track if GridBoss is enabled
         self._gridboss_dongle = entry.data.get("gridboss_dongle", "")  # Track which dongle is GridBoss
         self._last_fault_warning_data = {}  # Track last fault/warning data to prevent duplicate processing
         self._hass_startup_complete = False  # Track if Home Assistant has finished starting up
+        # Failsafe for the startup gate: if the mark_startup_complete timer
+        # never fires, force the gate open at this monotonic deadline instead of
+        # silently dropping data messages forever. Re-stamped by
+        # _schedule_startup_gate when the timer is actually armed (2x its delay)
+        # so the timer always wins when it works.
+        self._gate_opened_deadline = time.monotonic() + 60.0
+        self._startup_dropped_count = 0  # Data messages dropped while gated (diagnostics)
         self._smart_soc_volt_bits = {}  # Track SmartSOCVoltBits for each dongle
         self._smartload_bits = {}  # Track SmartLoad Bits for each dongle
         self._port_modes = {}  # Track Port Mode settings for each dongle
@@ -120,12 +167,29 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # Battery extended data tracking
         self._battery_data: Dict[str, Dict] = {}  # {dongle_id: battery payload data}
         self._battery_entities_created: Set[str] = set()  # Track which dongles have battery entities
+        # JK cell health (JK BMS + active balancers) from <id>/cellhealth, keyed by device MAC.
+        self._cell_health_data: Dict[str, Dict[str, Dict]] = {}  # {dongle_id: {mac: device}}
+        self._cell_health_entities_created: Set[str] = set()  # "{dongle_id}:{mac}"
         self._battery_async_add_entities = None  # Callback for adding battery sensor entities
         
         # Track charge/discharge control settings for standard units
         self._charge_control_settings = {}  # Track ubBatChgcontrol for each dongle
         self._discharge_control_settings = {}  # Track ubBatDischgControl for each dongle
         self._charge_type_settings = {}  # Track ACChargeType for each dongle
+
+        # Quick charge tracker (gen-class units): {dongle_id: {active, started_at,
+        # ends_at, duration, estimated}}. Fed by hold snapshots/deltas
+        # (ubQuickChgStartEn / QuickChgTime) and the /setting/updated echo
+        # (which names the enable bit "QuickCharge"). The inverter never
+        # reports remaining time, so ends_at is stamped locally at the
+        # off->on transition; 'estimated' marks a boost already running when
+        # HA first saw it (start time unknown, assumed just started).
+        self.quick_charge: Dict[str, Dict[str, Any]] = {}
+        # The user's picked Quick Charge Duration per dongle. Kept separate
+        # from coordinator.entities because the device reports its duration as
+        # 0 whenever no boost is running, which would clobber the user's
+        # choice before the next start could use it.
+        self.quick_charge_duration_pref: Dict[str, int] = {}
 
         super().__init__(
             hass,
@@ -196,22 +260,25 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Whether a dongle is currently running an OTA update."""
         return dongle_id in getattr(self, "_ota_in_progress", ())
 
-    async def request_snapshot(self, dongle_id: str, version: str = "", force: bool = False) -> None:
+    async def request_snapshot(self, dongle_id: str, version: str = "", force: bool = False) -> bool:
         """Ask a dongle for a full /input + /hold snapshot (once per session).
 
         Dongles on FW >= 4.3.0 only publish change-data, so without this the
         entities stay 'unknown' until each value happens to change. Gated to fire
         once per dongle per HA session unless force=True (e.g. a reconnect).
+
+        Returns True only if the request was actually published, so callers can
+        avoid recording a retry/debounce window against a request that never left.
         """
         if self.is_ota_in_progress(dongle_id):
             LOGGER.info(
                 "Suppressing snapshot request for %s: OTA in progress", dongle_id
             )
-            return
+            return False
         if not force and dongle_id in self._snapshot_requested:
-            return
+            return False
         if not self._needs_snapshot(version):
-            return
+            return False
         try:
             await mqtt.async_publish(
                 self.hass,
@@ -220,12 +287,15 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 qos=1,
                 retain=False,
             )
-            self._snapshot_requested.add(dongle_id)
-            LOGGER.info(
-                "Requested full snapshot from %s (version=%s)", dongle_id, version or "unknown"
-            )
         except Exception as e:
             LOGGER.debug(f"Snapshot request publish failed for {dongle_id} (non-fatal): {e}")
+            return False
+        self._snapshot_requested.add(dongle_id)
+        LOGGER.info(
+            "Requested full snapshot from %s (version=%s)", dongle_id, version or "unknown"
+        )
+        self._arm_snapshot_retry(dongle_id, version)
+        return True
 
     async def request_recovery_snapshot(self, dongle_id: str, reason: str) -> None:
         """Force a snapshot after a dongle recovers, debounced per dongle.
@@ -246,11 +316,89 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         last = self._last_recovery_snapshot.get(dongle_id, 0.0)
         if now - last < self._recovery_snapshot_debounce:
             return
-        self._last_recovery_snapshot[dongle_id] = now
         LOGGER.info("Recovery snapshot for %s (%s)", dongle_id, reason)
-        await self.request_snapshot(
+        # Only start the debounce window once the request has actually gone out.
+        # Recovery triggers fire while the dongle is rebooting, so a request can
+        # be lost before it is subscribed; stamping first would swallow the
+        # follow-up triggers and leave settings entities empty for the session.
+        if await self.request_snapshot(
             dongle_id, self.current_fw_versions.get(dongle_id, ""), force=True
-        )
+        ):
+            self._last_recovery_snapshot[dongle_id] = now
+
+    def _schedule_startup_gate(self, mark_startup_complete, delay: float = 30.0) -> None:
+        """Arm the startup-gate timer and set its failsafe deadline together.
+
+        The deadline is the fallback that opens the gate if the timer never
+        fires; measured from here, not from __init__, so a slow setup cannot
+        let the deadline expire before the timer was even due.
+        """
+        self._gate_opened_deadline = time.monotonic() + delay * 2
+        async_call_later(self.hass, delay, mark_startup_complete)
+
+    def _cancel_snapshot_retry(self, dongle_id: str) -> None:
+        """Drop any armed retry timer for a dongle."""
+        # getattr: test coordinators are built via __new__ and skip __init__.
+        pending = getattr(self, "_snapshot_retry", None)
+        if not pending:
+            return
+        cancel = pending.pop(dongle_id, None)
+        if cancel is not None:
+            cancel()
+
+    def _arm_snapshot_retry(self, dongle_id: str, version: str) -> None:
+        """Re-request the snapshot if its reply doesn't arrive in time.
+
+        A published request is not a delivered one: the recovery triggers fire
+        while the dongle is still reconnecting, so the request can go out before
+        it has resubscribed. Since FW >= 4.3.0 never re-sends hold registers on
+        its own, that single loss would leave every setting entity empty for the
+        rest of the session.
+        """
+        if getattr(self, "_snapshot_retry", None) is None:
+            self._snapshot_retry = {}
+        if getattr(self, "_snapshot_retry_attempts", None) is None:
+            self._snapshot_retry_attempts = {}
+        self._cancel_snapshot_retry(dongle_id)
+        attempts = self._snapshot_retry_attempts.get(dongle_id, 0)
+        max_retries = getattr(self, "_snapshot_max_retries", 3)
+        if attempts >= max_retries:
+            LOGGER.warning(
+                "Snapshot from %s still unanswered after %d retries - its settings "
+                "entities will stay unknown until it reboots or reconnects",
+                dongle_id, attempts,
+            )
+            return
+        delay = getattr(self, "_snapshot_retry_delay", 20.0)
+
+        async def _retry(_now) -> None:
+            self._snapshot_retry.pop(dongle_id, None)
+            if self.is_ota_in_progress(dongle_id):
+                return
+            self._snapshot_retry_attempts[dongle_id] = attempts + 1
+            LOGGER.warning(
+                "No snapshot reply from %s after %.0fs - retrying (%d/%d)",
+                dongle_id, delay, attempts + 1, max_retries,
+            )
+            published = await self.request_snapshot(dongle_id, version, force=True)
+            if not published:
+                # The re-publish itself failed (broker briefly down). A
+                # successful publish re-arms inside request_snapshot; a failed
+                # one must re-arm here or the chain dies with attempts spent.
+                self._arm_snapshot_retry(dongle_id, version)
+
+        self._snapshot_retry[dongle_id] = async_call_later(self.hass, delay, _retry)
+
+    def _note_snapshot_delivered(self, dongle_id: str) -> None:
+        """Record that a dongle answered its snapshot request.
+
+        Called when <dongle>/snap/hold arrives — the hold half is what carries
+        the settings, so an /snap/input-only reply deliberately does not count.
+        """
+        self._cancel_snapshot_retry(dongle_id)
+        attempts = getattr(self, "_snapshot_retry_attempts", None)
+        if attempts is not None:
+            attempts.pop(dongle_id, None)
 
     async def mark_dongle_seen(self, dongle_id: str) -> None:
         """Record that a message arrived from a dongle and detect gap recovery.
@@ -318,10 +466,85 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         from .const import firmware_group
         return firmware_group(self.get_firmware_code(dongle_id))
 
+    @staticmethod
+    def _qc_on(raw) -> bool:
+        """Normalize a quick-charge enable value (bool, 'true', '1', '1.00', 1)."""
+        if isinstance(raw, bool):
+            return raw
+        s = str(raw).strip().lower()
+        if s in ("true", "on"):
+            return True
+        if s in ("false", "off", ""):
+            return False
+        try:
+            return float(s) != 0.0
+        except ValueError:
+            return False
+
+    def _qc_duration_minutes(self, dongle_id: str) -> int:
+        """Current QuickChgTime in minutes from coordinator data, default 30.
+
+        The inverter zeroes the duration setting after a boost completes, so 0 (and anything
+        out of the 1..1440 range) falls back to the 30-minute default — same
+        rule the MMS cloud applies.
+        """
+        raw = self.entities.get(self.build_entity_id("select", dongle_id, "quickchgtime"))
+        try:
+            minutes = int(float(str(raw)))
+        except (TypeError, ValueError):
+            return 30
+        return minutes if 1 <= minutes <= 1440 else 30
+
+    def update_quick_charge_enable(self, dongle_id: str, raw) -> None:
+        """Track quick-charge enable transitions and stamp the local countdown."""
+        on = self._qc_on(raw)
+        st = self.quick_charge.get(dongle_id)
+        if on:
+            if st and st.get("active"):
+                return  # already tracking this boost
+            minutes = self._qc_duration_minutes(dongle_id)
+            now = dt_util.utcnow()
+            self.quick_charge[dongle_id] = {
+                "active": True,
+                "started_at": now,
+                "ends_at": now + timedelta(minutes=minutes),
+                "duration": minutes,
+                # First observation ever showing 'on' may be a boost that was
+                # already running (HA restart mid-boost) — flag the countdown
+                # as an estimate. Known limit: a hold snapshot that re-shows
+                # 'on' after the state was reset (a retried snapshot) restarts
+                # the countdown from now; started_at is not persisted across
+                # reloads, so such a countdown can overshoot.
+                "estimated": st is None,
+            }
+        else:
+            if st is not None and not st.get("active"):
+                return
+            self.quick_charge[dongle_id] = {"active": False}
+        self.async_set_updated_data(self.entities)
+
+    def update_quick_charge_duration(self, dongle_id: str, raw) -> None:
+        """Re-time an active boost when QuickChgTime changes mid-boost."""
+        st = self.quick_charge.get(dongle_id)
+        if not st or not st.get("active"):
+            return
+        try:
+            minutes = int(float(str(raw)))
+        except (TypeError, ValueError):
+            return
+        if minutes < 1 or minutes > 1440 or minutes == st.get("duration"):
+            return  # 0/garbage is the post-boost register clear, not a real duration
+        st["duration"] = minutes
+        st["ends_at"] = st["started_at"] + timedelta(minutes=minutes)
+        self.async_set_updated_data(self.entities)
+
     def entity_allowed_for_dongle(self, dongle_id: str, entity_def: dict) -> bool:
         """Whether an entity definition should be created for this dongle.
 
         Group-based gating, replacing the old exact `allowed_firmware_codes` lists:
+        - `excluded_firmware_codes` (exact codes, always wins) and
+          `allowed_firmware_codes` (exact allow-list, replaces the group rule when
+          present) exist for the odd unit whose settings differ from its group.
         - An entity with `allowed_groups` is created only when the dongle's firmware
           group is listed.
         - An entity WITHOUT `allowed_groups` is a generic entity available to every
@@ -329,6 +552,18 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
           entities explicitly tagged with the 'midbox' group — matching the old rule
           where GridBoss dongles required an explicit allow-list entry.
         """
+        # Exact-code gates sit on top of the group rule for the odd family
+        # whose settings differ from its group (GEN3 "ciaa": a different
+        # charge-current setting). Codes compare case-insensitively —
+        # dongles report mixed case ("Ciaa").
+        code = (self.get_firmware_code(dongle_id) or "").strip().lower()
+        excluded = entity_def.get("excluded_firmware_codes")
+        if excluded and code in {c.strip().lower() for c in excluded}:
+            return False
+        allowed_codes = entity_def.get("allowed_firmware_codes")
+        if allowed_codes:
+            return code in {c.strip().lower() for c in allowed_codes}
+
         group = self.get_firmware_group(dongle_id)
         allowed_groups = entity_def.get("allowed_groups")
         if not allowed_groups:
@@ -513,28 +748,51 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Get the discharge control setting for a dongle."""
         return self._discharge_control_settings.get(dongle_id, "SOC")  # Default to SOC
     
+    def _ac_charge_type_options(self, dongle_id: str) -> list:
+        """ACChargeType option list for this dongle's firmware group.
+
+        Read straight from the const.py select catalog (the entry whose
+        allowed_groups matches this dongle) so this can NEVER drift from what
+        the select entity shows. A previous hardcoded copy here diverged
+        (it had a phantom "Off" at index 0 for legacy/ac_coupled) which
+        shifted every device-reported value by one and wrongly blocked the
+        AC charge time settings.
+        """
+        brand_entities = ENTITIES.get(self.inverter_brand, {})
+        for bank in brand_entities.get("select", {}).values():
+            for entry in bank:
+                if entry.get("unique_id") == "ACChargeType" and self.entity_allowed_for_dongle(dongle_id, entry):
+                    return list(entry.get("options") or [])
+        LOGGER.warning(
+            f"No ACChargeType catalog entry matches group "
+            f"{self.get_firmware_group(dongle_id)!r} (dongle {dongle_id}) — using legacy list"
+        )
+        return list(AC_CHARGE_TYPE_FALLBACK_OPTIONS)
+
     def update_charge_type_setting(self, dongle_id: str, charge_type):
-        """Update the charge type setting for a dongle."""
-        # Convert integer to string option if needed. ACChargeType's option list
-        # varies by firmware group (0-based indexing) — these MUST stay in lockstep
-        # with the three ACChargeType select entries in const.py:
-        #   offgrid (C***):            6 options (0-5)
-        #   GEN (12K, F/H/E):          3 options (According To Time / SOC-Volt / both)
-        #   legacy (A) + ac_coupled (B): 3 options (Off / Time / SOC-Volt)
-        if isinstance(charge_type, int):
-            group = self.get_firmware_group(dongle_id)
+        """Update the charge type setting for a dongle.
 
-            if group == "offgrid":
-                options = ["Disabled", "Time According To", "According To Voltage", "According To SOC", "According To Time and Voltage", "According To Time and SOC"]
-            elif group == "GEN":
-                options = ["According To Time", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
-            elif group in ("legacy", "ac_coupled"):
-                options = ["Off", "Time According To", "SOC/Volt According To"]
-            else:
-                LOGGER.warning(f"No ACChargeType option list for group {group!r} (dongle {dongle_id}), using legacy list")
-                options = ["Off", "Time According To", "SOC/Volt According To"]
-
-            charge_type = options[charge_type] if charge_type < len(options) else charge_type
+        Accepts the device's raw index (int, or a numeric string like "1.00"
+        from the /setting/updated echo) or an option string from the select.
+        """
+        options = self._ac_charge_type_options(dongle_id)
+        if not isinstance(charge_type, bool):
+            raw = charge_type
+            if isinstance(charge_type, str) and charge_type not in options:
+                try:
+                    raw = int(float(charge_type))
+                except ValueError:
+                    raw = charge_type
+            if isinstance(raw, (int, float)):
+                idx = int(raw)
+                if 0 <= idx < len(options):
+                    charge_type = options[idx]
+                else:
+                    LOGGER.warning(
+                        f"ACChargeType index {idx} out of range for {dongle_id} "
+                        f"(options: {options})"
+                    )
+                    charge_type = raw
 
         if dongle_id not in self._charge_type_settings:
             self._charge_type_settings[dongle_id] = {}
@@ -709,7 +967,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # ACChargeType consolidated options:
             # AAAA/BAAA/ccaa/EAAA/HAAA/ceaa: "According To Voltage", "According To Time and Voltage"
             # FAAB/FAAA: "According To SOC/VOLT", "According To Time and SOC/VOLT"
-            return charge_control == "Voltage" and charge_type in ["According To Voltage", "According To Time and Voltage", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
+            return charge_control == "Voltage" and charge_type in AC_CHARGE_TYPES_VOLTAGE
 
         # Check charge SOC entities - must check BOTH ubBatChgcontrol AND ACChargeType
         if self._is_charge_soc_entity(entity_unique_id):
@@ -722,7 +980,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # ACChargeType consolidated options:
             # AAAA/BAAA/ccaa/EAAA/HAAA/ceaa: "According To SOC", "According To Time and SOC"
             # FAAB/FAAA: "According To SOC/VOLT", "According To Time and SOC/VOLT"
-            return charge_control == "SOC" and charge_type in ["According To SOC", "According To Time and SOC", "According To SOC/VOLT", "According To Time and SOC/VOLT"]
+            return charge_control == "SOC" and charge_type in AC_CHARGE_TYPES_SOC
 
         # Check charge time entities
         if self._is_charge_time_entity(entity_unique_id):
@@ -842,7 +1100,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             charge_type = self.get_charge_type_setting(dongle_id)
             if charge_control != "Voltage":
                 return f"Charge control is set to '{charge_control}' - Voltage settings not available"
-            elif charge_type not in ["According To Voltage", "According To Time and Voltage", "According To SOC/VOLT", "According To Time and SOC/VOLT"]:
+            elif charge_type not in AC_CHARGE_TYPES_VOLTAGE:
                 return f"Charge type is set to '{charge_type}' - Voltage settings not available"
 
         elif self._is_charge_soc_entity(entity_unique_id):
@@ -850,7 +1108,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             charge_type = self.get_charge_type_setting(dongle_id)
             if charge_control != "SOC":
                 return f"Charge control is set to '{charge_control}' - SOC settings not available"
-            elif charge_type not in ["According To SOC", "According To Time and SOC", "According To SOC/VOLT", "According To Time and SOC/VOLT"]:
+            elif charge_type not in AC_CHARGE_TYPES_SOC:
                 return f"Charge type is set to '{charge_type}' - SOC settings not available"
 
         elif self._is_charge_time_entity(entity_unique_id):
@@ -1262,6 +1520,9 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # Handle battery extended data topic
             elif topic.endswith("/batteries"):
                 await self._handle_battery_data(dongle_id, msg.payload)
+            # JK cell health: JK BMS + JK active balancers (balancer-mode fw 4.5.0.84S3+)
+            elif topic.endswith("/cellhealth"):
+                await self._handle_cell_health_data(dongle_id, msg.payload)
             # Always process /status and /availability, even during startup: they
             # carry the firmware version and connection state that drive the
             # full-snapshot bootstrap (FW >= 4.3.0 streams change-data only).
@@ -1277,12 +1538,32 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # which on FW >= 4.3.0 (change-data only) may be a long time. The
             # firmware publishes it on <dongle>/snap/input and <dongle>/snap/hold.
             elif topic.endswith("/snap/input") or topic.endswith("/snap/hold"):
+                if topic.endswith("/snap/hold"):
+                    # The hold half carries the settings; an input-only reply
+                    # leaves them empty, so it must not disarm the retry.
+                    self._note_snapshot_delivered(dongle_id)
                 await self.process_message(dongle_id, topic, msg.payload)
                 self.async_set_updated_data(self.entities)
             # Skip other message processing during startup to prevent excessive updates
             elif not self._hass_startup_complete:
-                # Just store the message for later processing if needed
-                pass
+                # Failsafe: the gate is opened by a 30s timer in async_setup. If
+                # that timer ever fails to fire, every data message would be
+                # silently dropped forever (entities populate once from the
+                # snapshot, then flatline). Never trust the timer alone: force
+                # the gate open once we're clearly past the startup window.
+                # getattr: test coordinators are built via __new__ and skip __init__.
+                deadline = getattr(self, "_gate_opened_deadline", None)
+                if deadline is not None and time.monotonic() >= deadline:
+                    LOGGER.warning(
+                        "Startup gate still closed past its deadline (%d data "
+                        "messages dropped so far) - forcing it open",
+                        getattr(self, "_startup_dropped_count", 0),
+                    )
+                    self._hass_startup_complete = True
+                    await self.process_message(dongle_id, topic, msg.payload)
+                    self.async_set_updated_data(self.entities)
+                else:
+                    self._startup_dropped_count = getattr(self, "_startup_dropped_count", 0) + 1
             else:
                 # Process messages normally after startup is complete
                 if topic.endswith("/response"):
@@ -1427,6 +1708,59 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Get battery extended data for a dongle."""
         return self._battery_data.get(dongle_id, {})
 
+    async def _handle_cell_health_data(self, dongle_id: str, payload):
+        """Handle <id>/cellhealth: JK BMS + JK active balancers with per-cell
+        connection resistance (cell_health.py). Devices are identified by MAC
+        (stable; the user can rename them). The dongle sends the full list
+        once per BLE poll; a site with no JK device publishes nothing."""
+        from .cell_health import flatten_device, mac_slug
+
+        if payload is None or len(payload.strip()) == 0:
+            return
+        try:
+            data = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            LOGGER.error(f"Invalid JSON in cell-health data from {dongle_id}")
+            return
+        if not isinstance(data, dict):
+            return
+        if "payload" in data:
+            data = data["payload"]
+        if not isinstance(data, dict):
+            return
+        devices = data.get("devices") or []
+        if not isinstance(devices, list):
+            return
+
+        by_mac = self._cell_health_data.setdefault(dongle_id, {})
+        new_macs = []
+        for device in devices:
+            mac = device.get("mac") if isinstance(device, dict) else None
+            if not mac:
+                continue
+            by_mac[mac] = device
+            slug = mac_slug(mac)
+            for key, value in flatten_device(device).items():
+                self.entities[self.build_entity_id("sensor", dongle_id, f"cellhealth_{slug}_{key}")] = value
+            marker = f"{dongle_id}:{mac}"
+            if marker not in self._cell_health_entities_created:
+                new_macs.append(mac)
+
+        if new_macs:
+            LOGGER.info(
+                f"Cell-health data for {dongle_id}: {len(devices)} device(s), "
+                f"{len(new_macs)} new - triggering entity creation"
+            )
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_cellhealth_data_received",
+                {"dongle_id": dongle_id, "macs": new_macs},
+            )
+        self.async_set_updated_data(self.entities)
+
+    def get_cell_health_data(self, dongle_id: str) -> Dict[str, Dict]:
+        """JK cell-health devices for a dongle, keyed by MAC."""
+        return self._cell_health_data.get(dongle_id, {})
+
     def _process_gridboss_nested_data(self, dongle_id: str, payload_data):
         """Process GridBoss nested payload structure - now simplified since payload has correct entity names."""
 
@@ -1542,7 +1876,11 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # Schedule startup completion after a delay to allow Home Assistant to finish starting up
         async def mark_startup_complete(_):
             self._hass_startup_complete = True
-            LOGGER.info("Home Assistant startup complete - MQTT message processing enabled")
+            LOGGER.info(
+                "Home Assistant startup complete - MQTT message processing enabled "
+                "(%d data messages were dropped during the startup window)",
+                getattr(self, "_startup_dropped_count", 0),
+            )
             
             # Trigger entity availability updates for all dongles now that startup is complete
             for dongle_id in self._dongle_ids:
@@ -1550,7 +1888,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                     self._trigger_entity_availability_update(dongle_id)
         
         # Wait 30 seconds after setup to allow Home Assistant to finish starting up
-        async_call_later(self.hass, 30, mark_startup_complete)
+        self._schedule_startup_gate(mark_startup_complete)
         
         return True
 
@@ -1729,6 +2067,10 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     async def stop_mqtt_subscription(self):
         """Stop all MQTT subscriptions."""
         LOGGER.debug(f"Stopping MQTT subscriptions for all dongles")
+        # Drop armed snapshot retries first: once unsubscribed there is nothing
+        # left to answer them, and a reload would leave the timers orphaned.
+        for dongle_id in list(getattr(self, "_snapshot_retry", {})):
+            self._cancel_snapshot_retry(dongle_id)
         for key, unsubscribe in list(self._mqtt_unsubscribe_callbacks.items()):
             try:
                 unsubscribe()
@@ -1748,6 +2090,28 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     def get_ignored_entity_suffixes(self) -> Set[str]:
         """Return the set of ignored entity suffixes for diagnostic purposes."""
         return self._ignored_entity_suffixes
+
+    @staticmethod
+    def _pick_status_chip_type(status_data: dict) -> str:
+        """The chip designator from a /status blob, whichever spelling the firmware uses."""
+        for key in ("chipType", "chip_type", "chip"):
+            value = status_data.get(key)
+            if isinstance(value, str) and value:
+                return value
+        for parent in ("system", "device"):
+            nested = status_data.get(parent)
+            if isinstance(nested, dict):
+                for key in ("chipType", "chip_type"):
+                    value = nested.get(key)
+                    if isinstance(value, str) and value:
+                        return value
+        return ""
+
+    def dongle_chip(self, dongle_id: str) -> str:
+        """Update-server chip channel ("s3" / "c6") for a dongle."""
+        return dongle_chip_key(
+            self.dongle_chip_types.get(dongle_id), self.current_fw_versions.get(dongle_id)
+        )
 
     async def process_status_message(self, dongle_id: str, payload):
         """Process incoming status MQTT message and update the status sensor."""
@@ -1783,6 +2147,10 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 boot_count = boot.get("count")
         if version:
             self.current_fw_versions[dongle_id] = version
+        if isinstance(status_data, dict):
+            chip_type = self._pick_status_chip_type(status_data)
+            if chip_type:
+                self.dongle_chip_types[dongle_id] = chip_type
 
         # Detect a silent reboot: if boot.count changed since we last saw it (and
         # this isn't the first sighting), the dongle restarted without dropping its
@@ -1861,6 +2229,26 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             from_who = data.get("from") or ""
             if setting and value is not None:
                 formatted_suffix = setting.lower().replace("-", "_").replace(":", "_")
+
+                # Quick-charge tracking. The dongle names the enable bit
+                # "QuickCharge" in this echo (vs "ubQuickChgStartEn" in hold
+                # payloads) — accept both. Runs BEFORE the own-write dedup so
+                # the countdown stamps no matter who initiated the write
+                # (HA, MMS app/powerflow, Lux portal, local web UI).
+                if formatted_suffix in ("quickcharge", "ubquickchgstarten"):
+                    self.update_quick_charge_enable(dongle_id, value)
+                    # The echo's "QuickCharge" name doesn't match the switch
+                    # catalog entry (ubQuickChgStartEn) — route the value onto
+                    # the switch's key so it flips immediately instead of
+                    # waiting for the next hold delta.
+                    if formatted_suffix == "quickcharge":
+                        switch_key = self.build_entity_id("switch", dongle_id, "ubquickchgstarten")
+                        # Normalize before storing: the echo ships strings like
+                        # "1.00", and the switch's int() coercion silently
+                        # rejects those.
+                        self.entities[switch_key] = "1" if self._qc_on(value) else "0"
+                elif formatted_suffix == "quickchgtime":
+                    self.update_quick_charge_duration(dongle_id, value)
                 # Resolve the platform AND catalog entry so we can coerce the
                 # value (FW >= 4.3.0 sends it as a string like "1.00") to the
                 # entity's native type — an int index for selects, float for
@@ -2030,11 +2418,19 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 elif entity_id_suffix == "ACChargeType":
                     LOGGER.debug(f"Processing ACChargeType from MQTT: {state}")
                     self.update_charge_type_setting(dongle_id, state)
-                    
+                elif entity_id_suffix.lower() == "quickchgtime":
+                    self.update_quick_charge_duration(dongle_id, state)
+
                 formatted_entity_id_suffix = entity_id_suffix.lower().replace("-", "_").replace(":", "_")
                 entity_type = self.determine_entity_type(formatted_entity_id_suffix)
                 entity_id = self.build_entity_id(entity_type, dongle_id, formatted_entity_id_suffix)
                 self.entities[entity_id] = state
+
+                # After the value is stored (so a bootstrap snapshot's own
+                # QuickChgTime is visible to the duration lookup) track the
+                # quick-charge enable bit.
+                if entity_id_suffix.lower() == "ubquickchgstarten":
+                    self.update_quick_charge_enable(dongle_id, state)
 
         # Process events data if present (new format)
         if events_data:

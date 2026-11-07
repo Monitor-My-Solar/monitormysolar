@@ -11,7 +11,7 @@ from homeassistant.const import (
     STATE_UNKNOWN,
 )
 from typing import Dict, List, Optional
-from .const import DOMAIN, ENTITIES, LOGGER, CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX
+from .const import DOMAIN, ENTITIES, LOGGER, CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX, fw_code_get
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
 
@@ -83,7 +83,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         self.entity_info = entity_info
         self._attr_name = entity_info["name"]
         self._attr_unique_id = f"{entry.entry_id}_{dongle_id}_{entity_info['unique_id']}".lower()
-        self._attr_native_value = 0
+        self._attr_native_value = None
         self._dongle_id = dongle_id
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
         self._entity_type = entity_info["unique_id"]
@@ -96,7 +96,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         firmware_max_values = entity_info.get("firmware_max_values", {})
 
         self._attr_native_min_value = entity_info.get("min", None)
-        self._attr_native_max_value = firmware_max_values.get(firmware_code, entity_info.get("max", None))
+        self._attr_native_max_value = fw_code_get(firmware_max_values, firmware_code, entity_info.get("max", None))
         # Check if user prefers input box over slider
         use_input_box = entry.data.get(CONF_USE_INPUT_BOX, DEFAULT_USE_INPUT_BOX)
         if use_input_box:
@@ -163,7 +163,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
         self._attr_native_value = value
         self._user_initiated_change = True
         # Update coordinator's stored value so it doesn't overwrite us
-        self.coordinator.entities[self.entity_id] = raw_value
+        self.coordinator.entities[self.data_key] = raw_value
         self.throttled_async_write_ha_state()
 
         # Apply multiplier for registers that need integer values (e.g. 46.1V -> 461).
@@ -187,7 +187,7 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
             self._attr_native_value = old_value
             # Coordinator holds raw values, so restore the raw form of old_value.
             old_raw = old_value * self._display_scale if (self._display_scale != 1 and old_value is not None) else old_value
-            self.coordinator.entities[self.entity_id] = old_raw
+            self.coordinator.entities[self.data_key] = old_raw
             self.throttled_async_write_ha_state()
             raise HomeAssistantError(f"Failed to update {self.entity_id} - no response from inverter")
 
@@ -199,8 +199,8 @@ class InverterNumber(MonitorMySolarEntity, NumberEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
-        if self.entity_id in self.coordinator.entities:
-            raw = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            raw = self.coordinator.entities[self.data_key]
             if raw is not None:
                 # Coordinator holds the raw register value; divide to the displayed
                 # engineering value (e.g. 80 -> 8.0 kW).
@@ -229,7 +229,7 @@ class CombinedNumber(MonitorMySolarEntity, NumberEntity):
         self.entity_info = entity_info
         self._name = entity_info["name"]
         self._unique_id = f"{entry.entry_id}_{entity_info['unique_id']}".lower()
-        self._attr_native_value = 0
+        self._attr_native_value = None
         self._dongle_ids = dongle_ids
         self._virtual_id = "combined_parallel"
         self._formatted_dongle_id = "combined"

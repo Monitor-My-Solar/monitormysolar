@@ -4,7 +4,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.event import (
     async_track_state_change_event,
 )
-from .const import DOMAIN, ENTITIES, FIRMWARE_CODES, LOGGER
+from .const import DOMAIN, ENTITIES, LOGGER
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
 
@@ -21,8 +21,7 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
     # Loop through each dongle ID
     for dongle_id in dongle_ids:
         firmware_code = coordinator.get_firmware_code(dongle_id)
-        device_type = FIRMWARE_CODES.get(firmware_code, {}).get("Device_Type", "")
-        
+
         # Only create entities if we have a firmware code
         if not firmware_code:
             LOGGER.debug(f"Skipping entity creation for {dongle_id} - no firmware code available yet")

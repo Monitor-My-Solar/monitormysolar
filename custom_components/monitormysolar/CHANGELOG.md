@@ -1,4 +1,112 @@
 # Changelog
+## Version 4.0.7.2
+Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everything here also runs on older firmware, the new entities simply stay absent.
+Released from the 4.0.7B / 4.0.7.1B / 4.0.7.2B betas; this section covers everything since 4.0.6.
+
+### Added
+- **Firmware Beta update entity.** Every dongle now has a second update entity, `update.*_firmware_update_beta`,
+  that follows the beta firmware track (version, release notes, install) alongside the stable `Firmware` entity,
+  which always follows the stable track. The "Use Beta Firmware" option is now "Show beta firmware updates": on,
+  the beta entity is enabled; off, it is registered disabled and can be enabled from the entity settings. Installs
+  with the old option on used to get beta on the single entity; they now get stable there plus the beta entity.
+- **JK cell health — active balancers and JK BMS cell resistance** (dongle fw 4.5.0.84S3+, `<id>/cellhealth`,
+  once per BLE poll). One HA device per JK MAC (`Balancer xx:xx` / `JK BMS xx:xx`, under the dongle, NOT part of
+  the battery bank — from this firmware balancers no longer appear in `/batteries`): status, pack voltage,
+  average cell, cell spread, max/min cell, balancing state + current, runtime, faults, model, firmware, per-cell
+  **connection resistance** and voltage, resistance median/max and **Cells To Check** (cells above 1.5× the
+  device median, the same rule as the dongle's own screen — "check that busbar or sense lead"); from fw 85S3 the
+  balancer's own settings (switch, start voltage, trigger spread, max current, read-only) and "Balancer Waiting
+  For Top Of Charge". Devices are keyed by MAC so renames keep history. `cell_health.py`,
+  `coordinator._handle_cell_health_data`, `sensor.CellHealthSensor`.
+- **PV Input Mode select on GEN3 "ciaa"** (`select.*_pv_input_mode`, `PVInputModel`): Empty / Parallel MPPT
+  Inputs / Independent MPPT Inputs, the three choices this family offers. Selects can now carry `option_values`
+  for settings whose valid values are not contiguous, and `value_mask` to drop another field packed in the same
+  setting word. Needs the dongle build that knows the `PVInputModel` write.
+- **Grid CT Connection switch on GEN3 "ciaa"** (`switch.*_grid_ct_connection`, `GridCTConnect`): the inverter's
+  grid-CT-connected toggle, read-modify-written by the dongle. ciaa only — no other family has been verified.
+
+### Changed
+- **GEN3 "ciaa" charge current moves to the `ACChargeBatCurrent` setting.** On this family the inverter's
+  charge-current limit is the AC-charge-current setting, not `ChargeCurr` — a Locks Road unit showed 90 A here
+  while the inverter was set to 180 A. `ciaa` dongles no longer get `number.*_charge_current_dc_a` and instead
+  get **`number.*_charge_current_a`** (`ACChargeBatCurrent`, 0–250 A, raw amps). Every other firmware is
+  unchanged. Entity definitions can now carry `excluded_firmware_codes` / `allowed_firmware_codes` (exact codes,
+  case-insensitive) on top of the group gates for the odd unit whose settings differ from its group.
+
+### Fixed
+- **Review follow-ups (PR #113).** A snapshot retry whose own publish failed (broker briefly down) no longer
+  ends the retry chain; the startup-gate failsafe deadline is now stamped when the 30 s timer is armed, not at
+  construction, so a slow setup cannot open the gate early; the "Charge Based on:" option lists that gate the
+  AC-charge voltage / SOC entities live in two module constants instead of four copies (and the legacy fallback option order is a named constant); a cell-health payload
+  that is valid JSON but not an object is ignored instead of raising in the MQTT callback; the quick-charge
+  countdown's known overshoot after a re-seen snapshot is documented.
+- **"Dongle did not acknowledge the OTA command" while the progress bar was moving.** The install only counted
+  a matching reply on the admin response topic as the acknowledgement; if that reply was missed (the dongle
+  sends it and reboots straight away, and the subscription can race the publish) or came back without the
+  request id, HA raised after 30 s even though progress was streaming. Progress or a result now count as the
+  acknowledgement, a reply without an id is accepted, and the command is published half a second after the
+  subscriptions are set up.
+- **Voltage controls accept tenths of a volt and no longer over-ask the inverter** (issues #105, #104).
+  Three battery voltage controls (`BatStopChgVolt`, `CutVoltForDischg`, `OngridEOD_Voltage`) only accepted
+  whole volts, so a value like 55.5 was rounded before it was sent and the entity appeared to "revert". Every
+  inverter voltage control now has a 0.1 V step. Separately, six voltage controls (`ACChgStartVolt`,
+  `ACChgEndVolt`, `GenChgStartVolt`, `GenChgEndVolt`, `ForceDichgEndVolt`, `OngridEOD_Voltage`) were sending
+  the value multiplied by ten; the dongle applies that scaling itself for named writes, so those asked the
+  inverter for ten times the voltage. They now send volts like every other control. The GridBoss voltage
+  controls get the 0.1 V step too.
+- **Firmware update entity checks the right chip's channel.** The update check fetched the server's bare
+  version endpoint, which is the ESP32-C6 channel, for every dongle — an ESP32-S3 dongle was shown the C6
+  build as "latest", never saw its own S3 release, and after an install the versions still disagreed. Each
+  dongle now resolves its chip from `/status` (`chipType`, falling back to the version's S3/C6 suffix,
+  legacy units are C6) and reads `/version/s3` or `/version/c6`; the installed version is shown as the dongle
+  reports it (e.g. `4.5.0.87S3`) so it matches the server's spelling. The entity carries `chip` and `track`
+  attributes. `const.dongle_chip_key`, `coordinator.dongle_chip`, `update.UPDATE_URLS`.
+
+## Version 4.0.6
+### Fixed
+- **AC charge time settings wrongly unavailable on standard/ACS units.** The
+  coordinator kept its own copy of the "Charge Based on:" option lists and the
+  legacy one had drifted from const.py (a phantom "Off" at index 0), so a unit
+  reporting charge type 0 — "Time According To", the most common setting — was
+  read as "Off" and the AC charge time entities were blocked. The option list
+  is now read from the entity catalog itself so the two can never drift, and
+  numeric echo values ("1.00") convert correctly. Three-phase units now also
+  get the "Charge Based on:" select (they were missing from its groups).
+
+### CT settings
+- **New: PV CT Reuse select** (hybrids/gen + three-phase: repurpose the PV CT
+  input for nothing / a specific load / AC-coupled power) and **PV CT
+  Function** on ACS models (PV power / specific load) — same device field,
+  per-family option sets.
+- **CT Offset (W) range now matches the model**: +/-199 W on small hybrids,
+  ACS and off-grid, +/-1000 W on the large hybrids (previously +/-1000 for
+  everyone, which the smaller units' firmware rejects).
+
+### Quick charge (gen-class units: H/F/E/AC + G three-phase + C offgrid)
+
+- **New: `binary_sensor` Quick Charge** — on while a quick charge boost is
+  running. Tracks boosts started from anywhere: HA, the
+  MonitorMySolar app/power-flow, the Lux portal, or the inverter's local web UI
+  (via hold deltas and the FW 4.3.0+ `/setting/updated` echo).
+- **New: `sensor` Quick Charge Time Remaining** — minutes left on the active
+  boost, counting down every 30s; 0 when idle. The inverter doesn't report
+  remaining time, so the countdown is stamped locally when the enable bit turns
+  on and re-timed if the duration is changed mid-boost. Attributes carry
+  `started_at`, `ends_at`, `duration_minutes` and `estimated` (true when HA
+  first saw a boost already running, e.g. after a restart, so the end time is a
+  best-effort estimate).
+- **New: `switch` Quick Charge Start** — starts/stops a boost. The inverter
+  only accepts a duration while the boost is enabled, so the switch enables
+  first and then writes your chosen Quick Charge Duration automatically. The
+  inverter clears the bit itself when the boost finishes.
+- **Changed: Quick Charge Duration select** — the "0" option and the hidden
+  enable piggyback are gone (legacy design; newer firmware rejects a duration
+  of 0 with Illegal Data Value). The select now only sets the duration;
+  starting is the switch's job. While a boost is running, changing the select
+  re-times it; while idle, the choice is stored and written at the next start
+  (the inverter rejects duration writes when no boost is enabled). Also now
+  correctly hidden on legacy/AC-coupled units that don't support quick charge.
+
 ## Version 4.0.0
 ### Best with dongle firmware 4.3.0+. Some features below REQUIRE 4.3.0.
 

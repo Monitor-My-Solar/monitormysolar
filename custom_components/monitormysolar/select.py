@@ -11,6 +11,39 @@ from .const import DOMAIN, ENTITIES, LOGGER
 from .coordinator import MonitorMySolarEntry
 from .entity import MonitorMySolarEntity
 
+
+def option_to_value(options, option_values, option):
+    """Value to send for a chosen option.
+
+    By default a select's options are positional (index == sent value).
+    `option_values` (same length as `options`) overrides that for settings
+    whose valid values are not contiguous — e.g. PV Input Mode on GEN3 ciaa.
+    """
+    index = options.index(option)
+    if option_values:
+        return option_values[index]
+    return index
+
+
+def value_to_option(options, option_values, value, value_mask=None):
+    """Option label for an incoming value, or None when it is not one of this
+    select's values. `value_mask` strips bits that belong to a different
+    field packed in the same setting word before the lookup.
+    """
+    if isinstance(value, bool):
+        value = int(value)
+    if not isinstance(value, int):
+        return None
+    if value_mask is not None:
+        value = value & value_mask
+    if option_values:
+        if value in option_values:
+            return options[option_values.index(value)]
+        return None
+    if 0 <= value < len(options):
+        return options[value]
+    return None
+
 async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities):
     coordinator = entry.runtime_data
     inverter_brand = coordinator.inverter_brand
@@ -63,6 +96,10 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         self.entity_id = self.coordinator.build_entity_id("select", self._dongle_id, self._entity_type)
         self.hass = hass
         self._options = entity_info["options"]
+        # Optional non-positional register values (see option_to_value) and a
+        # mask for registers that pack another field in the same word.
+        self._option_values = entity_info.get("option_values")
+        self._value_mask = entity_info.get("value_mask")
         self._manufacturer = entry.data.get("inverter_brand")
 
         super().__init__(self.coordinator)
@@ -120,7 +157,7 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         
         self.throttled_async_write_ha_state()
 
-        bit_value = self._options.index(option)
+        bit_value = option_to_value(self._options, self._option_values, option)
         LOGGER.info(f"Setting Select value for {self.entity_id} to {option}")
         
         # Initialize smartload_number for Port Mode logic
@@ -226,10 +263,10 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         if option not in self._options:
             LOGGER.warning(f"Select {self.entity_id}: confirm_option got non-option {option!r}; ignoring")
             return
-        index = self._options.index(option)
+        index = option_to_value(self._options, self._option_values, option)
         # Mirror as int so _handle_coordinator_update decodes it back to the option.
-        self.coordinator.entities[self.entity_id] = index
-        LOGGER.debug(f"Select {self.entity_id}: confirmed option {option!r} (index {index})")
+        self.coordinator.entities[self.data_key] = index
+        LOGGER.debug(f"Select {self.entity_id}: confirmed option {option!r} (value {index})")
         self.throttled_async_write_ha_state()
 
     def clear_user_initiated_flag(self):
@@ -247,8 +284,8 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
         """Update sensor with latest data from coordinator."""
 
         # This method is called by your DataUpdateCoordinator when a successful update runs.
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 # Handle different value types for different select types
                 if "SOC_Volt" in self.entity_info["unique_id"]:
@@ -261,9 +298,9 @@ class InverterSelect(MonitorMySolarEntity, SelectEntity):
                         new_state = value
                 else:
                     # For other selects (like Port Mode), value is typically int
-                    idx = int(value) if isinstance(value, (bool, int)) else None
-                    if idx is not None and 0 <= idx < len(self._options):
-                        new_state = self._options[idx]
+                    mapped = value_to_option(self._options, self._option_values, value, self._value_mask)
+                    if mapped is not None:
+                        new_state = mapped
                     elif value in self._options:
                         # Already an option label (e.g. mirrored back as a string).
                         new_state = value
@@ -334,40 +371,51 @@ class QuickChargeDurationSelect(MonitorMySolarEntity, SelectEntity):
         return self.get_device_info(self._dongle_id, self._manufacturer, self.entity_info.get("device_group"))
 
     async def async_select_option(self, option: str) -> None:
-        """Change the selected option."""
-        mqtt_handler = self.coordinator.mqtt_handler
-        if mqtt_handler is not None:
-            # Prepare the payload dictionary
-            payload_dict = {
-                self._entity_type: option
-            }
-            
-            # Add additional payload if configured
-            if self._additional_payload:
-                value_map = self._additional_payload.get("value_map", {})
-                additional_value = value_map.get(option, value_map.get("default"))
-                if additional_value is not None:
-                    payload_dict[self._additional_payload["key"]] = additional_value
+        """Change the selected option.
 
-            # Send the multiple updates via MQTT
-            await mqtt_handler.send_multiple_updates(
-                self._dongle_id,
-                payload_dict,
-                self,
-            )
-            
-            self._attr_current_option = option
-            self.throttled_async_write_ha_state()
+        Written as a named setting; the dongle firmware owns the mapping to
+        the actual register. The inverter only accepts the duration while a
+        boost is enabled, so when idle the choice is stored locally and the
+        Quick Charge Start switch writes it right after the enable.
+        """
+        try:
+            minutes = int(float(option))
+        except (TypeError, ValueError):
+            LOGGER.error(f"Quick charge duration not numeric: {option!r}")
+            return
+        # Firmware rule: the duration is only writable WHILE a boost is
+        # enabled (writing it first is rejected as illegal data value). While
+        # a boost runs, write it now (re-times the countdown); when idle, just
+        # remember the choice — the Quick Charge Start switch writes it right
+        # after the enable.
+        state = self.coordinator.quick_charge.get(self._dongle_id)
+        if state and state.get("active"):
+            mqtt_handler = self.coordinator.mqtt_handler
+            if mqtt_handler is None:
+                LOGGER.error("MQTT Handler is not initialized")
+                return
+            setting_name = self.entity_info.get("mqtt_setting_name", self._entity_type)
+            success = await mqtt_handler.send_update(self._dongle_id, setting_name, minutes, self)
+            if not success:
+                return  # dongle didn't confirm — leave state untouched
         else:
-            LOGGER.error("MQTT Handler is not initialized")
+            LOGGER.debug(
+                f"Quick charge idle — duration {minutes} min stored, written at next start"
+            )
+        self.coordinator.quick_charge_duration_pref[self._dongle_id] = minutes
+        self._attr_current_option = option
+        # Mirror into coordinator data so the quick-charge tracker uses the
+        # new duration immediately (the echo/hold delta will confirm it).
+        self.coordinator.entities[self.data_key] = option
+        self.throttled_async_write_ha_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Update sensor with latest data from coordinator."""
 
         # This method is called by your DataUpdateCoordinator when a successful update runs.
-        if self.entity_id in self.coordinator.entities:
-            value = self.coordinator.entities[self.entity_id]
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
             if value is not None:
                 if value in self._attr_options:
                     self._attr_current_option = value
