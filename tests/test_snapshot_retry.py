@@ -120,3 +120,31 @@ def test_retry_suppressed_during_ota(coordinator, monkeypatch):
     _fire(timers)
 
     assert published == ["dongle-A/snapshot/request"]  # no second request
+
+
+def test_retry_rearms_when_its_own_publish_fails(coordinator, monkeypatch):
+    """A retry whose publish fails (broker down for a moment) must keep the chain alive."""
+    from custom_components.monitormysolar import coordinator as coord_mod
+
+    published, timers = _prep(coordinator, monkeypatch)
+    assert _run(coordinator.request_snapshot("dongle-A", "4.3.0.111S3", force=True)) is True
+    assert len(timers) == 1
+
+    calls = {"n": 0}
+
+    async def flaky_publish(hass, topic, payload, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("broker down")
+        published.append(topic)
+
+    monkeypatch.setattr(coord_mod.mqtt, "async_publish", flaky_publish)
+
+    _fire(timers)  # retry 1: publish fails -> must re-arm
+    assert coordinator._snapshot_retry_attempts["dongle-A"] == 1
+    assert len(timers) == 1, "chain died after a failed re-publish"
+
+    _fire(timers)  # retry 2: publish works -> armed again by request_snapshot
+    assert coordinator._snapshot_retry_attempts["dongle-A"] == 2
+    assert published[-1] == "dongle-A/snapshot/request"
+    assert len(timers) == 1

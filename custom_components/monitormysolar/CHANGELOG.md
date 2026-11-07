@@ -8,6 +8,12 @@
   with the old option on used to get beta on the single entity; they now get stable there plus the beta entity.
 
 ### Fixed
+- **Review follow-ups (PR #113).** A snapshot retry whose own publish failed (broker briefly down) no longer
+  ends the retry chain; the startup-gate failsafe deadline is now stamped when the 30 s timer is armed, not at
+  construction, so a slow setup cannot open the gate early; the "Charge Based on:" option lists that gate the
+  AC-charge voltage / SOC entities live in two module constants instead of four copies; a cell-health payload
+  that is valid JSON but not an object is ignored instead of raising in the MQTT callback; the quick-charge
+  countdown's known overshoot after a re-seen snapshot is documented.
 - **"Dongle did not acknowledge the OTA command" while the progress bar was moving.** The install only counted
   a matching reply on the admin response topic as the acknowledgement; if that reply was missed (the dongle
   sends it and reboots straight away, and the subscription can race the publish) or came back without the

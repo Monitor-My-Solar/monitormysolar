@@ -74,3 +74,7 @@ async def test_coordinator_handler_creates_entities_once(coordinator):
     # Garbage and empty payloads are ignored.
     await coordinator._handle_cell_health_data("dongle-test", "{nope")
     await coordinator._handle_cell_health_data("dongle-test", "")
+    # Valid JSON that is not an object (or whose payload is not) is ignored too.
+    await coordinator._handle_cell_health_data("dongle-test", "[1, 2, 3]")
+    await coordinator._handle_cell_health_data("dongle-test", "42")
+    await coordinator._handle_cell_health_data("dongle-test", json.dumps({"payload": [1]}))

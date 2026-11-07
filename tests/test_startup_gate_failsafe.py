@@ -80,3 +80,21 @@ def test_gate_without_deadline_attr_keeps_dropping(coordinator):
 
     assert processed == []
     assert coordinator._hass_startup_complete is False
+
+
+def test_schedule_startup_gate_stamps_deadline_with_the_timer(coordinator, monkeypatch):
+    """The failsafe deadline is measured from when the timer is armed, at twice its delay."""
+    from custom_components.monitormysolar import coordinator as coord_mod
+
+    armed = []
+    monkeypatch.setattr(coord_mod, "async_call_later", lambda hass, delay, cb: armed.append((delay, cb)))
+    coordinator.hass = MagicMock()
+    coordinator._gate_opened_deadline = time.monotonic() - 1000  # stale value from __init__
+
+    async def done(_):
+        pass
+
+    before = time.monotonic()
+    coordinator._schedule_startup_gate(done, delay=30.0)
+    assert armed and armed[0][0] == 30.0
+    assert coordinator._gate_opened_deadline >= before + 60.0 - 0.01

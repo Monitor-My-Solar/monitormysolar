@@ -26,6 +26,24 @@ from .const import (
     dongle_chip_key,
 )
 
+# "Charge Based on:" options that make the AC-charge voltage / SOC entities
+# apply. One list each, used by both the availability check and the reason
+# message so the two can never drift (that drift was the 4.0.6 bug).
+AC_CHARGE_TYPES_VOLTAGE = [
+    "According To Voltage",
+    "According To Time and Voltage",
+    "According To SOC/VOLT",
+    "According To Time and SOC/VOLT",
+    "SOC/Volt According To",
+]
+AC_CHARGE_TYPES_SOC = [
+    "According To SOC",
+    "According To Time and SOC",
+    "According To SOC/VOLT",
+    "According To Time and SOC/VOLT",
+    "SOC/Volt According To",
+]
+
 # Forward reference type definition
 class MonitorMySolar(DataUpdateCoordinator[None]):
     pass
@@ -119,10 +137,11 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._gridboss_dongle = entry.data.get("gridboss_dongle", "")  # Track which dongle is GridBoss
         self._last_fault_warning_data = {}  # Track last fault/warning data to prevent duplicate processing
         self._hass_startup_complete = False  # Track if Home Assistant has finished starting up
-        # Failsafe for the startup gate: if the 30s mark_startup_complete timer
+        # Failsafe for the startup gate: if the mark_startup_complete timer
         # never fires, force the gate open at this monotonic deadline instead of
-        # silently dropping data messages forever. 60s > the 30s timer so the
-        # timer always wins when it works.
+        # silently dropping data messages forever. Re-stamped by
+        # _schedule_startup_gate when the timer is actually armed (2x its delay)
+        # so the timer always wins when it works.
         self._gate_opened_deadline = time.monotonic() + 60.0
         self._startup_dropped_count = 0  # Data messages dropped while gated (diagnostics)
         self._smart_soc_volt_bits = {}  # Track SmartSOCVoltBits for each dongle
@@ -302,6 +321,16 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         ):
             self._last_recovery_snapshot[dongle_id] = now
 
+    def _schedule_startup_gate(self, mark_startup_complete, delay: float = 30.0) -> None:
+        """Arm the startup-gate timer and set its failsafe deadline together.
+
+        The deadline is the fallback that opens the gate if the timer never
+        fires; measured from here, not from __init__, so a slow setup cannot
+        let the deadline expire before the timer was even due.
+        """
+        self._gate_opened_deadline = time.monotonic() + delay * 2
+        async_call_later(self.hass, delay, mark_startup_complete)
+
     def _cancel_snapshot_retry(self, dongle_id: str) -> None:
         """Drop any armed retry timer for a dongle."""
         # getattr: test coordinators are built via __new__ and skip __init__.
@@ -346,7 +375,12 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 "No snapshot reply from %s after %.0fs - retrying (%d/%d)",
                 dongle_id, delay, attempts + 1, max_retries,
             )
-            await self.request_snapshot(dongle_id, version, force=True)
+            published = await self.request_snapshot(dongle_id, version, force=True)
+            if not published:
+                # The re-publish itself failed (broker briefly down). A
+                # successful publish re-arms inside request_snapshot; a failed
+                # one must re-arm here or the chain dies with attempts spent.
+                self._arm_snapshot_retry(dongle_id, version)
 
         self._snapshot_retry[dongle_id] = async_call_later(self.hass, delay, _retry)
 
@@ -472,7 +506,10 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 "duration": minutes,
                 # First observation ever showing 'on' may be a boost that was
                 # already running (HA restart mid-boost) — flag the countdown
-                # as an estimate.
+                # as an estimate. Known limit: a hold snapshot that re-shows
+                # 'on' after the state was reset (a retried snapshot) restarts
+                # the countdown from now; started_at is not persisted across
+                # reloads, so such a countdown can overshoot.
                 "estimated": st is None,
             }
         else:
@@ -925,7 +962,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # ACChargeType consolidated options:
             # AAAA/BAAA/ccaa/EAAA/HAAA/ceaa: "According To Voltage", "According To Time and Voltage"
             # FAAB/FAAA: "According To SOC/VOLT", "According To Time and SOC/VOLT"
-            return charge_control == "Voltage" and charge_type in ["According To Voltage", "According To Time and Voltage", "According To SOC/VOLT", "According To Time and SOC/VOLT", "SOC/Volt According To"]
+            return charge_control == "Voltage" and charge_type in AC_CHARGE_TYPES_VOLTAGE
 
         # Check charge SOC entities - must check BOTH ubBatChgcontrol AND ACChargeType
         if self._is_charge_soc_entity(entity_unique_id):
@@ -938,7 +975,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # ACChargeType consolidated options:
             # AAAA/BAAA/ccaa/EAAA/HAAA/ceaa: "According To SOC", "According To Time and SOC"
             # FAAB/FAAA: "According To SOC/VOLT", "According To Time and SOC/VOLT"
-            return charge_control == "SOC" and charge_type in ["According To SOC", "According To Time and SOC", "According To SOC/VOLT", "According To Time and SOC/VOLT", "SOC/Volt According To"]
+            return charge_control == "SOC" and charge_type in AC_CHARGE_TYPES_SOC
 
         # Check charge time entities
         if self._is_charge_time_entity(entity_unique_id):
@@ -1058,7 +1095,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             charge_type = self.get_charge_type_setting(dongle_id)
             if charge_control != "Voltage":
                 return f"Charge control is set to '{charge_control}' - Voltage settings not available"
-            elif charge_type not in ["According To Voltage", "According To Time and Voltage", "According To SOC/VOLT", "According To Time and SOC/VOLT", "SOC/Volt According To"]:
+            elif charge_type not in AC_CHARGE_TYPES_VOLTAGE:
                 return f"Charge type is set to '{charge_type}' - Voltage settings not available"
 
         elif self._is_charge_soc_entity(entity_unique_id):
@@ -1066,7 +1103,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             charge_type = self.get_charge_type_setting(dongle_id)
             if charge_control != "SOC":
                 return f"Charge control is set to '{charge_control}' - SOC settings not available"
-            elif charge_type not in ["According To SOC", "According To Time and SOC", "According To SOC/VOLT", "According To Time and SOC/VOLT", "SOC/Volt According To"]:
+            elif charge_type not in AC_CHARGE_TYPES_SOC:
                 return f"Charge type is set to '{charge_type}' - SOC settings not available"
 
         elif self._is_charge_time_entity(entity_unique_id):
@@ -1680,8 +1717,12 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         except (json.JSONDecodeError, ValueError):
             LOGGER.error(f"Invalid JSON in cell-health data from {dongle_id}")
             return
+        if not isinstance(data, dict):
+            return
         if "payload" in data:
             data = data["payload"]
+        if not isinstance(data, dict):
+            return
         devices = data.get("devices") or []
         if not isinstance(devices, list):
             return
@@ -1842,7 +1883,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                     self._trigger_entity_availability_update(dongle_id)
         
         # Wait 30 seconds after setup to allow Home Assistant to finish starting up
-        async_call_later(self.hass, 30, mark_startup_complete)
+        self._schedule_startup_gate(mark_startup_complete)
         
         return True
 
