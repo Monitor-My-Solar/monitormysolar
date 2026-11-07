@@ -190,6 +190,91 @@ async def async_setup_entry(hass, entry: MonitorMySolarEntry, async_add_entities
         if battery_data and battery_data.get("batteries"):
             _create_battery_entities(hass, entry, async_add_entities, dongle_id, battery_data)
 
+    # JK cell health (JK BMS + active balancers): same dynamic pattern, keyed by MAC.
+    _setup_cell_health_entity_listener(hass, entry, async_add_entities)
+    for dongle_id in dongle_ids:
+        devices = coordinator.get_cell_health_data(dongle_id)
+        if devices:
+            _create_cell_health_entities(hass, entry, async_add_entities, dongle_id, devices)
+
+
+def _setup_cell_health_entity_listener(hass, entry, async_add_entities):
+    coordinator = entry.runtime_data
+
+    @callback
+    def _on_cell_health_received(event):
+        dongle_id = event.data.get("dongle_id")
+        if not dongle_id:
+            return
+        devices = coordinator.get_cell_health_data(dongle_id)
+        if devices:
+            _create_cell_health_entities(hass, entry, async_add_entities, dongle_id, devices)
+
+    entry.async_on_unload(
+        hass.bus.async_listen(f"{DOMAIN}_cellhealth_data_received", _on_cell_health_received)
+    )
+
+
+# Per-device sensors. Keys match cell_health.flatten_device(); per-cell
+# resistance / voltage sensors are added per reported cell.
+CELL_HEALTH_SENSOR_DEFS = [
+    {"key": "status", "name": "Status"},
+    {"key": "pack_voltage", "name": "Pack Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+    {"key": "avg_cell_voltage", "name": "Average Cell Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"},
+    {"key": "cell_delta_mv", "name": "Cell Spread", "unit": "mV", "state_class": "measurement"},
+    {"key": "max_cell", "name": "Max Cell Number"},
+    {"key": "min_cell", "name": "Min Cell Number"},
+    {"key": "balancing", "name": "Balancing"},
+    {"key": "balance_current", "name": "Balance Current", "unit": "A", "device_class": "current", "state_class": "measurement"},
+    {"key": "runtime_s", "name": "Runtime", "unit": "s", "device_class": "duration", "state_class": "total_increasing"},
+    {"key": "faults", "name": "Faults"},
+    {"key": "model", "name": "Model"},
+    {"key": "sw", "name": "Firmware"},
+    {"key": "res_median_mohm", "name": "Resistance Median", "unit": "mΩ", "state_class": "measurement"},
+    {"key": "res_max_mohm", "name": "Resistance Max", "unit": "mΩ", "state_class": "measurement"},
+    # Cells above 1.5x the device median — "check that busbar or sense lead".
+    {"key": "res_flagged_count", "name": "Cells To Check", "state_class": "measurement", "attributes": ["res_flagged_cells"]},
+    {"key": "balancer_enabled", "name": "Balancer Switch"},
+    {"key": "balancer_start_voltage", "name": "Balancer Start Voltage", "unit": "V", "device_class": "voltage"},
+    {"key": "balancer_trigger_mv", "name": "Balancer Trigger Spread", "unit": "mV"},
+    {"key": "balancer_max_current", "name": "Balancer Max Current", "unit": "A", "device_class": "current"},
+    # yes while the spread is over the trigger but no cell has reached the start voltage.
+    {"key": "balancer_waiting", "name": "Balancer Waiting For Top Of Charge"},
+]
+
+
+def _create_cell_health_entities(hass, entry, async_add_entities, dongle_id, devices):
+    """One HA device per JK MAC (balancer or JK BMS) with the sensors above
+    plus per-cell resistance and voltage."""
+    from .cell_health import flatten_device, mac_slug
+
+    coordinator = entry.runtime_data
+    created = coordinator._cell_health_entities_created
+    entities = []
+    for mac, device in devices.items():
+        marker = f"{dongle_id}:{mac}"
+        if marker in created:
+            continue
+        flat = flatten_device(device)
+        defs = list(CELL_HEALTH_SENSOR_DEFS)
+        cell_count = len([k for k in flat if k.endswith("_resistance")])
+        for n in range(1, cell_count + 1):
+            defs.append({"key": f"cell_{n}_resistance", "name": f"Cell {n} Resistance", "unit": "mΩ", "state_class": "measurement"})
+        volt_count = len([k for k in flat if k.endswith("_voltage") and k.startswith("cell_")])
+        for n in range(1, volt_count + 1):
+            defs.append({"key": f"cell_{n}_voltage", "name": f"Cell {n} Voltage", "unit": "V", "device_class": "voltage", "state_class": "measurement"})
+        device_entities = [
+            CellHealthSensor(hass, entry, dongle_id, mac, mac_slug(mac), device, sensor_def, flat.get(sensor_def["key"]))
+            for sensor_def in defs
+            if sensor_def["key"] in flat
+        ]
+        if device_entities:
+            created.add(marker)
+            entities.extend(device_entities)
+    if entities:
+        async_add_entities(entities)
+        LOGGER.info(f"Created {len(entities)} cell-health sensors for {dongle_id} ({len(devices)} JK device(s))")
+
 
 def _setup_battery_entity_listener(hass, entry, async_add_entities):
     """Set up listener for dynamic battery entity creation."""
@@ -1686,6 +1771,84 @@ class BatteryDetailSensor(MonitorMySolarEntity, SensorEntity):
                 self._state = (
                     round(value, 2) if isinstance(value, (float, int)) else value
                 )
+                self.throttled_async_write_ha_state()
+
+
+class CellHealthSensor(MonitorMySolarEntity, SensorEntity):
+    """One value of a JK device (balancer or JK BMS) from <id>/cellhealth."""
+
+    def __init__(self, hass, entry, dongle_id, mac, slug, device, sensor_def, initial_value):
+        self.coordinator = entry.runtime_data
+        self._dongle_id = dongle_id
+        self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
+        self._mac = mac
+        self._slug = slug
+        self._key = sensor_def["key"]
+        self._sensor_def = sensor_def
+        self._role = device.get("role") or "battery"
+        self._model = device.get("model") or ("JK balancer" if self._role == "balancer" else "JK BMS")
+        label = "Balancer" if self._role == "balancer" else "JK BMS"
+        self._name = f"{label} {mac[-5:]} {sensor_def['name']}"
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_cellhealth_{slug}_{self._key}".lower()
+        self._state = initial_value
+        self.entity_id = self.coordinator.build_entity_id("sensor", dongle_id, f"cellhealth_{slug}_{self._key}")
+        self.hass = hass
+        self._manufacturer = entry.data.get("inverter_brand")
+        super().__init__(self.coordinator)
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def unique_id(self):
+        return self._unique_id
+
+    @property
+    def state(self):
+        return self._state
+
+    @property
+    def state_class(self):
+        return self._sensor_def.get("state_class")
+
+    @property
+    def unit_of_measurement(self):
+        return self._sensor_def.get("unit")
+
+    @property
+    def device_class(self):
+        return self._sensor_def.get("device_class")
+
+    @property
+    def extra_state_attributes(self):
+        attrs = {"mac": self._mac, "role": self._role}
+        for key in self._sensor_def.get("attributes", []):
+            attrs[key] = self.coordinator.entities.get(
+                self.coordinator.build_entity_id("sensor", self._dongle_id, f"cellhealth_{self._slug}_{key}")
+            )
+        if self._key == "res_flagged_count" and self._state:
+            attrs["advice"] = "check that busbar or sense lead"
+        return attrs
+
+    @property
+    def device_info(self):
+        """One device per JK MAC, under the dongle. Balancers are NOT part of
+        the battery bank device."""
+        return {
+            "identifiers": {(DOMAIN, f"{self._dongle_id}_cellhealth_{self._slug}")},
+            "name": f"{self._dongle_id} - {'Balancer' if self._role == 'balancer' else 'JK BMS'} {self._mac}",
+            "manufacturer": "JiKong",
+            "model": self._model,
+            "via_device": (DOMAIN, self._dongle_id),
+        }
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        if self.data_key in self.coordinator.entities:
+            value = self.coordinator.entities[self.data_key]
+            if value is not None:
+                self._state = round(value, 3) if isinstance(value, float) else value
                 self.throttled_async_write_ha_state()
 
 
