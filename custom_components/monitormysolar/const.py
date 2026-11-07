@@ -711,6 +711,9 @@ ENTITIES = {
                     # writes to "ubQuickChgStartEn" get no /response, writes to
                     # "QuickCharge" succeed.
                     {"name": "Quick Charge Start", "type": "switch", "unique_id": "ubQuickChgStartEn", "mqtt_setting_name": "QuickCharge", "quickcharge_start": True, "source": "holdbank6", "allowed_groups": ["GEN", "threephase", "offgrid"], "device_group": "Controls"},
+                    # GEN3 ciaa only: the inverter's grid-CT-connected toggle; the dongle
+                    # read-modify-writes the underlying setting so its other bits are kept.
+                    {"name": "Grid CT Connection", "type": "switch", "unique_id": "GridCTConnect", "source": "holdbank6", "allowed_firmware_codes": ["ciaa"], "device_group": "Controls"},
                 ]
             },
             "binary_sensor": {  # This should be the only place defining these sensors
@@ -827,7 +830,9 @@ ENTITIES = {
                     {"name": "Export Power (kW)", "type": "number", "unique_id": "MaxBackFlow", "unit": "kW", "min": 0, "max": 24 , "step": 0.1, "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"], "device_group": "Controls", "display_scale": 10},
                     {"name": "On-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "EOD", "unit": "%", "min": 0, "max": 90, "mode": "slider", "source": "holdbank3", "device_group": "Controls"},
                     {"name": "Off-grid Battery Voltage Cut off", "type": "number", "unique_id": "CutVoltForDischg", "unit": "V", "min": 40, "max": 56, "mode": "slider", "source": "holdbank3", "device_group": "Controls"},
-                    {"name": "Charge Current DC(A)", "type": "number", "unique_id": "ChargeCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
+                    # GEN3 "ciaa": the charge-current limit is the ACChargeBatCurrent setting,
+                    # not ChargeCurr — ChargeCurr is hidden there and ACChargeBatCurrent surfaced.
+                    {"name": "Charge Current DC(A)", "type": "number", "unique_id": "ChargeCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "excluded_firmware_codes": ["ciaa"], "device_group": "Controls"},
                     {"name": "Discharge Current DC(A) Lead Acid", "type": "number", "unique_id": "DischgCurr", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
                 ],
                 "holdbank4": [
@@ -845,7 +850,10 @@ ENTITIES = {
 
                 ],
                 "holdbank5": [
-                    {"name": "On Grid Battery Voltage Cut off", "type": "number", "unique_id": "OngridEOD_Voltage", "unit": "V", "min": 40, "max": 56, "mode": "slider", "mqtt_multiplier": 10, "device_group": "Controls"}
+                    {"name": "On Grid Battery Voltage Cut off", "type": "number", "unique_id": "OngridEOD_Voltage", "unit": "V", "min": 40, "max": 56, "mode": "slider", "mqtt_multiplier": 10, "device_group": "Controls"},
+                    # Raw amps. On GEN3 "ciaa" this IS the charge-current limit the
+                    # inverter honours (Locks Road 2026-11-06).
+                    {"name": "Charge Current (A)", "type": "number", "unique_id": "ACChargeBatCurrent", "unit": "A", "min": 0, "max": 250, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank5", "allowed_firmware_codes": ["ciaa"], "device_group": "Controls"},
                 ],
                 "holdbank6": [
                     {"name": "System Charge SOC Limit %", "type": "number", "unique_id": "BatStopChgSOC", "unit": "%", "min": 0, "max": 101, "mode": "slider", "allowed_groups": ["GEN", "offgrid"], "source": "holdbank6", "device_group": "Controls"},
@@ -854,6 +862,11 @@ ENTITIES = {
                 ],
             },
             "select": {
+                "holdbank1": [
+                    # GEN3 ciaa offers Empty / Parallel / Independent only; the value also
+                    # carries a read-only field, hence value_mask.
+                    {"name": "PV Input Mode", "type": "select", "unique_id": "PVInputModel", "options": ["Empty", "Parallel MPPT Inputs", "Independent MPPT Inputs"], "option_values": [0, 3, 4], "value_mask": 255, "source": "holdbank1", "allowed_firmware_codes": ["ciaa"], "device_group": "Controls"},
+                ],
                 "holdbank3": [
                     {"name": "CT Sample Ratio", "type": "select", "unique_id": "CTSampleRatio", "options": ["1:1000", "1:3000"], "source": "holdbank3", "device_group": "Controls"},
                     {"name": "Clear Parallel Alarm", "type": "select", "unique_id": "ClearParallelAlarm", "options": ["N/A", "Clear" ], "source": "holdbank3", "device_group": "Controls"},

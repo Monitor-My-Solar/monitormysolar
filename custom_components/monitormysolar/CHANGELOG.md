@@ -1,5 +1,29 @@
 # Changelog
 ## Version 4.0.4.2 (Beta)
+### Added
+- **JK cell health — active balancers and JK BMS cell resistance** (dongle fw 4.5.0.84S3+, `<id>/cellhealth`,
+  once per BLE poll). One HA device per JK MAC (`Balancer xx:xx` / `JK BMS xx:xx`, under the dongle, NOT part of
+  the battery bank — from this firmware balancers no longer appear in `/batteries`): status, pack voltage,
+  average cell, cell spread, max/min cell, balancing state + current, runtime, faults, model, firmware, per-cell
+  **connection resistance** and voltage, resistance median/max and **Cells To Check** (cells above 1.5× the
+  device median, the same rule as the dongle's own screen — "check that busbar or sense lead"); from fw 85S3 the
+  balancer's own settings (switch, start voltage, trigger spread, max current, read-only) and "Balancer Waiting
+  For Top Of Charge". Devices are keyed by MAC so renames keep history. `cell_health.py`,
+  `coordinator._handle_cell_health_data`, `sensor.CellHealthSensor`.
+- **PV Input Mode select on GEN3 "ciaa"** (`select.*_pv_input_mode`, `PVInputModel`): Empty / Parallel MPPT
+  Inputs / Independent MPPT Inputs, the three choices this family offers. Selects can now carry `option_values`
+  for settings whose valid values are not contiguous, and `value_mask` to drop another field packed in the same
+  setting word. Needs the dongle build that knows the `PVInputModel` write.
+- **Grid CT Connection switch on GEN3 "ciaa"** (`switch.*_grid_ct_connection`, `GridCTConnect`): the inverter's
+  grid-CT-connected toggle, read-modify-written by the dongle. ciaa only — no other family has been verified.
+
+### Changed
+- **GEN3 "ciaa" charge current moves to the `ACChargeBatCurrent` setting.** On this family the inverter's
+  charge-current limit is the AC-charge-current setting, not `ChargeCurr` — a Locks Road unit showed 90 A here
+  while the inverter was set to 180 A. `ciaa` dongles no longer get `number.*_charge_current_dc_a` and instead
+  get **`number.*_charge_current_a`** (`ACChargeBatCurrent`, 0–250 A, raw amps). Every other firmware is
+  unchanged. Entity definitions can now carry `excluded_firmware_codes` / `allowed_firmware_codes` (exact codes,
+  case-insensitive) on top of the group gates for the odd unit whose settings differ from its group.
 ### Fixed
 - **AC charge time settings wrongly unavailable on standard/ACS units.** The
   coordinator kept its own copy of the "Charge Based on:" option lists and the

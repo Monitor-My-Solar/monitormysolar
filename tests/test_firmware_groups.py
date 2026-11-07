@@ -114,3 +114,48 @@ def test_is_gridboss_uses_midbox_group(coordinator):
     assert coordinator.is_gridboss_dongle("d") is True
     _set_fw(coordinator, "HAAA")
     assert coordinator.is_gridboss_dongle("d") is False
+
+
+# Exact-code gates for the odd unit whose settings differ from its group
+# (GEN3 "ciaa", group offgrid, uses a different charge-current setting).
+def test_excluded_firmware_codes_wins_over_group(coordinator):
+    _set_fw(coordinator, "ciaa")
+    entity = {"unique_id": "ChargeCurr", "excluded_firmware_codes": ["ciaa"]}
+    assert coordinator.entity_allowed_for_dongle("d", entity) is False
+    _set_fw(coordinator, "Ciaa")  # dongles report mixed case
+    assert coordinator.entity_allowed_for_dongle("d", entity) is False
+    _set_fw(coordinator, "ceaa")  # same group, not excluded
+    assert coordinator.entity_allowed_for_dongle("d", entity) is True
+
+
+def test_allowed_firmware_codes_exact(coordinator):
+    entity = {"unique_id": "ACChargeBatCurrent", "allowed_firmware_codes": ["ciaa"]}
+    _set_fw(coordinator, "CIAA")
+    assert coordinator.entity_allowed_for_dongle("d", entity) is True
+    _set_fw(coordinator, "ceaa")  # same offgrid group, different code
+    assert coordinator.entity_allowed_for_dongle("d", entity) is False
+    _set_fw(coordinator, "FAAB")
+    assert coordinator.entity_allowed_for_dongle("d", entity) is False
+
+
+def test_ciaa_charge_current_catalog_split():
+    """The Lux catalog hides ChargeCurr on ciaa and offers ACChargeBatCurrent instead."""
+    from custom_components.monitormysolar.const import ENTITIES
+    numbers = ENTITIES["Lux"]["number"]
+    charge_curr = [e for e in numbers["holdbank3"] if e["unique_id"] == "ChargeCurr"]
+    assert len(charge_curr) == 1
+    assert charge_curr[0]["excluded_firmware_codes"] == ["ciaa"]
+    acc = [e for e in numbers["holdbank5"] if e["unique_id"] == "ACChargeBatCurrent"]
+    assert len(acc) == 1
+    assert acc[0]["allowed_firmware_codes"] == ["ciaa"]
+    assert acc[0]["max"] == 250
+    assert "mqtt_multiplier" not in acc[0] and "display_scale" not in acc[0]
+
+
+def test_ciaa_grid_ct_connection_switch_catalog():
+    """Grid CT Connection is offered on ciaa only."""
+    from custom_components.monitormysolar.const import ENTITIES
+    switches = ENTITIES["Lux"]["switch"]["holdbank6"]
+    entry = [e for e in switches if e["unique_id"] == "GridCTConnect"]
+    assert len(entry) == 1
+    assert entry[0]["allowed_firmware_codes"] == ["ciaa"]

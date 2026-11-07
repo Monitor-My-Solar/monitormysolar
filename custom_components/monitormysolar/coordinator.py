@@ -137,6 +137,9 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         # Battery extended data tracking
         self._battery_data: Dict[str, Dict] = {}  # {dongle_id: battery payload data}
         self._battery_entities_created: Set[str] = set()  # Track which dongles have battery entities
+        # JK cell health (JK BMS + active balancers) from <id>/cellhealth, keyed by device MAC.
+        self._cell_health_data: Dict[str, Dict[str, Dict]] = {}  # {dongle_id: {mac: device}}
+        self._cell_health_entities_created: Set[str] = set()  # "{dongle_id}:{mac}"
         self._battery_async_add_entities = None  # Callback for adding battery sensor entities
         
         # Track charge/discharge control settings for standard units
@@ -491,6 +494,9 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Whether an entity definition should be created for this dongle.
 
         Group-based gating, replacing the old exact `allowed_firmware_codes` lists:
+        - `excluded_firmware_codes` (exact codes, always wins) and
+          `allowed_firmware_codes` (exact allow-list, replaces the group rule when
+          present) exist for the odd unit whose settings differ from its group.
         - An entity with `allowed_groups` is created only when the dongle's firmware
           group is listed.
         - An entity WITHOUT `allowed_groups` is a generic entity available to every
@@ -498,6 +504,18 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
           entities explicitly tagged with the 'midbox' group — matching the old rule
           where GridBoss dongles required an explicit allow-list entry.
         """
+        # Exact-code gates sit on top of the group rule for the odd family
+        # whose settings differ from its group (GEN3 "ciaa": a different
+        # charge-current setting). Codes compare case-insensitively —
+        # dongles report mixed case ("Ciaa").
+        code = (self.get_firmware_code(dongle_id) or "").strip().lower()
+        excluded = entity_def.get("excluded_firmware_codes")
+        if excluded and code in {c.strip().lower() for c in excluded}:
+            return False
+        allowed_codes = entity_def.get("allowed_firmware_codes")
+        if allowed_codes:
+            return code in {c.strip().lower() for c in allowed_codes}
+
         group = self.get_firmware_group(dongle_id)
         allowed_groups = entity_def.get("allowed_groups")
         if not allowed_groups:
@@ -1454,6 +1472,9 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             # Handle battery extended data topic
             elif topic.endswith("/batteries"):
                 await self._handle_battery_data(dongle_id, msg.payload)
+            # JK cell health: JK BMS + JK active balancers (balancer-mode fw 4.5.0.84S3+)
+            elif topic.endswith("/cellhealth"):
+                await self._handle_cell_health_data(dongle_id, msg.payload)
             # Always process /status and /availability, even during startup: they
             # carry the firmware version and connection state that drive the
             # full-snapshot bootstrap (FW >= 4.3.0 streams change-data only).
@@ -1638,6 +1659,55 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
     def get_battery_data(self, dongle_id: str) -> Dict:
         """Get battery extended data for a dongle."""
         return self._battery_data.get(dongle_id, {})
+
+    async def _handle_cell_health_data(self, dongle_id: str, payload):
+        """Handle <id>/cellhealth: JK BMS + JK active balancers with per-cell
+        connection resistance (cell_health.py). Devices are identified by MAC
+        (stable; the user can rename them). The dongle sends the full list
+        once per BLE poll; a site with no JK device publishes nothing."""
+        from .cell_health import flatten_device, mac_slug
+
+        if payload is None or len(payload.strip()) == 0:
+            return
+        try:
+            data = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            LOGGER.error(f"Invalid JSON in cell-health data from {dongle_id}")
+            return
+        if "payload" in data:
+            data = data["payload"]
+        devices = data.get("devices") or []
+        if not isinstance(devices, list):
+            return
+
+        by_mac = self._cell_health_data.setdefault(dongle_id, {})
+        new_macs = []
+        for device in devices:
+            mac = device.get("mac") if isinstance(device, dict) else None
+            if not mac:
+                continue
+            by_mac[mac] = device
+            slug = mac_slug(mac)
+            for key, value in flatten_device(device).items():
+                self.entities[self.build_entity_id("sensor", dongle_id, f"cellhealth_{slug}_{key}")] = value
+            marker = f"{dongle_id}:{mac}"
+            if marker not in self._cell_health_entities_created:
+                new_macs.append(mac)
+
+        if new_macs:
+            LOGGER.info(
+                f"Cell-health data for {dongle_id}: {len(devices)} device(s), "
+                f"{len(new_macs)} new - triggering entity creation"
+            )
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_cellhealth_data_received",
+                {"dongle_id": dongle_id, "macs": new_macs},
+            )
+        self.async_set_updated_data(self.entities)
+
+    def get_cell_health_data(self, dongle_id: str) -> Dict[str, Dict]:
+        """JK cell-health devices for a dongle, keyed by MAC."""
+        return self._cell_health_data.get(dongle_id, {})
 
     def _process_gridboss_nested_data(self, dongle_id: str, payload_data):
         """Process GridBoss nested payload structure - now simplified since payload has correct entity names."""
