@@ -1,5 +1,5 @@
 # Changelog
-## Version 4.0.7 (Beta)
+## Version 4.0.7.1 (Beta)
 Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everything here also runs on older firmware, the new entities simply stay absent.
 
 ### Added
