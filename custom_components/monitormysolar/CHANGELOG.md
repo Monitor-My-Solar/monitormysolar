@@ -1,7 +1,9 @@
 # Changelog
 ## Version 4.0.7.2
 Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everything here also runs on older firmware, the new entities simply stay absent.
-Released from the 4.0.7B / 4.0.7.1B / 4.0.7.2B betas; this section covers everything since 4.0.6.
+First production release since 4.0.1: it rolls up the 4.0.2B–4.0.7.2B betas, so the 4.0.6 section below (quick charge, CT settings, legacy charge times) is new to production users too.
+
+**Thanks to [RAR](https://github.com/RAR) (Andrew Rankin)** for #110 and #111: settings no longer report a fabricated 0 / off when the connect-time snapshot is lost, lost snapshot requests are verified and retried, and the test suite runs on Python 3.12+.
 
 ### Added
 - **Firmware Beta update entity.** Every dongle now has a second update entity, `update.*_firmware_update_beta`,
@@ -34,6 +36,14 @@ Released from the 4.0.7B / 4.0.7.1B / 4.0.7.2B betas; this section covers everyt
   case-insensitive) on top of the group gates for the odd unit whose settings differ from its group.
 
 ### Fixed
+- **Settings showed 0 / off when the connect-time snapshot was lost** (RAR, #111). Dongles on firmware 4.3.0+
+  send hold registers once, in the snapshot after connecting; if that request was lost nothing re-sent them,
+  and number / switch entities seeded with 0 / off looked like real readings. Numbers and switches now start
+  `unknown` like selects, the recovery debounce is only recorded once a request has actually been published,
+  and a request without a `/snap/hold` reply is re-sent (3 retries, 20 s apart, never during an OTA).
+- **Test suite on Python 3.12+** (RAR, #110): `asyncio.run()` replaces the removed implicit event loop.
+- **Firmware-code lookups are case-insensitive** ("Ceaa", "cEAA") and every entity looks the code up in the
+  same place; blocking calls in the setup path and the firmware version comparator were tidied (4.0.2B/4.0.3B).
 - **Review follow-ups (PR #113).** A snapshot retry whose own publish failed (broker briefly down) no longer
   ends the retry chain; the startup-gate failsafe deadline is now stamped when the 30 s timer is armed, not at
   construction, so a slow setup cannot open the gate early; the "Charge Based on:" option lists that gate the
