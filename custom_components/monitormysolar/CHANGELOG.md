@@ -7,6 +7,14 @@
   the beta entity is enabled; off, it is registered disabled and can be enabled from the entity settings. Installs
   with the old option on used to get beta on the single entity; they now get stable there plus the beta entity.
 
+### Fixed
+- **"Dongle did not acknowledge the OTA command" while the progress bar was moving.** The install only counted
+  a matching reply on the admin response topic as the acknowledgement; if that reply was missed (the dongle
+  sends it and reboots straight away, and the subscription can race the publish) or came back without the
+  request id, HA raised after 30 s even though progress was streaming. Progress or a result now count as the
+  acknowledgement, a reply without an id is accepted, and the command is published half a second after the
+  subscriptions are set up.
+
 ## Version 4.0.7.1 (Beta)
 Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everything here also runs on older firmware, the new entities simply stay absent.
 

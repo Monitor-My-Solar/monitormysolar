@@ -283,13 +283,29 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         result_event = asyncio.Event()
         loop = self.hass.loop
 
+        def _mark_acknowledged(detail: str) -> None:
+            """The dongle has taken the command, whichever topic told us so."""
+            if ack["received"]:
+                return
+            ack["received"] = True
+            ack["ok"] = True
+            ack["detail"] = detail
+            loop.call_soon_threadsafe(ack_event.set)
+
         @callback
         def _on_response(msg):
             try:
                 data = json.loads(msg.payload)
             except (ValueError, TypeError):
                 return
-            if data.get("id") != request_id or data.get("cmd") != "ota":
+            if data.get("cmd") != "ota":
+                return
+            # Match our request id when the dongle echoes one; an OTA reply
+            # without an id is still ours (we only ever have one in flight).
+            msg_id = data.get("id")
+            if msg_id is not None and msg_id != request_id:
+                return
+            if ack["received"]:
                 return
             ack["received"] = True
             ack["ok"] = data.get("status") == "ok"
@@ -313,6 +329,10 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
             msg_id = data.get("id")
             if msg_id is not None and msg_id != request_id:
                 return
+            # Progress means the dongle took the command, even if its ACK on
+            # the response topic was missed (it reboots straight after sending
+            # it, and the subscription can race the publish).
+            _mark_acknowledged("progress received")
             pct = data.get("progress")
             if isinstance(pct, (int, float)) and 0 <= pct <= 100:
                 self._attr_progress = int(pct)
@@ -324,6 +344,8 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
                 data = json.loads(msg.payload)
             except (ValueError, TypeError):
                 return
+            # A result implies the command was accepted; never fail on a missed ACK.
+            _mark_acknowledged("result received")
             result["status"] = data.get("status")
             result["detail"] = data.get("detail", "")
             loop.call_soon_threadsafe(result_event.set)
@@ -344,6 +366,9 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         self.coordinator.set_ota_in_progress(self._dongle_id, True)
 
         try:
+            # Let the three subscriptions settle at the broker before the
+            # command goes out; the dongle ACKs and reboots within a second.
+            await asyncio.sleep(0.5)
             await mqtt.async_publish(
                 self.hass, f"{self._dongle_id}/admin", json.dumps(command), qos=1
             )
