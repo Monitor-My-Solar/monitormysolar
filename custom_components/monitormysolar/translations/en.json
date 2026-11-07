@@ -96,7 +96,7 @@
           "enable_device_grouping": "Enable Device Grouping (organise entities into sub-devices)",
           "use_input_box": "Use Input Box (use text input instead of slider for number entities)",
           "drop_dongle_id": "Drop Dongle ID from entity names (cleaner names; history is preserved)",
-          "use_beta_firmware": "Use Beta Firmware (install beta releases instead of stable)"
+          "use_beta_firmware": "Show beta firmware updates (adds a Firmware Beta update entity next to the stable one)"
         }
       },
       "check_status": {

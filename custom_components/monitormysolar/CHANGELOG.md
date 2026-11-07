@@ -3,6 +3,11 @@
 Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everything here also runs on older firmware, the new entities simply stay absent.
 
 ### Added
+- **Firmware Beta update entity.** Every dongle now has a second update entity, `update.*_firmware_update_beta`,
+  that follows the beta firmware track (version, release notes, install) alongside the stable `Firmware` entity,
+  which always follows the stable track. The "Use Beta Firmware" option is now "Show beta firmware updates": on,
+  the beta entity is enabled; off, it is registered disabled and can be enabled from the entity settings. Installs
+  with the old option on used to get beta on the single entity; they now get stable there plus the beta entity.
 - **JK cell health — active balancers and JK BMS cell resistance** (dongle fw 4.5.0.84S3+, `<id>/cellhealth`,
   once per BLE poll). One HA device per JK MAC (`Balancer xx:xx` / `JK BMS xx:xx`, under the dongle, NOT part of
   the battery bank — from this firmware balancers no longer appear in `/batteries`): status, pack voltage,

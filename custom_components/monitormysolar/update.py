@@ -6,7 +6,11 @@ This module provides firmware update functionality with:
 - Manual update checks via the entity UI
 - Real-time progress tracking during updates
 - Release notes display
-- Support for stable and beta versions
+- Support for stable and beta versions: every dongle gets a "Firmware" entity
+  on the stable track and a "Firmware Beta" entity on the beta track. The beta
+  entity is enabled by default only when the "Show beta firmware updates"
+  option is on; otherwise it sits disabled in the entity registry, one click
+  away.
 
 The update entity will:
 1. Check for updates automatically every 6 hours
@@ -24,6 +28,7 @@ from datetime import timedelta
 from homeassistant.components import mqtt
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature, UpdateDeviceClass
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
 from .const import DOMAIN, ENTITIES, LOGGER, CONF_USE_BETA, DEFAULT_USE_BETA, fw_version_is_newer
 from .coordinator import MonitorMySolarEntry
@@ -53,19 +58,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry, asy
     await _fetch_server_versions(coordinator, UPDATE_URLS.keys())
 
     entities = []
-    
-    # Create a firmware update entity for each dongle
+
+    # One stable and one beta update entity per dongle.
+    show_beta = entry.data.get(CONF_USE_BETA, DEFAULT_USE_BETA)
     for dongle_id in dongle_ids:
-        entities.append(
-            DongleFirmwareUpdate(
-                hass,
-                entry,
-                dongle_id
-            )
-        )
+        entities.append(DongleFirmwareUpdate(hass, entry, dongle_id, track="prod"))
+        beta = DongleFirmwareUpdate(hass, entry, dongle_id, track="beta")
+        entities.append(beta)
+        if show_beta:
+            _enable_if_integration_disabled(hass, beta.unique_id)
 
     if entities:
         async_add_entities(entities)
+
+
+def _enable_if_integration_disabled(hass: HomeAssistant, unique_id: str) -> None:
+    """Re-enable a beta entity this integration registered disabled.
+
+    `entity_registry_enabled_default` only counts the first time an entity is
+    registered, so a user who turns the beta option on later would never see
+    the entity. A user who disabled it themselves is left alone.
+    """
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id("update", DOMAIN, unique_id)
+    if not entity_id:
+        return
+    entry = registry.async_get(entity_id)
+    if entry and entry.disabled_by == er.RegistryEntryDisabler.INTEGRATION:
+        registry.async_update_entity(entity_id, disabled_by=None)
         
 async def _fetch_server_versions(coordinator, chips) -> None:
     """Fetch the latest firmware versions for the given chip channels ("s3"/"c6")."""
@@ -102,15 +122,19 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         hass: HomeAssistant,
         entry: MonitorMySolarEntry,
         dongle_id: str,
+        track: str = "prod",
     ) -> None:
-        """Initialize the update entity."""
+        """Initialize the update entity for one firmware track ("prod" or "beta")."""
         self.hass = hass
         self.coordinator = entry.runtime_data
         self._dongle_id = dongle_id
+        self._track = track
         self._formatted_dongle_id = self.coordinator.get_formatted_dongle_id(dongle_id)
-        self._unique_id = f"{entry.entry_id}_{dongle_id}_firmware_update"
+        # The stable entity keeps its historical unique_id / entity_id.
+        suffix = "firmware_update" if track == "prod" else "firmware_update_beta"
+        self._unique_id = f"{entry.entry_id}_{dongle_id}_{suffix}"
         self._manufacturer = "MonitorMySolar"
-        self.entity_id = self.coordinator.build_entity_id("update", self._dongle_id, "firmware_update")
+        self.entity_id = self.coordinator.build_entity_id("update", self._dongle_id, suffix)
         self._attr_in_progress = False
         self._attr_progress = None
         self._unsubscribe_timer = None
@@ -125,12 +149,13 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
     @property
     def name(self):
         """Return the name of the entity."""
+        beta = " Beta" if self._track == "beta" else ""
         if self._attr_has_entity_name:
             # Multiple dongles - return just "Firmware"
-            return "Firmware"
+            return f"Firmware{beta}"
         else:
             # Single dongle - return full name
-            return "Firmware Update"
+            return f"Firmware{beta} Update"
 
     @property
     def unique_id(self):
@@ -167,7 +192,7 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         """Latest version available on this dongle's chip channel and track."""
         server_versions = self._server_versions
 
-        if self._use_beta:
+        if self._track == "beta":
             version = server_versions.get("betaFwVersion")
         else:
             version = server_versions.get("latestFwVersion")
@@ -178,14 +203,14 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         return str(version)
 
     @property
-    def _use_beta(self) -> bool:
-        """Whether this install should track the beta firmware channel."""
+    def _show_beta(self) -> bool:
+        """The "Show beta firmware updates" option."""
         return self.coordinator.entry.data.get(CONF_USE_BETA, DEFAULT_USE_BETA)
 
     @property
     def extra_state_attributes(self) -> dict:
         """Which chip channel and track the offered build comes from."""
-        return {"chip": self._chip.upper(), "track": "beta" if self._use_beta else "prod"}
+        return {"chip": self._chip.upper(), "track": self._track}
 
     def version_is_newer(self, latest_version: str, installed_version: str) -> bool:
         """Offer an update only when the server version is strictly newer.
@@ -203,17 +228,8 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         """Return the release notes."""
         try:
             server_versions = self._server_versions
-
-            # Determine which changelog to show based on version
-            latest = self.latest_version
-            beta_version = server_versions.get("betaFwVersion")
-            
-            # If latest version matches beta, show beta changelog
-            if latest and beta_version and latest == beta_version:
-                changelog = server_versions.get("changelogBeta")
-            else:
-                # Otherwise show standard changelog
-                changelog = server_versions.get("changelog")
+            key = "changelogBeta" if self._track == "beta" else "changelog"
+            changelog = server_versions.get(key)
             
             if not changelog:
                 return None
@@ -247,7 +263,7 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         the current build on prod or beta. The `version` argument from HA is
         ignored.
         """
-        track = "beta" if self._use_beta else "prod"
+        track = self._track
 
         request_id = uuid.uuid4().hex[:12]
         command = {"cmd": "ota", "id": request_id, "args": {"track": track}}
@@ -431,8 +447,8 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
     
     @property
     def entity_registry_enabled_default(self) -> bool:
-        """Return if the entity should be enabled when first added to the entity registry."""
-        return True
+        """Stable is always on; beta only when the user asked to see beta updates."""
+        return self._track != "beta" or bool(self._show_beta)
     
     async def _refresh_firmware_version(self) -> None:
         """Refresh the firmware version after an update."""
