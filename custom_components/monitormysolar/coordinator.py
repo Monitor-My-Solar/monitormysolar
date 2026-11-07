@@ -43,6 +43,11 @@ AC_CHARGE_TYPES_SOC = [
     "According To Time and SOC/VOLT",
     "SOC/Volt According To",
 ]
+# Last-resort ACChargeType option list when no catalog select matches the
+# dongle's firmware group. This is an ORDERED index list (the device reports
+# 0 / 1), the legacy two-option firmware order, and is deliberately separate
+# from the gating lists above, which are membership sets, not indices.
+AC_CHARGE_TYPE_FALLBACK_OPTIONS = ["Time According To", "SOC/Volt According To"]
 
 # Forward reference type definition
 class MonitorMySolar(DataUpdateCoordinator[None]):
@@ -762,7 +767,7 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
             f"No ACChargeType catalog entry matches group "
             f"{self.get_firmware_group(dongle_id)!r} (dongle {dongle_id}) — using legacy list"
         )
-        return ["Time According To", "SOC/Volt According To"]
+        return list(AC_CHARGE_TYPE_FALLBACK_OPTIONS)
 
     def update_charge_type_setting(self, dongle_id: str, charge_type):
         """Update the charge type setting for a dongle.

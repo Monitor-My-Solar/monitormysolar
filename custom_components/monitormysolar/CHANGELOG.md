@@ -37,7 +37,7 @@ Released from the 4.0.7B / 4.0.7.1B / 4.0.7.2B betas; this section covers everyt
 - **Review follow-ups (PR #113).** A snapshot retry whose own publish failed (broker briefly down) no longer
   ends the retry chain; the startup-gate failsafe deadline is now stamped when the 30 s timer is armed, not at
   construction, so a slow setup cannot open the gate early; the "Charge Based on:" option lists that gate the
-  AC-charge voltage / SOC entities live in two module constants instead of four copies; a cell-health payload
+  AC-charge voltage / SOC entities live in two module constants instead of four copies (and the legacy fallback option order is a named constant); a cell-health payload
   that is valid JSON but not an object is ignored instead of raising in the MQTT callback; the quick-charge
   countdown's known overshoot after a re-seen snapshot is documented.
 - **"Dongle did not acknowledge the OTA command" while the progress bar was moving.** The install only counted
