@@ -1,5 +1,7 @@
 # Changelog
-## Version 4.0.4.2 (Beta)
+## Version 4.0.7 (Beta)
+Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everything here also runs on older firmware, the new entities simply stay absent.
+
 ### Added
 - **JK cell health — active balancers and JK BMS cell resistance** (dongle fw 4.5.0.84S3+, `<id>/cellhealth`,
   once per BLE poll). One HA device per JK MAC (`Balancer xx:xx` / `JK BMS xx:xx`, under the dongle, NOT part of
@@ -32,6 +34,8 @@
   legacy units are C6) and reads `/version/s3` or `/version/c6`; the installed version is shown as the dongle
   reports it (e.g. `4.5.0.87S3`) so it matches the server's spelling. The entity carries `chip` and `track`
   attributes. `const.dongle_chip_key`, `coordinator.dongle_chip`, `update.UPDATE_URLS`.
+## Version 4.0.6
+### Fixed
 - **AC charge time settings wrongly unavailable on standard/ACS units.** The
   coordinator kept its own copy of the "Charge Based on:" option lists and the
   legacy one had drifted from const.py (a phantom "Off" at index 0), so a unit
