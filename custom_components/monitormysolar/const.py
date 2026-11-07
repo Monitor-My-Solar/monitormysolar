@@ -128,6 +128,25 @@ def version_tuple(version):
     return tuple(nums) or None
 
 
+def dongle_chip_key(chip_type: str | None, version: str | None = None) -> str:
+    """Resolve which update-server chip channel a dongle belongs to: "s3" or "c6".
+
+    The dongle's /status payload names its chip ("ESP32-S3" / "ESP32-C6");
+    the firmware version carries the same designator as a suffix ("4.5.0.87S3").
+    Units too old to report either are ESP32-C6, which is also what the
+    legacy update endpoint serves.
+    """
+    for candidate in (chip_type, version):
+        if not candidate:
+            continue
+        text = str(candidate).upper()
+        if "S3" in text:
+            return "s3"
+        if "C6" in text:
+            return "c6"
+    return "c6"
+
+
 def fw_version_is_newer(latest: str, installed: str) -> bool:
     """Whether `latest` is strictly newer than `installed` (numeric compare).
 

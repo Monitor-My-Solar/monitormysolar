@@ -25,6 +25,13 @@
   unchanged. Entity definitions can now carry `excluded_firmware_codes` / `allowed_firmware_codes` (exact codes,
   case-insensitive) on top of the group gates for the odd unit whose settings differ from its group.
 ### Fixed
+- **Firmware update entity checks the right chip's channel.** The update check fetched the server's bare
+  version endpoint, which is the ESP32-C6 channel, for every dongle — an ESP32-S3 dongle was shown the C6
+  build as "latest", never saw its own S3 release, and after an install the versions still disagreed. Each
+  dongle now resolves its chip from `/status` (`chipType`, falling back to the version's S3/C6 suffix,
+  legacy units are C6) and reads `/version/s3` or `/version/c6`; the installed version is shown as the dongle
+  reports it (e.g. `4.5.0.87S3`) so it matches the server's spelling. The entity carries `chip` and `track`
+  attributes. `const.dongle_chip_key`, `coordinator.dongle_chip`, `update.UPDATE_URLS`.
 - **AC charge time settings wrongly unavailable on standard/ACS units.** The
   coordinator kept its own copy of the "Charge Based on:" option lists and the
   legacy one had drifted from const.py (a phantom "Off" at index 0), so a unit

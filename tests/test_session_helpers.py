@@ -1,7 +1,7 @@
 """Unit tests for the pure helpers added in the 4.0.0 work.
 
 These cover logic that previously had no committed coverage:
-- firmware version parsing / chip-suffix stripping (snapshot gate + update entity)
+- firmware version parsing (snapshot gate)
 - build_entity_id (the drop-dongle-id naming scheme)
 - migration._desired_entity_id (history-preserving rename)
 - StatusFieldSensor-style nested /status field extraction
@@ -46,49 +46,6 @@ def test_parse_fw_version(coordinator, version, expected):
 ])
 def test_needs_snapshot(coordinator, version, needs):
     assert coordinator._needs_snapshot(version) is needs
-
-
-# ---------------------------------------------------------------------------
-# _strip_chip_suffix (update entity) — kept as a free function copy of the logic
-# so we don't need to import the UpdateEntity (which pulls in HA update component)
-# ---------------------------------------------------------------------------
-
-def _strip_chip_suffix(version):
-    if not version:
-        return version
-    parts = version.split(".")
-    last = parts[-1]
-    trimmed = ""
-    for ch in last:
-        if ch.isdigit():
-            trimmed += ch
-        else:
-            break
-    parts[-1] = trimmed
-    while parts and parts[-1] == "":
-        parts.pop()
-    return ".".join(parts)
-
-
-@pytest.mark.parametrize("version,expected", [
-    ("4.3.0.111S3", "4.3.0.111"),
-    ("4.3.0C6", "4.3.0"),
-    ("4.3.0", "4.3.0"),
-    ("4.10.2.55S3", "4.10.2.55"),
-    ("4.3.0.0C6", "4.3.0.0"),
-])
-def test_strip_chip_suffix(version, expected):
-    assert _strip_chip_suffix(version) == expected
-
-
-def test_strip_chip_suffix_matches_update_entity():
-    """The free copy above must match the real implementation if importable."""
-    try:
-        from custom_components.monitormysolar.update import DongleFirmwareUpdate
-    except Exception:
-        pytest.skip("update entity not importable without full HA")
-    for v in ("4.3.0.111S3", "4.3.0C6", "4.3.0", "4.10.2.55S3"):
-        assert DongleFirmwareUpdate._strip_chip_suffix(v) == _strip_chip_suffix(v)
 
 
 # ---------------------------------------------------------------------------

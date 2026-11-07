@@ -23,6 +23,7 @@ from .const import (
     ENTITIES,
     LOGGER,
     PLATFORMS,
+    dongle_chip_key,
 )
 
 # Forward reference type definition
@@ -78,7 +79,12 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         self._mqtt_unsubscribe_callbacks: Dict[str, Any] = {}
         self._ignored_entity_suffixes: Set[str] = set()  # To track entities we've already logged about
         self._pending_dongles: List[str] = self._dongle_ids.copy()  # Track dongles still needing setup
-        self.server_versions = {}
+        # Update-server versions per chip channel ("s3" / "c6"): each dongle's
+        # update entity reads the channel its own chip belongs to.
+        self.server_versions: Dict[str, Dict[str, Any]] = {}
+        # Chip type per dongle from /status ("ESP32-S3" / "ESP32-C6"); legacy
+        # units never report one and are C6.
+        self.dongle_chip_types: Dict[str, str] = {}
         self._sync_settings_enabled = False  # Track sync settings state
         self._setting_history = {}  # Track setting changes with timestamps
         self._max_history_entries = 100  # Limit history size per setting
@@ -2039,6 +2045,28 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
         """Return the set of ignored entity suffixes for diagnostic purposes."""
         return self._ignored_entity_suffixes
 
+    @staticmethod
+    def _pick_status_chip_type(status_data: dict) -> str:
+        """The chip designator from a /status blob, whichever spelling the firmware uses."""
+        for key in ("chipType", "chip_type", "chip"):
+            value = status_data.get(key)
+            if isinstance(value, str) and value:
+                return value
+        for parent in ("system", "device"):
+            nested = status_data.get(parent)
+            if isinstance(nested, dict):
+                for key in ("chipType", "chip_type"):
+                    value = nested.get(key)
+                    if isinstance(value, str) and value:
+                        return value
+        return ""
+
+    def dongle_chip(self, dongle_id: str) -> str:
+        """Update-server chip channel ("s3" / "c6") for a dongle."""
+        return dongle_chip_key(
+            self.dongle_chip_types.get(dongle_id), self.current_fw_versions.get(dongle_id)
+        )
+
     async def process_status_message(self, dongle_id: str, payload):
         """Process incoming status MQTT message and update the status sensor."""
         if payload is None or len(payload.strip()) == 0:
@@ -2073,6 +2101,10 @@ class MonitorMySolar(DataUpdateCoordinator[None]):
                 boot_count = boot.get("count")
         if version:
             self.current_fw_versions[dongle_id] = version
+        if isinstance(status_data, dict):
+            chip_type = self._pick_status_chip_type(status_data)
+            if chip_type:
+                self.dongle_chip_types[dongle_id] = chip_type
 
         # Detect a silent reboot: if boot.count changed since we last saw it (and
         # this isn't the first sighting), the dongle restarted without dropping its

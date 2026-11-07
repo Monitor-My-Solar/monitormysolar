@@ -35,7 +35,11 @@ from .entity import MonitorMySolarEntity
 OTA_ACK_TIMEOUT = 30  # seconds to wait for <id>/admin/response
 OTA_OVERALL_TIMEOUT = 600  # seconds to watch progress/result before giving up
 
-UPDATE_URL = "https://monitoring.monitormy.solar/version"
+# The update server publishes one channel per chip. The bare /version endpoint is
+# the legacy ESP32-C6 channel, so an ESP32-S3 dongle checked against it was
+# offered the C6 build and never saw its own.
+UPDATE_URL_BASE = "https://monitoring.monitormy.solar/version"
+UPDATE_URLS = {"s3": f"{UPDATE_URL_BASE}/s3", "c6": f"{UPDATE_URL_BASE}/c6"}
 UPDATE_CHECK_INTERVAL = timedelta(hours=6)  # Check every 6 hours
 
 async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry, async_add_entities) -> None:
@@ -43,8 +47,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry, asy
     coordinator = entry.runtime_data
     dongle_ids = coordinator._dongle_ids
     
-    # Fetch latest firmware version from server
-    await _fetch_server_versions(coordinator)
+    # Fetch the latest firmware per chip channel. At setup a dongle may not have
+    # published /status yet, so its chip is unknown — fetch both channels and let
+    # each entity read the one its dongle resolves to.
+    await _fetch_server_versions(coordinator, UPDATE_URLS.keys())
 
     entities = []
     
@@ -61,19 +67,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: MonitorMySolarEntry, asy
     if entities:
         async_add_entities(entities)
         
-async def _fetch_server_versions(coordinator) -> None:
-    """Fetch latest firmware versions from server."""
+async def _fetch_server_versions(coordinator, chips) -> None:
+    """Fetch the latest firmware versions for the given chip channels ("s3"/"c6")."""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(UPDATE_URL, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status == 200:
-                    server_data = await response.json()
-                    coordinator.server_versions = server_data
-                    LOGGER.debug(f"Server versions updated: {server_data}")
-                else:
-                    LOGGER.warning(f"Failed to fetch server versions: HTTP {response.status}")
-    except asyncio.TimeoutError:
-        LOGGER.warning("Timeout fetching server versions")
+            for chip in chips:
+                url = UPDATE_URLS.get(chip)
+                if not url:
+                    continue
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            server_data = await response.json()
+                            coordinator.server_versions[chip] = server_data
+                            LOGGER.debug(f"Server versions updated for {chip}: {server_data}")
+                        else:
+                            LOGGER.warning(
+                                f"Failed to fetch {chip} server versions: HTTP {response.status}"
+                            )
+                except asyncio.TimeoutError:
+                    LOGGER.warning(f"Timeout fetching {chip} server versions")
     except Exception as e:
         LOGGER.error(f"Failed to fetch server versions: {e}")
 
@@ -124,50 +137,35 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         """Return a unique ID."""
         return self._unique_id
 
-    @staticmethod
-    def _strip_chip_suffix(version: str) -> str:
-        """Strip the trailing chip designator (e.g. S3 / C6) from a version string.
+    @property
+    def _chip(self) -> str:
+        """Chip channel this dongle's builds come from ("s3" / "c6")."""
+        return self.coordinator.dongle_chip(self._dongle_id)
 
-        The dongle reports versions like "4.3.0.111S3" or "4.3.0C6", but the
-        update server publishes the bare version ("4.3.0.111" / "4.3.0"). Without
-        stripping the chip suffix the installed vs latest comparison never matches
-        and HA would always show an update available. Removes a trailing run of
-        letters+digits that isn't part of the dotted numeric version.
-        """
-        if not version:
-            return version
-        # Split on dots; the chip suffix is glued onto the last numeric segment,
-        # e.g. "111S3" -> keep "111". Trim trailing chars from the last part once a
-        # non-digit is hit.
-        parts = version.split(".")
-        last = parts[-1]
-        trimmed = ""
-        for ch in last:
-            if ch.isdigit():
-                trimmed += ch
-            else:
-                break
-        parts[-1] = trimmed
-        # Drop any now-empty trailing segment (e.g. version was just "4.3.0S3" with
-        # nothing numeric after — shouldn't happen, but be safe).
-        while parts and parts[-1] == "":
-            parts.pop()
-        return ".".join(parts)
+    @property
+    def _server_versions(self) -> dict:
+        """The update-server response for this dongle's chip."""
+        return (self.coordinator.server_versions or {}).get(self._chip) or {}
 
     @property
     def installed_version(self) -> str | None:
-        """Version currently installed (chip suffix stripped to match the server)."""
+        """Version the dongle reports, as published (e.g. "4.5.0.87S3").
+
+        The server publishes the same chip-suffixed form, so installed and
+        latest read alike; the numeric compare in version_is_newer ignores
+        the suffix either way.
+        """
         version = self.coordinator.current_fw_versions.get(self._dongle_id)
 
         if version in [None, "", "Waiting...", "Unknown"]:
             return None
 
-        return self._strip_chip_suffix(str(version))
+        return str(version)
 
     @property
     def latest_version(self) -> str | None:
-        """Latest version available."""
-        server_versions = self.coordinator.server_versions or {}
+        """Latest version available on this dongle's chip channel and track."""
+        server_versions = self._server_versions
 
         if self._use_beta:
             version = server_versions.get("betaFwVersion")
@@ -184,6 +182,11 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
         """Whether this install should track the beta firmware channel."""
         return self.coordinator.entry.data.get(CONF_USE_BETA, DEFAULT_USE_BETA)
 
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Which chip channel and track the offered build comes from."""
+        return {"chip": self._chip.upper(), "track": "beta" if self._use_beta else "prod"}
+
     def version_is_newer(self, latest_version: str, installed_version: str) -> bool:
         """Offer an update only when the server version is strictly newer.
 
@@ -199,8 +202,8 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
     def release_notes(self) -> str | None:
         """Return the release notes."""
         try:
-            server_versions = self.coordinator.server_versions or {}
-            
+            server_versions = self._server_versions
+
             # Determine which changelog to show based on version
             latest = self.latest_version
             beta_version = server_versions.get("betaFwVersion")
@@ -413,8 +416,8 @@ class DongleFirmwareUpdate(MonitorMySolarEntity, UpdateEntity):
     
     async def _async_check_for_update(self) -> None:
         """Check for firmware updates."""
-        LOGGER.debug(f"Checking for firmware updates for {self._dongle_id}")
-        await _fetch_server_versions(self.coordinator)
+        LOGGER.debug(f"Checking for firmware updates for {self._dongle_id} ({self._chip})")
+        await _fetch_server_versions(self.coordinator, [self._chip])
         self._last_check = self.hass.loop.time()
         self.async_write_ha_state()
     
