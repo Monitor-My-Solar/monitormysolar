@@ -1,30 +1,14 @@
 # Changelog
-## Version 4.0.7.2 (Beta)
+## Version 4.0.7.2
+Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everything here also runs on older firmware, the new entities simply stay absent.
+Released from the 4.0.7B / 4.0.7.1B / 4.0.7.2B betas; this section covers everything since 4.0.6.
+
 ### Added
 - **Firmware Beta update entity.** Every dongle now has a second update entity, `update.*_firmware_update_beta`,
   that follows the beta firmware track (version, release notes, install) alongside the stable `Firmware` entity,
   which always follows the stable track. The "Use Beta Firmware" option is now "Show beta firmware updates": on,
   the beta entity is enabled; off, it is registered disabled and can be enabled from the entity settings. Installs
   with the old option on used to get beta on the single entity; they now get stable there plus the beta entity.
-
-### Fixed
-- **Review follow-ups (PR #113).** A snapshot retry whose own publish failed (broker briefly down) no longer
-  ends the retry chain; the startup-gate failsafe deadline is now stamped when the 30 s timer is armed, not at
-  construction, so a slow setup cannot open the gate early; the "Charge Based on:" option lists that gate the
-  AC-charge voltage / SOC entities live in two module constants instead of four copies; a cell-health payload
-  that is valid JSON but not an object is ignored instead of raising in the MQTT callback; the quick-charge
-  countdown's known overshoot after a re-seen snapshot is documented.
-- **"Dongle did not acknowledge the OTA command" while the progress bar was moving.** The install only counted
-  a matching reply on the admin response topic as the acknowledgement; if that reply was missed (the dongle
-  sends it and reboots straight away, and the subscription can race the publish) or came back without the
-  request id, HA raised after 30 s even though progress was streaming. Progress or a result now count as the
-  acknowledgement, a reply without an id is accepted, and the command is published half a second after the
-  subscriptions are set up.
-
-## Version 4.0.7.1 (Beta)
-Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everything here also runs on older firmware, the new entities simply stay absent.
-
-### Added
 - **JK cell health — active balancers and JK BMS cell resistance** (dongle fw 4.5.0.84S3+, `<id>/cellhealth`,
   once per BLE poll). One HA device per JK MAC (`Balancer xx:xx` / `JK BMS xx:xx`, under the dongle, NOT part of
   the battery bank — from this firmware balancers no longer appear in `/batteries`): status, pack voltage,
@@ -48,7 +32,20 @@ Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everythin
   get **`number.*_charge_current_a`** (`ACChargeBatCurrent`, 0–250 A, raw amps). Every other firmware is
   unchanged. Entity definitions can now carry `excluded_firmware_codes` / `allowed_firmware_codes` (exact codes,
   case-insensitive) on top of the group gates for the odd unit whose settings differ from its group.
+
 ### Fixed
+- **Review follow-ups (PR #113).** A snapshot retry whose own publish failed (broker briefly down) no longer
+  ends the retry chain; the startup-gate failsafe deadline is now stamped when the 30 s timer is armed, not at
+  construction, so a slow setup cannot open the gate early; the "Charge Based on:" option lists that gate the
+  AC-charge voltage / SOC entities live in two module constants instead of four copies; a cell-health payload
+  that is valid JSON but not an object is ignored instead of raising in the MQTT callback; the quick-charge
+  countdown's known overshoot after a re-seen snapshot is documented.
+- **"Dongle did not acknowledge the OTA command" while the progress bar was moving.** The install only counted
+  a matching reply on the admin response topic as the acknowledgement; if that reply was missed (the dongle
+  sends it and reboots straight away, and the subscription can race the publish) or came back without the
+  request id, HA raised after 30 s even though progress was streaming. Progress or a result now count as the
+  acknowledgement, a reply without an id is accepted, and the command is published half a second after the
+  subscriptions are set up.
 - **Voltage controls accept tenths of a volt and no longer over-ask the inverter** (issues #105, #104).
   Three battery voltage controls (`BatStopChgVolt`, `CutVoltForDischg`, `OngridEOD_Voltage`) only accepted
   whole volts, so a value like 55.5 was rounded before it was sent and the entity appeared to "revert". Every
@@ -64,6 +61,7 @@ Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everythin
   legacy units are C6) and reads `/version/s3` or `/version/c6`; the installed version is shown as the dongle
   reports it (e.g. `4.5.0.87S3`) so it matches the server's spelling. The entity carries `chip` and `track`
   attributes. `const.dongle_chip_key`, `coordinator.dongle_chip`, `update.UPDATE_URLS`.
+
 ## Version 4.0.6
 ### Fixed
 - **AC charge time settings wrongly unavailable on standard/ACS units.** The
