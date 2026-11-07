@@ -844,7 +844,11 @@ ENTITIES = {
                     {"name": "Lead Acid Discharge Rate (A)", "type": "number", "unique_id": "DischgRate", "unit": "A", "min": 0, "max": 140, "firmware_max_values": {"FAAA": 250, "FAAB": 250, "EAAA": 195, "EAAB": 195, "HAAA": 195, "ccaa": 250, "ceaa": 250, "AAAA": 78, "AAAB": 78, "BAAA": 78, "BAAB": 78}, "mode": "slider", "native_unit": "A", "class": "CURRENT", "source": "holdbank3", "device_group": "Controls"},
                     {"name": "Battery Discharge Start Point (W)", "type": "number", "unique_id": "PtoUserStartdischg", "unit": "W", "min": 1, "max": 500 , "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
                     {"name": "Battery Charge Start Point (W)", "type": "number", "unique_id": "PtoUserStartchg", "unit": "W", "min": -50, "max": 1, "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
-                    {"name": "CT Offset (W)", "type": "number", "unique_id": "wCT_PowerOffset", "unit": "W", "min": -1000, "max": 1000 , "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "device_group": "Controls"},
+                    # CT offset range differs by model: small hybrids / ACS / off-grid
+                    # cap at +/-199 W, large hybrids at +/-1000 W (mirrors MaxBackFlow's
+                    # group split below).
+                    {"name": "CT Offset (W)", "type": "number", "unique_id": "wCT_PowerOffset", "unit": "W", "min": -199, "max": 199, "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "allowed_groups": ["legacy", "ac_coupled", "offgrid"], "device_group": "Controls"},
+                    {"name": "CT Offset (W)", "type": "number", "unique_id": "wCT_PowerOffset", "unit": "W", "min": -1000, "max": 1000, "mode": "slider", "native_unit": "W", "class": "POWER", "source": "holdbank3", "allowed_groups": ["GEN", "threephase"], "device_group": "Controls"},
                     {"name": "Export Power (%)", "type": "number", "unique_id": "MaxBackFlow", "unit": "W", "min": 0, "max": 200 , "mode": "slider", "source": "holdbank3", "allowed_groups": ["legacy"], "device_group": "Controls"},
                     {"name": "Export Power (kW)", "type": "number", "unique_id": "MaxBackFlow", "unit": "kW", "min": 0, "max": 24 , "step": 0.1, "mode": "slider", "source": "holdbank3", "allowed_groups": ["GEN", "offgrid"], "device_group": "Controls", "display_scale": 10},
                     {"name": "On-grid Discharge Cut-off SOC Limit", "type": "number", "unique_id": "EOD", "unit": "%", "min": 0, "max": 90, "mode": "slider", "source": "holdbank3", "device_group": "Controls"},
@@ -888,6 +892,12 @@ ENTITIES = {
                 ],
                 "holdbank3": [
                     {"name": "CT Sample Ratio", "type": "select", "unique_id": "CTSampleRatio", "options": ["1:1000", "1:3000"], "source": "holdbank3", "device_group": "Controls"},
+                    # PV CT reuse — same device field, but the option set (and its
+                    # meaning) differs by family: hybrids/gen read it as CT reuse,
+                    # ACS reads it as what the PV CT measures. Same split pattern
+                    # as "Charge Based on:".
+                    {"name": "PV CT Reuse", "type": "select", "unique_id": "PVCTSampleType", "options": ["None (no reuse)", "Specific load", "AC couple power"], "source": "holdbank3", "allowed_groups": ["GEN", "threephase"], "device_group": "Controls"},
+                    {"name": "PV CT Function", "type": "select", "unique_id": "PVCTSampleType", "options": ["PV power", "Specific load"], "source": "holdbank3", "allowed_groups": ["ac_coupled"], "device_group": "Controls"},
                     {"name": "Clear Parallel Alarm", "type": "select", "unique_id": "ClearParallelAlarm", "options": ["N/A", "Clear" ], "source": "holdbank3", "device_group": "Controls"},
 
 

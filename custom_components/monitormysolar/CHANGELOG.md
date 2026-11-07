@@ -45,6 +45,15 @@ Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everythin
   numeric echo values ("1.00") convert correctly. Three-phase units now also
   get the "Charge Based on:" select (they were missing from its groups).
 
+### CT settings
+- **New: PV CT Reuse select** (hybrids/gen + three-phase: repurpose the PV CT
+  input for nothing / a specific load / AC-coupled power) and **PV CT
+  Function** on ACS models (PV power / specific load) — same device field,
+  per-family option sets.
+- **CT Offset (W) range now matches the model**: +/-199 W on small hybrids,
+  ACS and off-grid, +/-1000 W on the large hybrids (previously +/-1000 for
+  everyone, which the smaller units' firmware rejects).
+
 ### Quick charge (gen-class units: H/F/E/AC + G three-phase + C offgrid)
 
 - **New: `binary_sensor` Quick Charge** — on while a quick charge boost is
