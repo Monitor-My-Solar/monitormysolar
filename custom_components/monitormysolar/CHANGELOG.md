@@ -27,6 +27,14 @@ Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everythin
   unchanged. Entity definitions can now carry `excluded_firmware_codes` / `allowed_firmware_codes` (exact codes,
   case-insensitive) on top of the group gates for the odd unit whose settings differ from its group.
 ### Fixed
+- **Voltage controls accept tenths of a volt and no longer over-ask the inverter** (issues #105, #104).
+  Three battery voltage controls (`BatStopChgVolt`, `CutVoltForDischg`, `OngridEOD_Voltage`) only accepted
+  whole volts, so a value like 55.5 was rounded before it was sent and the entity appeared to "revert". Every
+  inverter voltage control now has a 0.1 V step. Separately, six voltage controls (`ACChgStartVolt`,
+  `ACChgEndVolt`, `GenChgStartVolt`, `GenChgEndVolt`, `ForceDichgEndVolt`, `OngridEOD_Voltage`) were sending
+  the value multiplied by ten; the dongle applies that scaling itself for named writes, so those asked the
+  inverter for ten times the voltage. They now send volts like every other control. The GridBoss voltage
+  controls get the 0.1 V step too.
 - **Firmware update entity checks the right chip's channel.** The update check fetched the server's bare
   version endpoint, which is the ESP32-C6 channel, for every dongle — an ESP32-S3 dongle was shown the C6
   build as "latest", never saw its own S3 release, and after an install the versions still disagreed. Each
@@ -44,15 +52,6 @@ Best with dongle firmware 4.5.0.87S3 (beta track) on ESP32-S3 dongles; everythin
   is now read from the entity catalog itself so the two can never drift, and
   numeric echo values ("1.00") convert correctly. Three-phase units now also
   get the "Charge Based on:" select (they were missing from its groups).
-
-### CT settings
-- **New: PV CT Reuse select** (hybrids/gen + three-phase: repurpose the PV CT
-  input for nothing / a specific load / AC-coupled power) and **PV CT
-  Function** on ACS models (PV power / specific load) — same device field,
-  per-family option sets.
-- **CT Offset (W) range now matches the model**: +/-199 W on small hybrids,
-  ACS and off-grid, +/-1000 W on the large hybrids (previously +/-1000 for
-  everyone, which the smaller units' firmware rejects).
 
 ### Quick charge (gen-class units: H/F/E/AC + G three-phase + C offgrid)
 
